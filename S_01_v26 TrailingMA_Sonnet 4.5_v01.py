@@ -878,6 +878,8 @@ def create_gui():
     root = tk.Tk()
     root.title("S_01 TrailingMA Light - Strategy Tester")
     root.geometry("900x800")
+    root.columnconfigure(0, weight=1)
+    root.rowconfigure(0, weight=1)
     
     # Переменные
     vars_dict = {}
@@ -974,19 +976,31 @@ def create_gui():
     # Создание фреймов
     main_frame = ttk.Frame(root, padding="10")
     main_frame.grid(row=0, column=0, sticky=(tk.W, tk.E, tk.N, tk.S))
+    main_frame.columnconfigure(0, weight=1)
+    main_frame.rowconfigure(0, weight=1)
     
     # Скроллбар
     canvas = tk.Canvas(main_frame)
     scrollbar = ttk.Scrollbar(main_frame, orient="vertical", command=canvas.yview)
     scrollable_frame = ttk.Frame(canvas)
-    
+
+    for col in range(5):
+        weight = 1 if col in (1, 3) else 0
+        scrollable_frame.columnconfigure(col, weight=weight)
+
     scrollable_frame.bind(
         "<Configure>",
         lambda e: canvas.configure(scrollregion=canvas.bbox("all"))
     )
-    
-    canvas.create_window((0, 0), window=scrollable_frame, anchor="nw")
+
+    canvas_window = canvas.create_window((0, 0), window=scrollable_frame, anchor="nw")
+    canvas.bind(
+        "<Configure>",
+        lambda e: canvas.itemconfig(canvas_window, width=e.width)
+    )
     canvas.configure(yscrollcommand=scrollbar.set)
+    canvas.grid(row=0, column=0, sticky=(tk.N, tk.S, tk.E, tk.W))
+    scrollbar.grid(row=0, column=1, sticky=(tk.N, tk.S))
     
     # === CSV и даты ===
     row = 0
@@ -1367,10 +1381,6 @@ def create_gui():
     ttk.Button(button_frame, text="Reset Defaults", command=reset_defaults).pack(side=tk.LEFT, padx=5)
     ttk.Button(button_frame, text="Run Test", command=run_test).pack(side=tk.LEFT, padx=20)
     ttk.Button(button_frame, text="Run Grid", command=run_grid).pack(side=tk.LEFT, padx=5)
-    
-    # Упаковка canvas и scrollbar
-    canvas.pack(side="left", fill="both", expand=True)
-    scrollbar.pack(side="right", fill="y")
     
     # Инициализация счетчика комбинаций
     count_combinations()
