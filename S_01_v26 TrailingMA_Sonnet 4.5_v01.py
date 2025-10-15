@@ -620,12 +620,12 @@ def simulate(params: Tuple) -> Tuple:
                 trail_activated_short = True
 
         # === ОБНОВЛЕНИЕ ТРЕЙЛИНГ СТОПА ===
-        if trail_activated_long and not np.isnan(trail_ma_long_offset[i]):
+        if position == 1 and not np.isnan(trail_ma_long_offset[i]):
             if trail_ma_long_offset[i] > trail_ma_price_long:
                 trail_ma_price_long = trail_ma_long_offset[i]
 
-        if trail_activated_short and not np.isnan(trail_ma_short_offset[i]):
-            if trail_ma_short_offset[i] < trail_ma_price_short:
+        if position == -1 and not np.isnan(trail_ma_short_offset[i]):
+            if trail_ma_price_short == 0.0 or trail_ma_short_offset[i] < trail_ma_price_short:
                 trail_ma_price_short = trail_ma_short_offset[i]
 
         # === ПРОВЕРКА ВЫХОДА ПО СТОПУ/ТЕЙКУ/ТРЕЙЛИНГУ ===
