@@ -546,17 +546,50 @@ def launch_gui(df: pd.DataFrame, data_path: str) -> None:
     ma_checkbox_tags = {opt: f"ma_select_{opt.lower()}" for opt in MA_TYPE_OPTIONS}
     all_tag = "ma_select_all"
 
-    def on_all_toggle(sender: int, app_data: bool) -> None:
-        state = bool(app_data)
-        for opt in MA_TYPE_OPTIONS:
-            dpg.set_value(ma_checkbox_tags[opt], state)
+    trail_long_checkbox_tags = {
+        opt: f"trail_long_select_{opt.lower()}" for opt in MA_TYPE_OPTIONS
+    }
+    trail_short_checkbox_tags = {
+        opt: f"trail_short_select_{opt.lower()}" for opt in MA_TYPE_OPTIONS
+    }
+    trail_long_all_tag = "trail_long_select_all"
+    trail_short_all_tag = "trail_short_select_all"
 
-    def on_type_toggle(sender: int, app_data: bool, user_data: str) -> None:
-        if not app_data:
-            dpg.set_value(all_tag, False)
-        else:
-            if all(dpg.get_value(tag) for tag in ma_checkbox_tags.values()):
-                dpg.set_value(all_tag, True)
+    def make_checkbox_handlers(option_tags: dict[str, str], all_checkbox_tag: str):
+        def on_all_toggle(sender: int, app_data: bool) -> None:
+            state = bool(app_data)
+            for tag in option_tags.values():
+                dpg.set_value(tag, state)
+
+        def on_type_toggle(sender: int, app_data: bool, user_data: str) -> None:
+            if not app_data:
+                dpg.set_value(all_checkbox_tag, False)
+            elif all(dpg.get_value(tag) for tag in option_tags.values()):
+                dpg.set_value(all_checkbox_tag, True)
+
+        return on_all_toggle, on_type_toggle
+
+    ma_all_toggle, ma_type_toggle = make_checkbox_handlers(ma_checkbox_tags, all_tag)
+    trail_long_all_toggle, trail_long_type_toggle = make_checkbox_handlers(
+        trail_long_checkbox_tags, trail_long_all_tag
+    )
+    trail_short_all_toggle, trail_short_type_toggle = make_checkbox_handlers(
+        trail_short_checkbox_tags, trail_short_all_tag
+    )
+
+    with dpg.theme() as light_theme:
+        with dpg.theme_component(dpg.mvAll):
+            dpg.add_theme_color(dpg.mvThemeCol_Text, (0, 0, 0, 255))
+            dpg.add_theme_color(dpg.mvThemeCol_WindowBg, (245, 245, 245, 255))
+            dpg.add_theme_color(dpg.mvThemeCol_FrameBg, (230, 230, 230, 255))
+            dpg.add_theme_color(dpg.mvThemeCol_FrameBgHovered, (210, 210, 210, 255))
+            dpg.add_theme_color(dpg.mvThemeCol_FrameBgActive, (190, 190, 190, 255))
+            dpg.add_theme_color(dpg.mvThemeCol_Button, (225, 225, 225, 255))
+            dpg.add_theme_color(dpg.mvThemeCol_ButtonHovered, (200, 200, 200, 255))
+            dpg.add_theme_color(dpg.mvThemeCol_ButtonActive, (180, 180, 180, 255))
+            dpg.add_theme_color(dpg.mvThemeCol_Header, (220, 220, 220, 255))
+            dpg.add_theme_color(dpg.mvThemeCol_HeaderHovered, (200, 200, 200, 255))
+            dpg.add_theme_color(dpg.mvThemeCol_HeaderActive, (180, 180, 180, 255))
 
     def gather_params() -> Optional[StrategyParams]:
         start_raw = dpg.get_value("start_date")
@@ -591,10 +624,8 @@ def launch_gui(df: pd.DataFrame, data_path: str) -> None:
             short_stop_days_filter_size=dpg.get_value("short_stop_days_filter_size"),
             trail_rr_long=dpg.get_value("trail_rr_long"),
             trail_rr_short=dpg.get_value("trail_rr_short"),
-            trail_ma_type_long=dpg.get_value("trail_ma_type_long"),
             trail_ma_length_long=dpg.get_value("trail_ma_length_long"),
             trail_ma_offset_long=dpg.get_value("trail_ma_offset_long"),
-            trail_ma_type_short=dpg.get_value("trail_ma_type_short"),
             trail_ma_length_short=dpg.get_value("trail_ma_length_short"),
             trail_ma_offset_short=dpg.get_value("trail_ma_offset_short"),
             risk_per_trade=dpg.get_value("risk_per_trade"),
@@ -613,26 +644,78 @@ def launch_gui(df: pd.DataFrame, data_path: str) -> None:
             ]
         if not selected_types:
             print("Select at least one moving average type to run.")
-            return
-        print("=" * 60)
-        print(
-            f"Running backtests for {len(selected_types)} moving average type(s) "
-            f"using data: {data_path}"
-        )
-        for ma_name in selected_types:
-            current_params = replace(params, t_ma_type=ma_name)
-            net_profit, max_drawdown, trades = run_strategy(
-                df, current_params, ma_type_override=ma_name
+            dpg.set_value(
+                "results_output",
+                "Please select at least one moving average type for MA №3.",
             )
-            print(f"[{ma_name}] Net Profit %: {net_profit:.2f}")
-            print(f"[{ma_name}] Max Portfolio Drawdown %: {max_drawdown:.2f}")
-            print(f"[{ma_name}] Total Trades: {trades}")
-        print("=" * 60)
+            return
+
+        if dpg.get_value(trail_long_all_tag):
+            selected_trail_long = list(MA_TYPE_OPTIONS)
+        else:
+            selected_trail_long = [
+                opt
+                for opt in MA_TYPE_OPTIONS
+                if dpg.get_value(trail_long_checkbox_tags[opt])
+            ]
+        if not selected_trail_long:
+            message = "Select at least one trailing MA type for long positions."
+            print(message)
+            dpg.set_value("results_output", message)
+            return
+
+        if dpg.get_value(trail_short_all_tag):
+            selected_trail_short = list(MA_TYPE_OPTIONS)
+        else:
+            selected_trail_short = [
+                opt
+                for opt in MA_TYPE_OPTIONS
+                if dpg.get_value(trail_short_checkbox_tags[opt])
+            ]
+        if not selected_trail_short:
+            message = "Select at least one trailing MA type for short positions."
+            print(message)
+            dpg.set_value("results_output", message)
+            return
+
+        output_lines = [
+            "=" * 60,
+            (
+                f"Running backtests for {len(selected_types)} MA type(s) with "
+                f"{len(selected_trail_long)} long trailing option(s) and "
+                f"{len(selected_trail_short)} short trailing option(s) using data: {data_path}"
+            ),
+        ]
+
+        for ma_name in selected_types:
+            for trail_long_name in selected_trail_long:
+                for trail_short_name in selected_trail_short:
+                    current_params = replace(
+                        params,
+                        t_ma_type=ma_name,
+                        trail_ma_type_long=trail_long_name,
+                        trail_ma_type_short=trail_short_name,
+                    )
+                    net_profit, max_drawdown, trades = run_strategy(
+                        df, current_params, ma_type_override=ma_name
+                    )
+                    output_lines.append(
+                        (
+                            f"[{ma_name}] Trail L:{trail_long_name} S:{trail_short_name} "
+                            f"Net Profit %: {net_profit:.2f} | "
+                            f"Max DD %: {max_drawdown:.2f} | Trades: {trades}"
+                        )
+                    )
+
+        output_lines.append("=" * 60)
+        results_text = "\n".join(output_lines)
+        print(results_text)
+        dpg.set_value("results_output", results_text)
 
     with dpg.window(
         label="S_01 TrailingMA Backtester",
-        width=520,
-        height=720,
+        width=660,
+        height=820,
         no_resize=True,
     ):
         dpg.add_text("Backtest Settings")
@@ -648,14 +731,23 @@ def launch_gui(df: pd.DataFrame, data_path: str) -> None:
         dpg.add_separator()
         dpg.add_text("MA №3")
         with dpg.group(horizontal=True):
-            dpg.add_checkbox(label="ALL", tag=all_tag, callback=on_all_toggle)
-            for opt in MA_TYPE_OPTIONS:
+            dpg.add_checkbox(label="ALL", tag=all_tag, callback=ma_all_toggle)
+            for opt in MA_TYPE_OPTIONS[:5]:
                 dpg.add_checkbox(
                     label=opt,
                     tag=ma_checkbox_tags[opt],
-                    callback=on_type_toggle,
+                    callback=ma_type_toggle,
                     user_data=opt,
                     default_value=(opt == "EMA"),
+                )
+        with dpg.group(horizontal=True):
+            dpg.add_spacer(width=42)
+            for opt in MA_TYPE_OPTIONS[5:]:
+                dpg.add_checkbox(
+                    label=opt,
+                    tag=ma_checkbox_tags[opt],
+                    callback=ma_type_toggle,
+                    user_data=opt,
                 )
         dpg.add_input_int(label="Length", default_value=45, min_value=0, tag="ma_length3")
 
@@ -736,13 +828,31 @@ def launch_gui(df: pd.DataFrame, data_path: str) -> None:
                 step=0.1,
                 tag="trail_rr_short",
             )
+        dpg.add_text("Trail MA Long")
         with dpg.group(horizontal=True):
-            dpg.add_combo(
-                label="Trail MA Long",
-                items=MA_TYPE_OPTIONS,
-                default_value="SMA",
-                tag="trail_ma_type_long",
+            dpg.add_checkbox(
+                label="ALL",
+                tag=trail_long_all_tag,
+                callback=trail_long_all_toggle,
             )
+            for opt in MA_TYPE_OPTIONS[:5]:
+                dpg.add_checkbox(
+                    label=opt,
+                    tag=trail_long_checkbox_tags[opt],
+                    callback=trail_long_type_toggle,
+                    user_data=opt,
+                    default_value=(opt == "SMA"),
+                )
+        with dpg.group(horizontal=True):
+            dpg.add_spacer(width=42)
+            for opt in MA_TYPE_OPTIONS[5:]:
+                dpg.add_checkbox(
+                    label=opt,
+                    tag=trail_long_checkbox_tags[opt],
+                    callback=trail_long_type_toggle,
+                    user_data=opt,
+                )
+        with dpg.group(horizontal=True):
             dpg.add_input_int(
                 label="Length",
                 default_value=160,
@@ -756,13 +866,31 @@ def launch_gui(df: pd.DataFrame, data_path: str) -> None:
                 step=0.5,
                 tag="trail_ma_offset_long",
             )
+        dpg.add_text("Trail MA Short")
         with dpg.group(horizontal=True):
-            dpg.add_combo(
-                label="Trail MA Short",
-                items=MA_TYPE_OPTIONS,
-                default_value="SMA",
-                tag="trail_ma_type_short",
+            dpg.add_checkbox(
+                label="ALL",
+                tag=trail_short_all_tag,
+                callback=trail_short_all_toggle,
             )
+            for opt in MA_TYPE_OPTIONS[:5]:
+                dpg.add_checkbox(
+                    label=opt,
+                    tag=trail_short_checkbox_tags[opt],
+                    callback=trail_short_type_toggle,
+                    user_data=opt,
+                    default_value=(opt == "SMA"),
+                )
+        with dpg.group(horizontal=True):
+            dpg.add_spacer(width=42)
+            for opt in MA_TYPE_OPTIONS[5:]:
+                dpg.add_checkbox(
+                    label=opt,
+                    tag=trail_short_checkbox_tags[opt],
+                    callback=trail_short_type_toggle,
+                    user_data=opt,
+                )
+        with dpg.group(horizontal=True):
             dpg.add_input_int(
                 label="Length",
                 default_value=160,
@@ -811,7 +939,19 @@ def launch_gui(df: pd.DataFrame, data_path: str) -> None:
             dpg.add_spacer(width=360)
             dpg.add_button(label="Run", width=120, callback=on_run)
 
-    dpg.create_viewport(title="S_01 TrailingMA Backtester", width=560, height=760)
+        dpg.add_separator()
+        dpg.add_text("Results")
+        dpg.add_input_text(
+            tag="results_output",
+            multiline=True,
+            readonly=True,
+            width=600,
+            height=200,
+        )
+
+    dpg.bind_theme(light_theme)
+
+    dpg.create_viewport(title="S_01 TrailingMA Backtester", width=720, height=900)
     dpg.setup_dearpygui()
     dpg.show_viewport()
     dpg.start_dearpygui()
