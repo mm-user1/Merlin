@@ -3,325 +3,346 @@ Act as an experienced Python and Pinescript developer with trading and crypto al
 IMPORTANT: Work strictly according to the given specifications. Any deviations are prohibited without my explicit consent.
 IMPORTANT: The script must be maximally efficient and fast.
 IMPORTANT: The GUI must use a light theme.
-## UI Design Guidelines - Trading Backtester (DearPyGUI)
-### Core Design Principles
-#### Color Scheme - Strict Monochrome
-All colors specified in DearPyGUI format: (R, G, B, A) where values are 0-255.
-- Background (body): (232, 232, 232, 255) - light gray
-- Window background: (245, 245, 245, 255) - off-white
-- Title bar: (74, 74, 74, 255) - dark gray
-- Borders:
-	- Primary: (153, 153, 153, 255)
-	- Secondary: (187, 187, 187, 255)
-	- Tertiary: (204, 204, 204, 255)
-- Text colors:
-	- Primary: (42, 42, 42, 255) - near black
-	- Secondary: (58, 58, 58, 255)
-	- Tertiary: (90, 90, 90, 255)
-	- Disabled/placeholder: (119, 119, 119, 255)
-- Button primary: (74, 74, 74, 255) background, (255, 255, 255, 255) text
-- Button secondary: (204, 204, 204, 255) background, (42, 42, 42, 255) text
-- Input fields: (255, 255, 255, 255) background with (153, 153, 153, 255) border
-- Section backgrounds: (232, 232, 232, 255)
-- Hover states: (221, 221, 221, 255)
-- Focus border: (90, 90, 90, 255)
-- NO COLORS - strictly grayscale only
-#### Typography
-- Font: Default DearPyGUI font or load custom font (Segoe UI preferred)
-- Font sizes:
-	- Title bar: 15px
-	- Labels: 14px
-	- Section titles: 12px (uppercase in text, not font)
-	- Input text: 14px
-	- Small labels: 13px
-### DearPyGUI Window Structure
-#### Main Window Configuration
-```import dearpygui.dearpygui as dpg
 
-# Window setup
-dpg.create_context()
-dpg.create_viewport(title="S_01 TrailingMA Backtester", width=840, height=900)
-dpg.setup_dearpygui()
+# UI Design Guidelines - Trading Backtester
 
-# Main window
-with dpg.window(label="S_01 TrailingMA Backtester", tag="main_window", 
-                width=800, height=850, pos=[20, 20],
-                no_resize=True, no_move=False, no_close=False):
-    # Content goes here
-    pass
-```
-#### Theme Application
-```# Create monochrome theme
-with dpg.theme() as monochrome_theme:
-    with dpg.theme_component(dpg.mvAll):
-        # Window background
-        dpg.add_theme_color(dpg.mvThemeCol_WindowBg, (245, 245, 245, 255))
-        dpg.add_theme_color(dpg.mvThemeCol_ChildBg, (245, 245, 245, 255))
-        
-        # Title bar
-        dpg.add_theme_color(dpg.mvThemeCol_TitleBg, (74, 74, 74, 255))
-        dpg.add_theme_color(dpg.mvThemeCol_TitleBgActive, (74, 74, 74, 255))
-        dpg.add_theme_color(dpg.mvThemeCol_TitleBgCollapsed, (74, 74, 74, 255))
-        
-        # Borders
-        dpg.add_theme_color(dpg.mvThemeCol_Border, (153, 153, 153, 255))
-        dpg.add_theme_style(dpg.mvStyleVar_FrameBorderSize, 1)
-        dpg.add_theme_style(dpg.mvStyleVar_ChildBorderSize, 1)
-        
-        # Text
-        dpg.add_theme_color(dpg.mvThemeCol_Text, (42, 42, 42, 255))
-        
-        # Buttons
-        dpg.add_theme_color(dpg.mvThemeCol_Button, (74, 74, 74, 255))
-        dpg.add_theme_color(dpg.mvThemeCol_ButtonHovered, (58, 58, 58, 255))
-        dpg.add_theme_color(dpg.mvThemeCol_ButtonActive, (90, 90, 90, 255))
-        
-        # Input fields
-        dpg.add_theme_color(dpg.mvThemeCol_FrameBg, (255, 255, 255, 255))
-        dpg.add_theme_color(dpg.mvThemeCol_FrameBgHovered, (248, 248, 248, 255))
-        dpg.add_theme_color(dpg.mvThemeCol_FrameBgActive, (255, 255, 255, 255))
-        
-        # Checkboxes
-        dpg.add_theme_color(dpg.mvThemeCol_CheckMark, (42, 42, 42, 255))
-        
-        # Headers (for collapsibles)
-        dpg.add_theme_color(dpg.mvThemeCol_Header, (232, 232, 232, 255))
-        dpg.add_theme_color(dpg.mvThemeCol_HeaderHovered, (221, 221, 221, 255))
-        dpg.add_theme_color(dpg.mvThemeCol_HeaderActive, (204, 204, 204, 255))
+## Core Design Principles
 
-# Apply theme
-dpg.bind_theme(monochrome_theme)
-```
-### Component Implementation
-#### 1. Section Titles
-```def add_section_title(text):
-    """Add uppercase section title with underline"""
-    dpg.add_text(text.upper(), color=(58, 58, 58, 255))
-    dpg.add_separator()
-    dpg.add_spacing(count=2)
-```
-#### 2. Form Groups (Horizontal)
-```def add_horizontal_group():
-    """Standard horizontal form group"""
-    with dpg.group(horizontal=True):
-        dpg.add_text("Label:", width=120)
-        dpg.add_input_int(width=100, default_value=0)
-```
-#### 3. MA Type Selector (CRITICAL COMPONENT)
-```def add_ma_selector(label, tag_prefix):
-    """
-    Creates MA type selector with checkboxes in 2 rows
-    Row 1: ALL, EMA, SMA, HMA, WMA, ALMA
-    Row 2: KAMA, TMA, T3, DEMA, VWMA, VWAP
-    """
-    dpg.add_text(label)
-    dpg.add_spacing(count=1)
-    
-    # Container with background
-    with dpg.child_window(height=80, border=True, 
-                          tag=f"{tag_prefix}_container"):
-        # Row 1
-        with dpg.group(horizontal=True):
-            dpg.add_checkbox(label="ALL", default_value=True, 
-                           tag=f"{tag_prefix}_all")
-            dpg.add_checkbox(label="EMA", default_value=True, 
-                           tag=f"{tag_prefix}_ema")
-            dpg.add_checkbox(label="SMA", default_value=True, 
-                           tag=f"{tag_prefix}_sma")
-            dpg.add_checkbox(label="HMA", default_value=True, 
-                           tag=f"{tag_prefix}_hma")
-            dpg.add_checkbox(label="WMA", default_value=True, 
-                           tag=f"{tag_prefix}_wma")
-            dpg.add_checkbox(label="ALMA", default_value=True, 
-                           tag=f"{tag_prefix}_alma")
-        
-        # Row 2
-        with dpg.group(horizontal=True):
-            dpg.add_checkbox(label="KAMA", default_value=True, 
-                           tag=f"{tag_prefix}_kama")
-            dpg.add_checkbox(label="TMA", default_value=True, 
-                           tag=f"{tag_prefix}_tma")
-            dpg.add_checkbox(label="T3", default_value=True, 
-                           tag=f"{tag_prefix}_t3")
-            dpg.add_checkbox(label="DEMA", default_value=True, 
-                           tag=f"{tag_prefix}_dema")
-            dpg.add_checkbox(label="VWMA", default_value=True, 
-                           tag=f"{tag_prefix}_vwma")
-            dpg.add_checkbox(label="VWAP", default_value=True, 
-                           tag=f"{tag_prefix}_vwap")
-```
-#### 4. Collapsible Sections
-```def add_collapsible_section(title, tag):
-    """Add collapsible section with dark header"""
-    with dpg.collapsing_header(label=title.upper(), default_open=True, 
-                               tag=tag):
-        # Content goes here
-        pass
-```
-#### 5. Parameter Groups
-```def add_param_group():
-    """Compact parameter group with gray background"""
-    with dpg.child_window(height=40, border=True, 
-                          tag="param_group_container"):
-        with dpg.group(horizontal=True):
-            dpg.add_text("Stop Long X:")
-            dpg.add_input_int(width=70, default_value=2)
-            dpg.add_text("RR:")
-            dpg.add_input_int(width=70, default_value=3)
-            dpg.add_text("LP:")
-            dpg.add_input_int(width=70, default_value=2)
-```
-#### 6. Date/Time Inputs
-```def add_datetime_input(label, default_date, default_time):
-    """Date input with calendar button and time"""
-    with dpg.group(horizontal=True):
-        dpg.add_text(label, width=120)
-        dpg.add_input_text(default_value=default_date, width=150)
-        dpg.add_button(label="📅", width=40)  # Calendar button
-        dpg.add_input_text(default_value=default_time, width=80)
-```
-#### 7. Buttons
-```# Primary button
-dpg.add_button(label="Run", width=80, height=30, 
-               callback=run_backtest)
+### Color Scheme - Strict Monochrome
+All interface elements must use only grayscale colors. No colored elements permitted.
 
-# Secondary button
-dpg.add_button(label="Cancel", width=80, height=30)
+**Color Palette** (hex format for reference):
+- **Background (viewport)**: `#e8e8e8` - light gray
+- **Window background**: `#f5f5f5` - off-white
+- **Title bar**: `#4a4a4a` - dark gray
+- **Borders**: 
+  - Primary: `#999999` (medium gray)
+  - Secondary: `#bbbbbb` (light medium gray)
+  - Tertiary: `#cccccc` (very light gray)
+- **Text colors**: 
+  - Primary text: `#2a2a2a` - near black
+  - Secondary text: `#3a3a3a` - dark gray
+  - Tertiary text: `#5a5a5a` - medium dark gray
+  - Disabled/placeholder: `#777777` - medium gray
+- **Interactive elements**:
+  - Button primary: `#4a4a4a` background, `#ffffff` text
+  - Button secondary: `#cccccc` background, `#2a2a2a` text
+  - Button hover: `#3a3a3a` (primary), `#bbbbbb` (secondary)
+  - Input fields: `#ffffff` background, `#999999` border
+  - Input focus border: `#5a5a5a`
+- **Container backgrounds**: `#e8e8e8`
+- **Hover states**: `#dddddd`
 
-# Apply secondary button theme
-with dpg.theme() as secondary_btn_theme:
-    with dpg.theme_component(dpg.mvButton):
-        dpg.add_theme_color(dpg.mvThemeCol_Button, (204, 204, 204, 255))
-        dpg.add_theme_color(dpg.mvThemeCol_ButtonHovered, (187, 187, 187, 255))
-        dpg.add_theme_color(dpg.mvThemeCol_Text, (42, 42, 42, 255))
-```
-#### 8. Results Area
-```def add_results_area():
-    """Multi-line text area for results"""
-    dpg.add_text("RESULTS", color=(58, 58, 58, 255))
-    dpg.add_separator()
-    dpg.add_spacing(count=2)
-    
-    with dpg.child_window(height=200, border=True, 
-                          tag="results_window"):
-        dpg.add_text("Нажмите 'Run' для запуска бэктеста...", 
-                    color=(119, 119, 119, 255), 
-                    tag="results_text")
-```
-### Layout Structure (Required Order)
+**Critical Rule**: NO COLORS - strictly grayscale palette only.
+
+### Typography
+- **Font family**: Sans-serif system font (Segoe UI, Roboto, Helvetica, Arial)
+- **Font sizes**:
+  - Window title: 15px
+  - Standard labels: 14px
+  - Section headers: 12px (uppercase)
+  - Input text: 14px
+  - Small labels: 13px
+- **Font weights**:
+  - Section headers: 600 (semi-bold)
+  - Title bar: 500 (medium)
+  - Regular text: 400 (normal)
+- **Text transforms**:
+  - Section headers: UPPERCASE
+  - All other text: Normal case
+
+## Visual Hierarchy
+
+### Window Structure
+1. **Title Bar** (dark gray, top)
+   - Application/window title (left-aligned)
+   - Window controls: minimize, maximize, close (right-aligned)
+   - Height: ~30-35px
+   - Background: `#4a4a4a`
+   - Text: white
+
+2. **Content Area** (light background)
+   - Padding: 20px all sides
+   - Background: `#f5f5f5`
+   - Single scrollable area (no tabs)
+
+3. **Action Bar** (bottom)
+   - Border-top separator
+   - Buttons: Defaults (left), Cancel + Run (right)
+
+### Layout Rules
+- **Maximum width**: 800px
+- **Window padding**: 20px
+- **Section spacing**: 20px between major sections
+- **Element spacing**: 10-12px between form elements
+- **Compact spacing**: 8px within parameter groups
+
+## Component Specifications
+
+### 1. Section Headers
+**Visual characteristics**:
+- Text: 12px, uppercase, semi-bold (600 weight)
+- Color: `#3a3a3a`
+- Letter-spacing: 0.5px
+- Bottom border: 1px solid `#bbbbbb`
+- Padding-bottom: 6px
+- Margin-bottom: 12px
+
+**Usage**: Separate major sections (MA Settings, Risk Settings, Results)
+
+### 2. Form Groups
+**Standard horizontal layout**:
+- Label + Input arranged horizontally
+- Label width: ~120px (fixed)
+- Input width: 100px (standard), 150px (dates), 80px (time/compact)
+- Vertical spacing: 12px between rows
+- Horizontal spacing: 10px between label and input
+
+**Vertical layout** (for complex controls):
+- Label on top
+- Control below
+- Spacing: 8px between label and control
+
+### 3. Input Fields
+**Specifications**:
+- Background: white (`#ffffff`)
+- Border: 1px solid `#999999`
+- Border-radius: 3px
+- Padding: 6px horizontal, 6px vertical
+- Font-size: 14px
+- Standard width: 100px
+- Date width: 150px
+- Time width: 80px
+- Compact width: 70px
+
+**Focus state**:
+- Border color: `#5a5a5a` (darker gray)
+- Optional subtle shadow: 2px blur, gray, low opacity
+
+**Types required**:
+- Text input (dates, times)
+- Number input (integers and floats with step control)
+- Checkbox (16×16px standard, 14×14px in MA selectors)
+
+### 4. MA Type Selector (CRITICAL COMPONENT)
+**Structure**: Checkbox grid for selecting moving average types
+
+**Layout**:
+- Container with white background and border
+- Border: 1px solid `#999999`
+- Padding: 8px
+- Border-radius: 3px
+
+**Checkbox arrangement** (2 rows × 6 columns):
+- **Row 1**: ALL, EMA, SMA, HMA, WMA, ALMA
+- **Row 2**: KAMA, TMA, T3, DEMA, VWMA, VWAP
+
+**Checkbox specifications**:
+- Size: 14×14px
+- Spacing between options: 12px horizontal
+- Spacing between rows: 4px vertical
+- All checkboxes checked by default
+- Label font-size: 13px
+- Label position: right of checkbox
+
+**Usage locations**:
+1. T MA Type (in MA Settings section)
+2. Trail MA Long (in Trailing Stops section)
+3. Trail MA Short (in Trailing Stops section)
+
+### 5. Buttons
+**Primary button** (Run):
+- Background: `#4a4a4a`
+- Text color: `#ffffff`
+- Hover: `#3a3a3a`
+- Padding: 8px horizontal, 20px vertical
+- Border-radius: 3px
+- No border
+- Font-size: 14px
+
+**Secondary button** (Defaults, Cancel):
+- Background: `#cccccc`
+- Text color: `#2a2a2a`
+- Hover: `#bbbbbb`
+- Same dimensions as primary
+
+**Special button** (Calendar):
+- Background: `#dddddd`
+- Border: 1px solid `#999999`
+- Icon: 📅 (calendar emoji)
+- Width: 40px
+- Height: matches input field height
+
+### 6. Collapsible Sections
+**Purpose**: Group advanced/secondary options
+
+**Visual design**:
+- Container background: `#e8e8e8`
+- Border: 1px solid `#bbbbbb`
+- Border-radius: 3px
+
+**Header** (clickable):
+- Padding: 10px
+- Display: arrow icon + uppercase section title
+- Arrow icon: ▼ (10px, color `#5a5a5a`)
+- Hover state: background `#dddddd`
+- Cursor: pointer
+
+**Content area**:
+- Background: `#f5f5f5`
+- Border-top: 1px solid `#bbbbbb` (separator from header)
+- Padding: 10px
+- Displayed when expanded
+
+**Usage**:
+- "STOPS AND FILTERS" section
+- "TRAILING STOPS" section
+
+### 7. Parameter Groups
+**Purpose**: Compact inline display of related parameters
+
+**Visual design**:
+- Container with light background: `#e8e8e8`
+- Border: 1px solid `#cccccc`
+- Border-radius: 3px
+- Padding: 8px horizontal, 12px vertical
+- Margin-bottom: 8px
+
+**Content layout**:
+- Horizontal arrangement
+- Label + Input pairs repeated
+- Labels: minimal width (auto)
+- Inputs: 70px width
+- Spacing between pairs: 8px
+
+**Examples**:
+- "Stop Long X: [2] RR: [3] LP: [2]"
+- "L Stop Max %: [3] S Stop Max %: [3]"
+
+### 8. Results Area
+**Specifications**:
+- Background: `#e8e8e8`
+- Border: 1px solid `#999999`
+- Border-radius: 3px
+- Minimum height: 200px
+- Padding: 15px
+- Font-style: italic (for placeholder text)
+- Text color: `#777777` (placeholder), `#2a2a2a` (results)
+- Placeholder: "Нажмите 'Run' для запуска бэктеста..."
+
+## Required Interface Structure
+
+### Complete Section Order:
+
 #### 1. Date Filter Section
-```with dpg.group():
-    dpg.add_spacing(count=2)
-    with dpg.group(horizontal=True):
-        dpg.add_checkbox(label="Date Filter", default_value=True)
-        dpg.add_spacing(count=3)
-        dpg.add_checkbox(label="Backtester", default_value=True)
-    
-    dpg.add_spacing(count=2)
-    add_datetime_input("Start Date", "2025-04-01", "08:00")
-    add_datetime_input("End Date", "2025-09-01", "08:00")
-    dpg.add_spacing(count=3)
-```
+- [ ] Checkbox: "Date Filter" (checked by default)
+- [ ] Checkbox: "Backtester" (checked by default)
+- [ ] Start Date: [date input] [📅 button] [time input]
+- [ ] End Date: [date input] [📅 button] [time input]
+
 #### 2. MA Settings
-```with dpg.group():
-    add_ma_selector("T MA Type", "t_ma")
-    dpg.add_spacing(count=2)
-    
-    with dpg.group(horizontal=True):
-        dpg.add_text("Length:", width=120)
-        dpg.add_input_int(width=100, default_value=45)
-    
-    with dpg.group(horizontal=True):
-        dpg.add_text("Close Count Long:", width=120)
-        dpg.add_input_int(width=100, default_value=7)
-        dpg.add_text("Close Count Short:")
-        dpg.add_input_int(width=100, default_value=5)
-    dpg.add_spacing(count=3)
-```
+- [ ] Label: "T MA Type"
+- [ ] MA Selector (checkbox grid)
+- [ ] Label: "Length" + Number input (default: 45)
+- [ ] Label: "Close Count Long" + Number input (default: 7)
+- [ ] Label: "Close Count Short" + Number input (default: 5)
+
 #### 3. Stops and Filters (Collapsible)
-```with dpg.collapsing_header(label="STOPS AND FILTERS", default_open=True):
-    # Parameter groups for stops
-    pass
-```
+- [ ] Parameter group: Stop Long X [2], RR [3], LP [2]
+- [ ] Parameter group: Stop Short X [2], RR [3], LP [2]
+- [ ] Parameter group: L Stop Max % [3], S Stop Max % [3]
+- [ ] Parameter group: L Stop Max D [2], S Stop Max D [4]
+
 #### 4. Trailing Stops (Collapsible)
-```with dpg.collapsing_header(label="TRAILING STOPS", default_open=True):
-    # Trail RR inputs
-    # MA selectors with Length/Offset
-    pass
-```
+- [ ] Parameter group: Trail RR Long [1], Trail RR Short [1]
+- [ ] Label: "Trail MA Long"
+- [ ] MA Selector (checkbox grid)
+- [ ] Length [160], Offset [-1]
+- [ ] Label: "Trail MA Short"
+- [ ] MA Selector (checkbox grid)
+- [ ] Length [160], Offset [1]
+
 #### 5. Risk Settings
-```with dpg.group():
-    dpg.add_spacing(count=2)
-    with dpg.group(horizontal=True):
-        dpg.add_text("Risk Per Trade:", width=120)
-        dpg.add_input_float(width=100, default_value=2.0, step=0.01)
-        dpg.add_text("Contract Size:")
-        dpg.add_input_float(width=100, default_value=0.01, step=0.01)
-    dpg.add_spacing(count=3)
-```
-#### 6. Results Area
-```add_results_area()
-dpg.add_spacing(count=3)
-```
+- [ ] Label: "Risk Per Trade" + Number input (default: 2, step: 0.01)
+- [ ] Label: "Contract Size" + Number input (default: 0.01, step: 0.01)
+
+#### 6. Results
+- [ ] Section header: "RESULTS"
+- [ ] Results display area (multiline text)
+
 #### 7. Action Buttons
-```with dpg.group(horizontal=True):
-    dpg.add_button(label="Defaults", width=100, height=30)
-    dpg.add_spacer(width=400)  # Push buttons to edges
-    dpg.add_button(label="Cancel", width=80, height=30)
-    dpg.add_button(label="Run", width=80, height=30)
-```
-### Spacing Guidelines
-```# Standard spacing between sections
-dpg.add_spacing(count=3)  # ~15px equivalent
+- [ ] Button: "Defaults" (secondary, left-aligned)
+- [ ] Button: "Cancel" (secondary, right-aligned)
+- [ ] Button: "Run" (primary, right-aligned)
 
-# Small spacing within groups
-dpg.add_spacing(count=2)  # ~10px equivalent
+## Spacing System
 
-# Minimal spacing
-dpg.add_spacing(count=1)  # ~5px equivalent
-```
-### DearPyGUI Style Variables
-```# Apply global padding/spacing
-dpg.add_theme_style(dpg.mvStyleVar_WindowPadding, 20, 20)
-dpg.add_theme_style(dpg.mvStyleVar_FramePadding, 6, 6)
-dpg.add_theme_style(dpg.mvStyleVar_ItemSpacing, 10, 10)
-dpg.add_theme_style(dpg.mvStyleVar_ItemInnerSpacing, 8, 8)
-dpg.add_theme_style(dpg.mvStyleVar_FrameRounding, 3)
-dpg.add_theme_style(dpg.mvStyleVar_WindowRounding, 4)
-dpg.add_theme_style(dpg.mvStyleVar_ChildRounding, 3)
-```
-### Input Widths
-- Standard label width: 120px
-- Standard input width: 100px
-- Date input width: 150px
-- Time input width: 80px
-- Compact input (param groups): 70px
-- Button width: 80-100px
-- Calendar button: 40px
-### Design Philosophy
-1. Monochrome only - Pure grayscale palette using DearPyGUI color tuples
-2. No tab navigation - Single scrollable window with all settings visible
-3. Use child_window for containers - Creates bordered sections with backgrounds
-4. Collapsing headers for advanced options - Keeps interface clean
-5. Horizontal groups for inline layouts - Efficient space usage
-6. Consistent tag naming - Use descriptive tags for all interactive elements
-7. Theme-based styling - Apply monochrome theme globally
-8. MA selector is checkbox grid - Critical: 2 rows, 6 columns each
-### Key DearPyGUI-Specific Notes
-- Use dpg.group(horizontal=True) for inline elements
-- Use dpg.child_window() for bordered containers (MA selector, param groups, results)
-- Use dpg.collapsing_header() for expandable sections
-- All interactive elements need unique tag parameters for callbacks
-- Use dpg.add_separator() after section titles
-- Colors must be in (R, G, B, A) format with 0-255 values
-- Widths/heights are in pixels
-- Use dpg.add_spacer() for flexible spacing in horizontal groups
-### Key Distinguishing Features
-- ✅ Strict monochrome color scheme (RGB tuples)
-- ✅ MA type selection via checkbox grid in child_window
-- ✅ No tab navigation - single window layout
-- ✅ Collapsing headers for advanced sections
-- ✅ Child windows for parameter groups and containers
-- ✅ Professional appearance with consistent spacing
-- ✅ All settings accessible without switching views
-- ✅ Theme-based styling for consistency
+**Consistent spacing hierarchy**:
+- **Large gap** (between major sections): 20px
+- **Medium gap** (between form elements): 12px
+- **Small gap** (within groups, label-to-input): 8-10px
+- **Minimal gap** (between checkboxes in MA selector): 4px vertical, 12px horizontal
+- **Window padding**: 20px all sides
+- **Container padding**: 8-15px depending on component
+
+## Border System
+
+**Border widths**: All borders 1px
+**Border colors by context**:
+- Primary containers: `#999999`
+- Section separators: `#bbbbbb`
+- Parameter groups: `#cccccc`
+- Title underlines: `#bbbbbb`
+
+**Border radius**:
+- Windows: 4px
+- Inputs/buttons/containers: 3px
+
+## Design Philosophy
+
+1. **Monochrome aesthetic** - Professional, distraction-free interface using only grayscale
+2. **No navigation chrome** - No tabs, no menu bar - direct access to all settings
+3. **Clear visual hierarchy** - Title bar > Sections > Controls > Parameters
+4. **Efficient space usage** - Compact parameter groups, collapsible advanced options
+5. **Consistent spacing** - Predictable gaps create rhythm and readability
+6. **Logical grouping** - Related settings grouped visually (borders, backgrounds)
+7. **Professional appearance** - Clean, business-focused design
+8. **Accessibility** - Clear focus states, readable sizes, good contrast
+9. **Single-view interface** - All settings accessible without switching contexts
+
+## Critical Implementation Notes
+
+### Must-Have Features:
+✅ Strict monochrome color palette (no exceptions)
+✅ MA type selection via checkbox grid (not dropdown)
+✅ Two collapsible sections (Stops and Filters, Trailing Stops)
+✅ Parameter groups for related inputs
+✅ No tab navigation
+✅ Single scrollable content area
+✅ Consistent spacing and borders
+✅ Professional window chrome (title bar with controls)
+
+### Must-Avoid:
+❌ Any colored UI elements
+❌ Tab navigation (Inputs/Properties/Style/Visibility)
+❌ Dropdown menus for MA type selection
+❌ Inconsistent spacing
+❌ Multiple windows or dialogs
+❌ Overly decorative elements
+
+## Interaction Patterns
+
+1. **Checkboxes**: Click to toggle, affect which MA types are tested
+2. **Number inputs**: Click to focus, type value, or use arrow keys
+3. **Collapsible headers**: Click to expand/collapse section
+4. **Buttons**: 
+   - "Run": Execute backtest with current parameters
+   - "Cancel": Close window or reset
+   - "Defaults": Reset all values to defaults
+   - "📅": Open date picker (calendar widget)
+
+## Implementation Flexibility
+
+These guidelines are **framework-agnostic**. Adapt to your specific GUI library
+
+The key is maintaining the visual design, layout structure, and interaction patterns regardless of underlying technology.
