@@ -525,7 +525,7 @@ class BacktesterGUI:
     BORDER_PRIMARY = "#999999"
     BORDER_SECONDARY = "#bbbbbb"
     BORDER_TERTIARY = "#cccccc"
-    SCALE_FACTOR = 0.875
+    SCALE_FACTOR = 0.92
 
     def _scale(self, value: float) -> int:
         if value == 0:
@@ -556,7 +556,6 @@ class BacktesterGUI:
         self.root.title("TrailingMA Backtester")
         self.root.configure(bg=self.VIEWPORT_BG)
         self.root.tk.call("tk", "scaling", self.SCALE_FACTOR)
-        self.root.geometry(f"{self._scale(860)}x{self._scale(1000)}")
         self.root.minsize(self._scale(820), self._scale(880))
 
         self.params = default_parameters()
@@ -577,6 +576,10 @@ class BacktesterGUI:
         self.results_placeholder = "Нажмите 'Run' для запуска бэктеста..."
 
         self._build_window()
+        self.root.update_idletasks()
+        required_width = self.root.winfo_reqwidth()
+        required_height = self.root.winfo_reqheight()
+        self.root.geometry(f"{required_width}x{required_height}")
 
     def _build_window(self) -> None:
         window = tk.Frame(
