@@ -525,7 +525,7 @@ class BacktesterGUI:
     BORDER_PRIMARY = "#999999"
     BORDER_SECONDARY = "#bbbbbb"
     BORDER_TERTIARY = "#cccccc"
-    SCALE_FACTOR = 0.75
+    SCALE_FACTOR = 0.875
 
     def _scale(self, value: float) -> int:
         if value == 0:
