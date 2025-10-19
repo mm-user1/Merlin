@@ -1,18 +1,25 @@
 import math
 from dataclasses import dataclass
-from typing import List, Optional, Tuple
+from typing import Dict, List, Optional, Sequence, Tuple
 
 import numpy as np
 import pandas as pd
 from backtesting import _stats
+from dearpygui import dearpygui as dpg
 
 FACTOR_T3 = 0.7
 FAST_KAMA = 2
 SLOW_KAMA = 30
-START_DATE = pd.Timestamp('2025-04-01', tz='UTC')
-END_DATE = pd.Timestamp('2025-09-01', tz='UTC')
-CONTRACT_SIZE = 0.01
+START_DATE = pd.Timestamp('2025-04-01 08:00', tz='UTC')
+END_DATE = pd.Timestamp('2025-09-01 08:00', tz='UTC')
+DEFAULT_MA_LENGTH = 45
+DEFAULT_RISK_PER_TRADE = 2.0
+DEFAULT_CONTRACT_SIZE = 0.01
 COMMISSION_RATE = 0.0005
+
+MA_TYPES_ROW_1 = ["ALL", "EMA", "SMA", "HMA", "WMA", "ALMA"]
+MA_TYPES_ROW_2 = ["KAMA", "TMA", "T3", "DEMA", "VWMA", "VWAP"]
+ALL_MA_TYPES = MA_TYPES_ROW_1[1:] + MA_TYPES_ROW_2
 
 
 def ema(series: pd.Series, length: int) -> pd.Series:
@@ -83,7 +90,11 @@ def kama(series: pd.Series, length: int) -> pd.Series:
         if np.isnan(a):
             kama_values[i] = price if i == 0 else kama_values[i - 1]
             continue
-        prev = kama_values[i - 1] if i > 0 and not np.isnan(kama_values[i - 1]) else (series.iat[i - 1] if i > 0 else price)
+        prev = (
+            kama_values[i - 1]
+            if i > 0 and not np.isnan(kama_values[i - 1])
+            else (series.iat[i - 1] if i > 0 else price)
+        )
         kama_values[i] = a * price + (1 - a) * prev
     return pd.Series(kama_values, index=series.index)
 
@@ -190,13 +201,24 @@ def compute_max_drawdown(equity_curve: pd.Series) -> float:
     return peak_dd.max() * 100
 
 
-def run_strategy(df: pd.DataFrame) -> Tuple[float, float, int]:
+def run_strategy(df: pd.DataFrame,
+                 ma_type: str,
+                 ma_length: int = DEFAULT_MA_LENGTH,
+                 start_date: pd.Timestamp = START_DATE,
+                 end_date: pd.Timestamp = END_DATE,
+                 risk_per_trade_pct: float = DEFAULT_RISK_PER_TRADE,
+                 contract_size: float = DEFAULT_CONTRACT_SIZE) -> Tuple[float, float, int]:
     close = df['Close']
     high = df['High']
     low = df['Low']
     volume = df['Volume']
 
-    ma3 = get_ma(close, 'EMA', 45)
+    ma3 = get_ma(close,
+                 ma_type,
+                 ma_length,
+                 volume=volume,
+                 high=high,
+                 low=low)
     atr14 = atr(high, low, close, 14)
     lowest_long = low.rolling(2, min_periods=1).min()
     highest_short = high.rolling(2, min_periods=1).max()
@@ -207,7 +229,7 @@ def run_strategy(df: pd.DataFrame) -> Tuple[float, float, int]:
     trail_ma_short = trail_ma_short * (1 + (1.0) / 100)
 
     times = df.index
-    time_in_range = (times >= START_DATE) & (times <= END_DATE)
+    time_in_range = (times >= start_date) & (times <= end_date)
 
     equity = 100.0
     realized_equity = equity
@@ -374,9 +396,9 @@ def run_strategy(df: pd.DataFrame) -> Tuple[float, float, int]:
             if long_stop_distance > 0:
                 long_stop_pct = (long_stop_distance / c) * 100
                 if long_stop_pct <= 3:
-                    risk_cash = realized_equity * (2.0 / 100)
+                    risk_cash = realized_equity * (risk_per_trade_pct / 100)
                     qty = risk_cash / long_stop_distance
-                    qty = math.floor((qty / CONTRACT_SIZE)) * CONTRACT_SIZE
+                    qty = math.floor((qty / contract_size)) * contract_size
                     if qty > 0:
                         position = 1
                         position_size = qty
@@ -396,9 +418,9 @@ def run_strategy(df: pd.DataFrame) -> Tuple[float, float, int]:
             if short_stop_distance > 0:
                 short_stop_pct = (short_stop_distance / c) * 100
                 if short_stop_pct <= 3:
-                    risk_cash = realized_equity * (2.0 / 100)
+                    risk_cash = realized_equity * (risk_per_trade_pct / 100)
                     qty = risk_cash / short_stop_distance
-                    qty = math.floor((qty / CONTRACT_SIZE)) * CONTRACT_SIZE
+                    qty = math.floor((qty / contract_size)) * contract_size
                     if qty > 0:
                         position = -1
                         position_size = qty
@@ -427,12 +449,298 @@ def run_strategy(df: pd.DataFrame) -> Tuple[float, float, int]:
     return net_profit_pct, max_drawdown_pct, total_trades
 
 
+def format_results(ma_type: str,
+                   net_profit: float,
+                   max_drawdown: float,
+                   trades: int) -> str:
+    return (
+        f"MA: {ma_type}\n"
+        f"  Net Profit %: {net_profit:.2f}\n"
+        f"  Max Portfolio Drawdown %: {max_drawdown:.2f}\n"
+        f"  Total Trades: {trades}\n"
+    )
+
+
+def add_section_title(text: str) -> None:
+    dpg.add_text(text.upper(), color=(58, 58, 58, 255))
+    dpg.add_separator()
+    dpg.add_spacing(count=2)
+
+
+def add_datetime_input(label: str,
+                       default_date: str,
+                       default_time: str,
+                       date_tag: str,
+                       time_tag: str) -> None:
+    with dpg.group(horizontal=True):
+        dpg.add_text(f"{label}:", width=120)
+        dpg.add_input_text(width=150, default_value=default_date, tag=date_tag)
+        dpg.add_spacer(width=10)
+        dpg.add_input_text(width=80, default_value=default_time, tag=time_tag)
+
+
+def create_monochrome_theme() -> None:
+    with dpg.theme() as monochrome_theme:
+        with dpg.theme_component(dpg.mvAll):
+            dpg.add_theme_color(dpg.mvThemeCol_WindowBg, (245, 245, 245, 255))
+            dpg.add_theme_color(dpg.mvThemeCol_ChildBg, (245, 245, 245, 255))
+
+            dpg.add_theme_color(dpg.mvThemeCol_TitleBg, (74, 74, 74, 255))
+            dpg.add_theme_color(dpg.mvThemeCol_TitleBgActive, (74, 74, 74, 255))
+            dpg.add_theme_color(dpg.mvThemeCol_TitleBgCollapsed, (74, 74, 74, 255))
+
+            dpg.add_theme_color(dpg.mvThemeCol_Border, (153, 153, 153, 255))
+            dpg.add_theme_style(dpg.mvStyleVar_FrameBorderSize, 1)
+            dpg.add_theme_style(dpg.mvStyleVar_ChildBorderSize, 1)
+
+            dpg.add_theme_color(dpg.mvThemeCol_Text, (42, 42, 42, 255))
+
+            dpg.add_theme_color(dpg.mvThemeCol_Button, (74, 74, 74, 255))
+            dpg.add_theme_color(dpg.mvThemeCol_ButtonHovered, (58, 58, 58, 255))
+            dpg.add_theme_color(dpg.mvThemeCol_ButtonActive, (90, 90, 90, 255))
+
+            dpg.add_theme_color(dpg.mvThemeCol_FrameBg, (255, 255, 255, 255))
+            dpg.add_theme_color(dpg.mvThemeCol_FrameBgHovered, (248, 248, 248, 255))
+            dpg.add_theme_color(dpg.mvThemeCol_FrameBgActive, (255, 255, 255, 255))
+
+            dpg.add_theme_color(dpg.mvThemeCol_CheckMark, (42, 42, 42, 255))
+
+            dpg.add_theme_color(dpg.mvThemeCol_Header, (232, 232, 232, 255))
+            dpg.add_theme_color(dpg.mvThemeCol_HeaderHovered, (221, 221, 221, 255))
+            dpg.add_theme_color(dpg.mvThemeCol_HeaderActive, (204, 204, 204, 255))
+
+            dpg.add_theme_style(dpg.mvStyleVar_WindowPadding, 20, 20)
+            dpg.add_theme_style(dpg.mvStyleVar_FramePadding, 6, 6)
+            dpg.add_theme_style(dpg.mvStyleVar_ItemSpacing, 10, 10)
+            dpg.add_theme_style(dpg.mvStyleVar_ItemInnerSpacing, 8, 8)
+            dpg.add_theme_style(dpg.mvStyleVar_FrameRounding, 3)
+            dpg.add_theme_style(dpg.mvStyleVar_WindowRounding, 4)
+            dpg.add_theme_style(dpg.mvStyleVar_ChildRounding, 3)
+
+    dpg.bind_theme(monochrome_theme)
+
+
+def update_all_checkbox_state() -> None:
+    all_checked = all(dpg.get_value(f"ma_checkbox_{ma}") for ma in ALL_MA_TYPES)
+    dpg.set_value("ma_checkbox_ALL", all_checked)
+
+
+def on_all_checkbox(sender: int, app_data: bool, user_data: Sequence[str]) -> None:
+    for ma in user_data:
+        dpg.set_value(f"ma_checkbox_{ma}", app_data)
+
+
+def on_individual_checkbox(sender: int, app_data: bool, user_data: None) -> None:
+    update_all_checkbox_state()
+
+
+def add_ma_selector(label: str, tag_prefix: str) -> None:
+    dpg.add_text(label)
+    dpg.add_spacing(count=1)
+    with dpg.child_window(height=80, border=True, tag=f"{tag_prefix}_container"):
+        with dpg.group(horizontal=True):
+            for ma in MA_TYPES_ROW_1:
+                tag = f"ma_checkbox_{ma}"
+                if ma == "ALL":
+                    dpg.add_checkbox(label=ma,
+                                     tag=tag,
+                                     callback=on_all_checkbox,
+                                     user_data=ALL_MA_TYPES)
+                else:
+                    dpg.add_checkbox(label=ma,
+                                     tag=tag,
+                                     callback=on_individual_checkbox,
+                                     default_value=(ma == "EMA"))
+        with dpg.group(horizontal=True):
+            for ma in MA_TYPES_ROW_2:
+                dpg.add_checkbox(label=ma,
+                                 tag=f"ma_checkbox_{ma}",
+                                 callback=on_individual_checkbox)
+    dpg.add_spacing(count=2)
+
+
+def add_results_area() -> None:
+    with dpg.child_window(height=200, border=True, tag="results_window"):
+        dpg.add_text(
+            "Нажмите 'Run' для запуска бэктеста...",
+            color=(119, 119, 119, 255),
+            tag="results_text",
+        )
+
+
+def parse_datetime(date_str: str, time_str: str) -> pd.Timestamp:
+    combined = f"{date_str.strip()} {time_str.strip()}"
+    return pd.Timestamp(combined, tz='UTC')
+
+
+def run_backtests(df: pd.DataFrame,
+                  selected_ma_types: Sequence[str],
+                  params: Dict[str, float]) -> str:
+    results = []
+    for ma in selected_ma_types:
+        net_profit, max_drawdown, trades = run_strategy(
+            df,
+            ma,
+            ma_length=int(params["ma_length"]),
+            start_date=params["start_date"],
+            end_date=params["end_date"],
+            risk_per_trade_pct=float(params["risk_pct"]),
+            contract_size=float(params["contract_size"]),
+        )
+        results.append(format_results(ma, net_profit, max_drawdown, trades))
+    return "\n".join(results)
+
+
+def on_run_clicked(sender: int, app_data: None, user_data: pd.DataFrame) -> None:
+    selected = [
+        ma for ma in ALL_MA_TYPES
+        if dpg.get_value(f"ma_checkbox_{ma}")
+    ]
+    if not selected:
+        dpg.set_value("results_text", "Выберите хотя бы один тип мувинга.")
+        return
+
+    try:
+        start_date = parse_datetime(dpg.get_value("start_date"),
+                                    dpg.get_value("start_time"))
+        end_date = parse_datetime(dpg.get_value("end_date"),
+                                  dpg.get_value("end_time"))
+    except Exception:
+        dpg.set_value("results_text", "Неверный формат даты или времени.")
+        return
+
+    if end_date <= start_date:
+        dpg.set_value("results_text", "Дата окончания должна быть позже даты начала.")
+        return
+
+    params = {
+        "ma_length": max(1, dpg.get_value("ma_length")),
+        "risk_pct": max(0.0, dpg.get_value("risk_per_trade")),
+        "contract_size": max(0.0001, dpg.get_value("contract_size")),
+        "start_date": start_date,
+        "end_date": end_date,
+    }
+
+    results_text = run_backtests(user_data, selected, params)
+    dpg.set_value("results_text", results_text)
+
+
+def on_defaults_clicked(sender: int, app_data: None, user_data: None) -> None:
+    dpg.set_value("start_date", START_DATE.strftime("%Y-%m-%d"))
+    dpg.set_value("start_time", START_DATE.strftime("%H:%M"))
+    dpg.set_value("end_date", END_DATE.strftime("%Y-%m-%d"))
+    dpg.set_value("end_time", END_DATE.strftime("%H:%M"))
+    dpg.set_value("ma_length", DEFAULT_MA_LENGTH)
+    dpg.set_value("risk_per_trade", DEFAULT_RISK_PER_TRADE)
+    dpg.set_value("contract_size", DEFAULT_CONTRACT_SIZE)
+    for ma in ALL_MA_TYPES:
+        dpg.set_value(f"ma_checkbox_{ma}", ma == "EMA")
+    update_all_checkbox_state()
+    dpg.set_value("results_text", "Параметры сброшены. Нажмите 'Run'.")
+
+
+def build_gui(df: pd.DataFrame) -> None:
+    dpg.create_context()
+    dpg.create_viewport(title="S_01 TrailingMA Backtester", width=840, height=900)
+    dpg.setup_dearpygui()
+    create_monochrome_theme()
+
+    with dpg.window(label="S_01 TrailingMA Backtester",
+                    tag="main_window",
+                    width=800,
+                    height=850,
+                    pos=[20, 20],
+                    no_resize=True,
+                    no_move=False,
+                    no_close=False):
+
+        dpg.add_spacing(count=2)
+        with dpg.group():
+            with dpg.group(horizontal=True):
+                dpg.add_checkbox(label="Date Filter", default_value=True)
+                dpg.add_spacing(count=3)
+                dpg.add_checkbox(label="Backtester", default_value=True)
+
+            dpg.add_spacing(count=2)
+            add_datetime_input("Start Date",
+                               START_DATE.strftime("%Y-%m-%d"),
+                               START_DATE.strftime("%H:%M"),
+                               "start_date",
+                               "start_time")
+            add_datetime_input("End Date",
+                               END_DATE.strftime("%Y-%m-%d"),
+                               END_DATE.strftime("%H:%M"),
+                               "end_date",
+                               "end_time")
+            dpg.add_spacing(count=3)
+
+        with dpg.group():
+            add_ma_selector("T MA Type", "t_ma")
+            dpg.add_spacing(count=2)
+
+            with dpg.group(horizontal=True):
+                dpg.add_text("Length:", width=120)
+                dpg.add_input_int(width=100,
+                                  default_value=DEFAULT_MA_LENGTH,
+                                  tag="ma_length",
+                                  min_value=1,
+                                  min_clamped=True)
+
+            with dpg.group(horizontal=True):
+                dpg.add_text("Close Count Long:", width=120)
+                dpg.add_input_int(width=100, default_value=7, enabled=False)
+                dpg.add_text("Close Count Short:")
+                dpg.add_input_int(width=100, default_value=5, enabled=False)
+            dpg.add_spacing(count=3)
+
+        with dpg.collapsing_header(label="STOPS AND FILTERS", default_open=True):
+            with dpg.group(horizontal=True):
+                dpg.add_text("ATR Period:", width=120)
+                dpg.add_input_int(width=100, default_value=14, enabled=False)
+                dpg.add_text("Stop RR:")
+                dpg.add_input_float(width=100, default_value=2.0, enabled=False)
+
+        with dpg.collapsing_header(label="TRAILING STOPS", default_open=True):
+            with dpg.group(horizontal=True):
+                dpg.add_text("Trail RR:", width=120)
+                dpg.add_input_float(width=100, default_value=1.0, enabled=False)
+                dpg.add_text("Trail Offset:")
+                dpg.add_input_float(width=100, default_value=1.0, enabled=False)
+
+        with dpg.group():
+            dpg.add_spacing(count=2)
+            with dpg.group(horizontal=True):
+                dpg.add_text("Risk Per Trade:", width=120)
+                dpg.add_input_float(width=100,
+                                    default_value=DEFAULT_RISK_PER_TRADE,
+                                    step=0.01,
+                                    tag="risk_per_trade")
+                dpg.add_text("Contract Size:")
+                dpg.add_input_float(width=100,
+                                    default_value=DEFAULT_CONTRACT_SIZE,
+                                    step=0.01,
+                                    tag="contract_size")
+            dpg.add_spacing(count=3)
+
+        add_results_area()
+        dpg.add_spacing(count=3)
+
+        with dpg.group(horizontal=True):
+            dpg.add_button(label="Defaults", width=100, height=30, callback=on_defaults_clicked)
+            dpg.add_spacer(width=400)
+            dpg.add_button(label="Cancel", width=80, height=30, callback=lambda: dpg.stop_dearpygui())
+            dpg.add_button(label="Run", width=80, height=30, callback=on_run_clicked, user_data=df)
+
+    update_all_checkbox_state()
+    dpg.show_viewport()
+    dpg.set_primary_window("main_window", True)
+    dpg.start_dearpygui()
+    dpg.destroy_context()
+
+
 def main() -> None:
     df = load_data("OKX_LINKUSDT.P, 15 2025.02.01-2025.09.09.csv")
-    net_profit, max_drawdown, trades = run_strategy(df)
-    print(f"Net Profit %: {net_profit:.2f}")
-    print(f"Max Portfolio Drawdown %: {max_drawdown:.2f}")
-    print(f"Total Trades: {trades}")
+    build_gui(df)
 
 
 if __name__ == "__main__":
