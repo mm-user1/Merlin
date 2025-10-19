@@ -564,6 +564,8 @@ class BacktesterGUI:
         self.entries: Dict[str, tk.Entry] = {}
         self.trail_ma_long_vars: Dict[str, tk.BooleanVar] = {}
         self.trail_ma_short_vars: Dict[str, tk.BooleanVar] = {}
+        self.trail_ma_long_all_var = tk.BooleanVar(value=False)
+        self.trail_ma_short_all_var = tk.BooleanVar(value=False)
 
         self.date_filter_var = tk.BooleanVar(value=self.params.date_filter_enabled)
         self.backtester_var = tk.BooleanVar(value=self.params.backtester_enabled)
@@ -839,6 +841,7 @@ class BacktesterGUI:
             title="Trail MA Long",
             vars_map=self.trail_ma_long_vars,
             default=self.params.trail_ma_long_type,
+            all_var=self.trail_ma_long_all_var,
         )
         long_group = self._create_param_group(
             long_column,
@@ -854,6 +857,7 @@ class BacktesterGUI:
             title="Trail MA Short",
             vars_map=self.trail_ma_short_vars,
             default=self.params.trail_ma_short_type,
+            all_var=self.trail_ma_short_all_var,
         )
         short_group = self._create_param_group(
             short_column,
@@ -870,6 +874,8 @@ class BacktesterGUI:
         title: str,
         vars_map: Dict[str, tk.BooleanVar],
         default: str,
+        *,
+        all_var: tk.BooleanVar,
     ) -> None:
         label = tk.Label(
             parent,
@@ -880,6 +886,25 @@ class BacktesterGUI:
         )
         label.pack(anchor="w", pady=self._pad((6, 4)))
 
+        controls = tk.Frame(parent, bg=self.WINDOW_BG)
+        controls.pack(fill="x", pady=self._pad((0, 4)))
+
+        all_checkbox = tk.Checkbutton(
+            controls,
+            text="ALL",
+            variable=all_var,
+            command=lambda mapping=vars_map, flag=all_var: self._toggle_trailing_all(mapping, flag),
+            bg=self.WINDOW_BG,
+            fg=self.TEXT_PRIMARY,
+            selectcolor=self.WINDOW_BG,
+            activebackground=self.WINDOW_BG,
+            activeforeground=self.TEXT_PRIMARY,
+            highlightthickness=0,
+            font=self._font(13),
+            padx=self._scale(6),
+        )
+        all_checkbox.pack(anchor="w")
+
         grid = tk.Frame(parent, bg=self.WINDOW_BG)
         grid.pack(fill="x", pady=self._pad((0, 8)))
         for idx, ma_type in enumerate(MA_TYPES):
@@ -889,7 +914,7 @@ class BacktesterGUI:
                 grid,
                 text=ma_type,
                 variable=var,
-                command=lambda mt=ma_type, mapping=vars_map: self._exclusive_select(mapping, mt),
+                command=lambda mapping=vars_map, flag=all_var: self._trailing_selection_changed(mapping, flag),
                 bg=self.WINDOW_BG,
                 fg=self.TEXT_PRIMARY,
                 selectcolor=self.WINDOW_BG,
@@ -903,12 +928,24 @@ class BacktesterGUI:
             col = idx % 4
             checkbox.grid(row=row, column=col, padx=self._scale(12), pady=self._scale(3), sticky="w")
 
-    def _exclusive_select(self, mapping: Dict[str, tk.BooleanVar], selected: str) -> None:
-        for ma_type, var in mapping.items():
-            if ma_type == selected:
-                var.set(True)
-            else:
-                var.set(False)
+    def _toggle_trailing_all(
+        self,
+        mapping: Dict[str, tk.BooleanVar],
+        all_var: tk.BooleanVar,
+    ) -> None:
+        state = all_var.get()
+        for var in mapping.values():
+            var.set(state)
+
+    def _trailing_selection_changed(
+        self,
+        mapping: Dict[str, tk.BooleanVar],
+        all_var: tk.BooleanVar,
+    ) -> None:
+        if all(var.get() for var in mapping.values()):
+            all_var.set(True)
+        else:
+            all_var.set(False)
 
     def _build_risk_section(self, parent: tk.Widget) -> None:
         section = self._build_section(parent, "Risk Settings")
@@ -1157,11 +1194,14 @@ class BacktesterGUI:
             var.set(ma_type == self.params.ma_type)
         self.all_ma_var.set(False)
 
+        self.trail_ma_long_all_var.set(False)
+        self.trail_ma_short_all_var.set(False)
         for mapping, default in (
             (self.trail_ma_long_vars, self.params.trail_ma_long_type),
             (self.trail_ma_short_vars, self.params.trail_ma_short_type),
         ):
-            self._exclusive_select(mapping, default)
+            for ma_type, var in mapping.items():
+                var.set(ma_type == default)
 
         self.date_filter_var.set(self.params.date_filter_enabled)
         self.backtester_var.set(self.params.backtester_enabled)
@@ -1186,17 +1226,35 @@ class BacktesterGUI:
             self._set_results("Backtester отключен.")
             return
 
-        selected_ma = [ma for ma, var in self.ma_vars.items() if var.get()]
-        if self.all_ma_var.get():
-            selected_ma = list(MA_TYPES)
+        selected_ma = self._selected_ma_types(
+            self.ma_vars,
+            self.all_ma_var,
+            require_selection=True,
+        )
 
         if not selected_ma:
             if messagebox is not None:
                 messagebox.showerror("Ошибка", "Выберите хотя бы один тип MA для тестирования")
             return
 
+        trailing_long_types = self._selected_ma_types(
+            self.trail_ma_long_vars,
+            self.trail_ma_long_all_var,
+            default=self.params.trail_ma_long_type,
+        )
+        trailing_short_types = self._selected_ma_types(
+            self.trail_ma_short_vars,
+            self.trail_ma_short_all_var,
+            default=self.params.trail_ma_short_type,
+        )
+
         try:
-            params_list = [self._collect_parameters(ma_type) for ma_type in selected_ma]
+            params_list = [
+                self._collect_parameters(ma_type, trail_long, trail_short)
+                for ma_type in selected_ma
+                for trail_long in trailing_long_types
+                for trail_short in trailing_short_types
+            ]
         except ValueError as exc:  # invalid input
             if messagebox is not None:
                 messagebox.showerror("Ошибка", str(exc))
@@ -1209,7 +1267,12 @@ class BacktesterGUI:
             daemon=True,
         ).start()
 
-    def _collect_parameters(self, ma_type: str) -> StrategyParameters:
+    def _collect_parameters(
+        self,
+        ma_type: str,
+        trail_long_type: str,
+        trail_short_type: str,
+    ) -> StrategyParameters:
         params = StrategyParameters()
         defaults = StrategyParameters()
         params.ma_type = ma_type
@@ -1240,15 +1303,28 @@ class BacktesterGUI:
         params.end_date = self._parse_datetime(self.end_date_var.get(), self.end_time_var.get(), END_DATE)
         if params.date_filter_enabled and params.start_date > params.end_date:
             raise ValueError("Дата начала должна быть меньше или равна дате окончания")
-        params.trail_ma_long_type = self._selected_ma(self.trail_ma_long_vars, default=defaults.trail_ma_long_type)
-        params.trail_ma_short_type = self._selected_ma(self.trail_ma_short_vars, default=defaults.trail_ma_short_type)
+        params.trail_ma_long_type = trail_long_type or defaults.trail_ma_long_type
+        params.trail_ma_short_type = trail_short_type or defaults.trail_ma_short_type
         return params
 
-    def _selected_ma(self, mapping: Dict[str, tk.BooleanVar], default: str) -> str:
-        for ma_type, var in mapping.items():
-            if var.get():
-                return ma_type
-        return default
+    def _selected_ma_types(
+        self,
+        mapping: Dict[str, tk.BooleanVar],
+        all_var: tk.BooleanVar,
+        *,
+        default: Optional[str] = None,
+        require_selection: bool = False,
+    ) -> List[str]:
+        if all_var.get():
+            return list(MA_TYPES)
+        selected = [ma_type for ma_type, var in mapping.items() if var.get()]
+        if selected:
+            return selected
+        if default is not None:
+            return [default]
+        if require_selection:
+            return []
+        return []
 
     def _get_int(self, key: str, minimum: Optional[int] = None) -> int:
         value = self.entries[key].get().strip()
