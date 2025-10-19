@@ -470,9 +470,6 @@ def run_strategy(df: pd.DataFrame, params: StrategyParams) -> StrategyResult:
         elif position < 0:
             counter_trade_long = 0
             counter_trade_short = 1
-        else:
-            counter_trade_long = 0
-            counter_trade_short = 0
 
         exit_price: Optional[float] = None
         if position > 0:
