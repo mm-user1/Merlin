@@ -4,7 +4,16 @@ from pathlib import Path
 
 from flask import Flask, jsonify, request, send_from_directory
 
-from backtest_engine import StrategyParams, load_data, run_strategy
+try:
+    # When running via ``python -m flask --app src.server`` the module is
+    # imported as part of the ``src`` package, therefore we need a relative
+    # import.  When the file is executed directly (e.g. ``python server.py``)
+    # the package context is not available and we fall back to the absolute
+    # import.  This makes the module robust regardless of how the development
+    # server is started.
+    from .backtest_engine import StrategyParams, load_data, run_strategy
+except ImportError:  # pragma: no cover - fallback for direct execution
+    from backtest_engine import StrategyParams, load_data, run_strategy
 
 app = Flask(__name__)
 

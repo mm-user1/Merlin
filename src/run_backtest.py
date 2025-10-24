@@ -1,7 +1,10 @@
 import argparse
 import pandas as pd
 
-from backtest_engine import StrategyParams, load_data, run_strategy
+try:
+    from .backtest_engine import StrategyParams, load_data, run_strategy
+except ImportError:  # pragma: no cover - support running as a script
+    from backtest_engine import StrategyParams, load_data, run_strategy
 
 DEFAULT_CSV_PATH = "OKX_LINKUSDT.P, 15 2025.02.01-2025.09.09.csv"
 
