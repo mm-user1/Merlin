@@ -63,7 +63,7 @@ def run_backtest() -> object:
     })
 
 
-def _build_optimization_config(csv_file, payload: dict) -> OptimizationConfig:
+def _build_optimization_config(csv_file, payload: dict, worker_processes=None) -> OptimizationConfig:
     if not isinstance(payload, dict):
         raise ValueError("Invalid optimization config payload.")
 
@@ -117,6 +117,11 @@ def _build_optimization_config(csv_file, payload: dict) -> OptimizationConfig:
             pass
     elif hasattr(csv_file, "stream") and hasattr(csv_file.stream, "seek"):
         csv_file.stream.seek(0)
+    worker_processes_value = 6 if worker_processes is None else int(worker_processes)
+    if worker_processes_value < 1:
+        worker_processes_value = 1
+    elif worker_processes_value > 32:
+        worker_processes_value = 32
     return OptimizationConfig(
         csv_file=csv_file,
         enabled_params=enabled_params,
@@ -129,6 +134,7 @@ def _build_optimization_config(csv_file, payload: dict) -> OptimizationConfig:
         contract_size=float(contract_size),
         commission_rate=float(commission_rate),
         atr_period=int(atr_period),
+        worker_processes=worker_processes_value,
     )
 
 
@@ -150,7 +156,24 @@ def run_optimization_endpoint() -> object:
         return ("Invalid optimization config JSON.", HTTPStatus.BAD_REQUEST)
 
     try:
-        optimization_config = _build_optimization_config(csv_file, config_payload)
+        worker_processes_raw = config_payload.get("worker_processes")
+        if worker_processes_raw is None:
+            worker_processes_raw = config_payload.get("workerProcesses")
+        if worker_processes_raw is None:
+            worker_processes = 6
+        else:
+            try:
+                worker_processes = int(worker_processes_raw)
+            except (TypeError, ValueError):
+                return ("Invalid worker process count.", HTTPStatus.BAD_REQUEST)
+            if worker_processes < 1:
+                worker_processes = 1
+            elif worker_processes > 32:
+                worker_processes = 32
+
+        optimization_config = _build_optimization_config(
+            csv_file, config_payload, worker_processes
+        )
     except ValueError as exc:
         return (str(exc), HTTPStatus.BAD_REQUEST)
     except Exception as exc:  # pragma: no cover - defensive

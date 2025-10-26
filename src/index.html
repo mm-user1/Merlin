@@ -837,6 +837,17 @@
               <form id="optimizerForm">
                 <div class="info-panel">
                   <div class="info-row">
+                    <label for="workerProcesses">Worker processes:</label>
+                    <input
+                      type="number"
+                      id="workerProcesses"
+                      name="workerProcesses"
+                      min="1"
+                      max="32"
+                      value="6"
+                    />
+                  </div>
+                  <div class="info-row">
                     <span>Total combinations:</span>
                     <span id="totalCombinations" class="value">0</span>
                   </div>
@@ -1196,7 +1207,8 @@
         trailShortLength: 160,
         trailShortOffset: 1,
         riskPerTrade: 2,
-        contractSize: 0.01
+        contractSize: 0.01,
+        workerProcesses: 6
       };
 
       const optimizerForm = document.getElementById('optimizerForm');
@@ -1468,6 +1480,10 @@
         document.getElementById('trailShortOffset').value = defaults.trailShortOffset;
         document.getElementById('riskPerTrade').value = defaults.riskPerTrade;
         document.getElementById('contractSize').value = defaults.contractSize;
+        const workerInput = document.getElementById('workerProcesses');
+        if (workerInput) {
+          workerInput.value = defaults.workerProcesses;
+        }
         setCheckboxGroup('trend', defaults.trendMATypes);
         setCheckboxGroup('trailLong', defaults.trailLongTypes);
         setCheckboxGroup('trailShort', defaults.trailShortTypes);
@@ -1687,6 +1703,16 @@
           }
         });
 
+        const workerInput = document.getElementById('workerProcesses');
+        let workerProcesses = defaults.workerProcesses;
+        if (workerInput) {
+          const rawValue = Number(workerInput.value);
+          if (Number.isFinite(rawValue)) {
+            workerProcesses = rawValue;
+          }
+        }
+        workerProcesses = Math.round(Math.min(32, Math.max(1, workerProcesses)));
+
         return {
           enabled_params: enabledParams,
           param_ranges: paramRanges,
@@ -1697,7 +1723,8 @@
           risk_per_trade_pct: Number(document.getElementById('riskPerTrade').value) || 0,
           contract_size: Number(document.getElementById('contractSize').value) || 0,
           commission_rate: 0.0005,
-          atr_period: 14
+          atr_period: 14,
+          worker_processes: workerProcesses
         };
       }
 
