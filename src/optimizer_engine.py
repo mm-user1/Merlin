@@ -37,6 +37,7 @@ class OptimizationConfig:
     contract_size: float = 0.01
     commission_rate: float = 0.0005
     atr_period: int = DEFAULT_ATR_PERIOD
+    worker_processes: int = 6
 
 
 @dataclass
@@ -596,7 +597,8 @@ def run_optimization(
         start,
         end,
     )
-    with mp.Pool(initializer=_init_worker, initargs=pool_args) as pool:
+    processes = min(32, max(1, int(config.worker_processes)))
+    with mp.Pool(processes=processes, initializer=_init_worker, initargs=pool_args) as pool:
         for start_idx in range(0, total, CHUNK_SIZE):
             batch = combinations[start_idx : start_idx + CHUNK_SIZE]
             batch_results = pool.map(_simulate_combination, batch)
