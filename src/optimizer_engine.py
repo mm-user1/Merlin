@@ -9,6 +9,7 @@ from typing import IO, Any, Dict, Iterable, List, Optional, Tuple
 
 import numpy as np
 import pandas as pd
+from tqdm import tqdm
 
 from backtest_engine import (
     DEFAULT_ATR_PERIOD,
@@ -555,9 +556,7 @@ def _simulate_combination(params_dict: Dict[str, Any]) -> OptimizationResult:
     )
 
 
-def run_optimization(
-    config: OptimizationConfig, progress_callback: Optional[Any] = None
-) -> List[OptimizationResult]:
+def run_optimization(config: OptimizationConfig) -> List[OptimizationResult]:
     """Execute the grid search optimization."""
 
     df = load_data(config.csv_file)
@@ -580,9 +579,6 @@ def run_optimization(
     start = _parse_timestamp(config.fixed_params.get("start"))
     end = _parse_timestamp(config.fixed_params.get("end"))
 
-    if progress_callback:
-        progress_callback(0, total)
-
     results: List[OptimizationResult] = []
     pool_args = (
         df,
@@ -599,12 +595,17 @@ def run_optimization(
     )
     processes = min(32, max(1, int(config.worker_processes)))
     with mp.Pool(processes=processes, initializer=_init_worker, initargs=pool_args) as pool:
-        for start_idx in range(0, total, CHUNK_SIZE):
+        progress_iter = tqdm(
+            range(0, total, CHUNK_SIZE),
+            desc="Optimizing",
+            total=total,
+            unit="combo",
+        )
+        for start_idx in progress_iter:
             batch = combinations[start_idx : start_idx + CHUNK_SIZE]
             batch_results = pool.map(_simulate_combination, batch)
             results.extend(batch_results)
-            if progress_callback:
-                progress_callback(min(start_idx + len(batch), total), total)
+            progress_iter.update(len(batch) - 1)
 
     results.sort(key=lambda item: item.net_profit_pct, reverse=True)
     return results

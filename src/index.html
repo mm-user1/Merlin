@@ -1766,7 +1766,7 @@
         formData.append('file', fileInput.files[0]);
         formData.append('config', JSON.stringify(config));
 
-        optimizerResultsEl.textContent = 'Optimization in progress…';
+        optimizerResultsEl.textContent = 'Optimization started. Check server terminal for progress. Optimization in progress…';
         optimizerResultsEl.classList.add('loading');
         optimizerResultsEl.classList.remove('ready');
         optimizerResultsEl.style.display = 'block';
