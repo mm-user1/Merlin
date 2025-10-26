@@ -1595,11 +1595,30 @@
         return Math.floor(distance / delta + 1e-9) + 1;
       }
 
-      function formatEstimatedTimeValue(total) {
+      function getWorkerProcessesValue() {
+        const workerInput = document.getElementById('workerProcesses');
+        let workerProcesses = defaults.workerProcesses;
+        if (workerInput) {
+          const rawValue = Number(workerInput.value);
+          if (Number.isFinite(rawValue)) {
+            workerProcesses = rawValue;
+          }
+        }
+        return Math.round(Math.min(32, Math.max(1, workerProcesses)));
+      }
+
+      function formatEstimatedTimeValue(total, workerCount) {
         if (!Number.isFinite(total) || total <= 0) {
           return '-';
         }
-        const seconds = total / 60;
+        const normalizedWorkers = Math.round(
+          Math.min(32, Math.max(1, Number.isFinite(workerCount) ? workerCount : defaults.workerProcesses))
+        );
+        const combinationsPerSecond = (normalizedWorkers / 6) * 16;
+        if (!Number.isFinite(combinationsPerSecond) || combinationsPerSecond <= 0) {
+          return '-';
+        }
+        const seconds = total / combinationsPerSecond;
         if (seconds < 60) {
           return `${seconds.toFixed(1)} s`;
         }
@@ -1661,8 +1680,9 @@
           return 0;
         }
 
+        const workerProcesses = getWorkerProcessesValue();
         totalCombinationsEl.textContent = total.toLocaleString('en-US');
-        estimatedTimeEl.textContent = formatEstimatedTimeValue(total);
+        estimatedTimeEl.textContent = formatEstimatedTimeValue(total, workerProcesses);
         return total;
       }
 
@@ -1703,15 +1723,7 @@
           }
         });
 
-        const workerInput = document.getElementById('workerProcesses');
-        let workerProcesses = defaults.workerProcesses;
-        if (workerInput) {
-          const rawValue = Number(workerInput.value);
-          if (Number.isFinite(rawValue)) {
-            workerProcesses = rawValue;
-          }
-        }
-        workerProcesses = Math.round(Math.min(32, Math.max(1, workerProcesses)));
+        const workerProcesses = getWorkerProcessesValue();
 
         return {
           enabled_params: enabledParams,
@@ -1841,6 +1853,11 @@
             }
           });
         });
+
+        const workerInput = document.getElementById('workerProcesses');
+        if (workerInput) {
+          workerInput.addEventListener('input', calculateTotalCombinations);
+        }
       }
 
       async function submitForm(event) {
