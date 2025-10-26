@@ -661,13 +661,10 @@ def export_to_csv(
 
     output = io.StringIO()
 
-    fixed_items = [
-        f"{name}={_format_fixed_param_value(fixed_params[name])}"
-        for name in fixed_params
-    ]
-    output.write("Fixed Parameters:")
-    if fixed_items:
-        output.write("," + ",".join(fixed_items))
+    output.write("Parameter Name,Value\n")
+    for name, value in fixed_params.items():
+        formatted_value = _format_fixed_param_value(value)
+        output.write(f"{name},{formatted_value}\n")
     output.write("\n")
 
     filtered_columns = [
