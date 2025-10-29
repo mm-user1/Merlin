@@ -4,6 +4,7 @@ import re
 from datetime import datetime
 from http import HTTPStatus
 from pathlib import Path
+from typing import Any, Dict, List, Tuple
 
 from flask import Flask, jsonify, request, send_file, send_from_directory
 
@@ -19,9 +20,439 @@ from optimizer_engine import (
 app = Flask(__name__)
 
 
+MA_TYPES: Tuple[str, ...] = (
+    "EMA",
+    "SMA",
+    "HMA",
+    "WMA",
+    "ALMA",
+    "KAMA",
+    "TMA",
+    "T3",
+    "DEMA",
+    "VWMA",
+    "VWAP",
+)
+
+PRESETS_DIR = Path(__file__).resolve().parent / "Presets"
+DEFAULT_PRESET_NAME = "defaults"
+VALID_PRESET_NAME_RE = re.compile(r"^[A-Za-z0-9 _\-]{1,64}$")
+
+DEFAULT_PRESET: Dict[str, Any] = {
+    "dateFilter": True,
+    "backtester": True,
+    "startDate": "2025-04-01",
+    "startTime": "00:00",
+    "endDate": "2025-09-01",
+    "endTime": "00:00",
+    "trendMATypes": list(MA_TYPES),
+    "maLength": 45,
+    "closeCountLong": 7,
+    "closeCountShort": 5,
+    "stopLongX": 2.0,
+    "stopLongRR": 3.0,
+    "stopLongLP": 2,
+    "stopShortX": 2.0,
+    "stopShortRR": 3.0,
+    "stopShortLP": 2,
+    "stopLongMaxPct": 3.0,
+    "stopShortMaxPct": 3.0,
+    "stopLongMaxDays": 2,
+    "stopShortMaxDays": 4,
+    "trailRRLong": 1.0,
+    "trailRRShort": 1.0,
+    "trailLongTypes": ["SMA"],
+    "trailLongLength": 160,
+    "trailLongOffset": -1.0,
+    "trailShortTypes": ["SMA"],
+    "trailShortLength": 160,
+    "trailShortOffset": 1.0,
+    "riskPerTrade": 2.0,
+    "contractSize": 0.01,
+    "workerProcesses": 6,
+    "minProfitFilter": False,
+    "minProfitThreshold": 0.0,
+}
+
+
+BOOL_FIELDS = {"dateFilter", "backtester", "minProfitFilter"}
+INT_FIELDS = {
+    "maLength",
+    "closeCountLong",
+    "closeCountShort",
+    "stopLongLP",
+    "stopShortLP",
+    "stopLongMaxDays",
+    "stopShortMaxDays",
+    "trailLongLength",
+    "trailShortLength",
+    "workerProcesses",
+}
+FLOAT_FIELDS = {
+    "stopLongX",
+    "stopLongRR",
+    "stopShortX",
+    "stopShortRR",
+    "stopLongMaxPct",
+    "stopShortMaxPct",
+    "trailRRLong",
+    "trailRRShort",
+    "trailLongOffset",
+    "trailShortOffset",
+    "riskPerTrade",
+    "contractSize",
+    "minProfitThreshold",
+}
+
+LIST_FIELDS = {"trendMATypes", "trailLongTypes", "trailShortTypes"}
+STRING_FIELDS = {"startDate", "startTime", "endDate", "endTime"}
+ALLOWED_PRESET_FIELDS = set(DEFAULT_PRESET.keys())
+
+
+def _clone_default_template() -> Dict[str, Any]:
+    try:
+        current_defaults = _load_preset(DEFAULT_PRESET_NAME)
+        if not isinstance(current_defaults, dict):
+            raise ValueError
+    except (FileNotFoundError, ValueError, json.JSONDecodeError):
+        current_defaults = DEFAULT_PRESET
+    return json.loads(json.dumps(current_defaults))
+
+
+def _ensure_presets_directory() -> None:
+    PRESETS_DIR.mkdir(parents=True, exist_ok=True)
+    defaults_path = PRESETS_DIR / f"{DEFAULT_PRESET_NAME}.json"
+    if not defaults_path.exists():
+        _write_preset(DEFAULT_PRESET_NAME, DEFAULT_PRESET)
+
+
+def _validate_preset_name(name: str) -> str:
+    if not isinstance(name, str):
+        raise ValueError("Preset name must be a string.")
+    normalized = name.strip()
+    if not normalized:
+        raise ValueError("Preset name cannot be empty.")
+    if normalized.lower() == DEFAULT_PRESET_NAME:
+        raise ValueError("Use the defaults endpoint to overwrite default settings.")
+    if not VALID_PRESET_NAME_RE.match(normalized):
+        raise ValueError(
+            "Preset name may only contain letters, numbers, spaces, hyphens, and underscores."
+        )
+    return normalized
+
+
+def _preset_path(name: str) -> Path:
+    safe_name = Path(name).name
+    return PRESETS_DIR / f"{safe_name}.json"
+
+
+def _write_preset(name: str, values: Dict[str, Any]) -> None:
+    path = _preset_path(name)
+    serialized = json.loads(json.dumps(values))
+    with path.open("w", encoding="utf-8") as handle:
+        json.dump(serialized, handle, ensure_ascii=False, indent=2, sort_keys=True)
+
+
+def _load_preset(name: str) -> Dict[str, Any]:
+    path = _preset_path(name)
+    if not path.exists():
+        raise FileNotFoundError(name)
+    with path.open("r", encoding="utf-8") as handle:
+        data = json.load(handle)
+    if not isinstance(data, dict):
+        raise ValueError("Preset file is corrupted.")
+    return data
+
+
+def _list_presets() -> List[Dict[str, Any]]:
+    presets: List[Dict[str, Any]] = []
+    for path in sorted(PRESETS_DIR.glob("*.json")):
+        name = path.stem
+        presets.append({"name": name, "is_default": name.lower() == DEFAULT_PRESET_NAME})
+    return presets
+
+
+def _coerce_bool(value: Any) -> bool:
+    if isinstance(value, bool):
+        return value
+    if isinstance(value, (int, float)):
+        return bool(value)
+    if isinstance(value, str):
+        lowered = value.strip().lower()
+        if lowered in {"true", "1", "yes", "y", "on"}:
+            return True
+        if lowered in {"false", "0", "no", "n", "off"}:
+            return False
+    return False
+
+
+def _split_timestamp(value: str) -> Tuple[str, str]:
+    normalized = (value or "").strip()
+    if not normalized:
+        return "", ""
+    candidate = normalized.replace(" ", "T", 1)
+    candidate = candidate.rstrip("Zz")
+    try:
+        parsed = datetime.fromisoformat(candidate)
+    except ValueError:
+        if "T" in normalized:
+            date_part, _, time_part = normalized.partition("T")
+        elif " " in normalized:
+            date_part, _, time_part = normalized.partition(" ")
+        else:
+            return normalized, ""
+        return date_part.strip(), time_part.strip()
+    date_part = parsed.date().isoformat()
+    if parsed.time().second == 0 and parsed.time().microsecond == 0:
+        time_part = parsed.time().strftime("%H:%M")
+    else:
+        time_part = parsed.time().strftime("%H:%M:%S")
+    return date_part, time_part
+
+
+def _convert_import_value(name: str, raw_value: str) -> Any:
+    if name in BOOL_FIELDS:
+        return _coerce_bool(raw_value)
+    if name in INT_FIELDS:
+        try:
+            return int(round(float(raw_value)))
+        except (TypeError, ValueError):
+            return 0
+    if name in FLOAT_FIELDS:
+        try:
+            return float(raw_value)
+        except (TypeError, ValueError):
+            return 0.0
+    return raw_value
+
+
+def _parse_csv_parameter_block(file_storage) -> Tuple[Dict[str, Any], List[str]]:
+    content = file_storage.read()
+    if isinstance(content, bytes):
+        text = content.decode("utf-8-sig", errors="replace")
+    else:
+        text = str(content)
+
+    lines = text.splitlines()
+    parameters: Dict[str, Any] = {}
+    applied: List[str] = []
+
+    header_seen = False
+    for line in lines:
+        stripped = line.strip()
+        if not stripped:
+            if header_seen:
+                break
+            continue
+        if not header_seen:
+            header_seen = True
+            continue
+        name, _, value = line.partition(",")
+        param_name = name.strip()
+        if not param_name:
+            continue
+        parameters[param_name] = value.strip()
+
+    updates: Dict[str, Any] = {}
+    for name, raw_value in parameters.items():
+        if name == "start":
+            date_part, time_part = _split_timestamp(raw_value)
+            if date_part:
+                updates["startDate"] = date_part
+                applied.append("startDate")
+            if time_part:
+                updates["startTime"] = time_part
+                applied.append("startTime")
+            continue
+        if name == "end":
+            date_part, time_part = _split_timestamp(raw_value)
+            if date_part:
+                updates["endDate"] = date_part
+                applied.append("endDate")
+            if time_part:
+                updates["endTime"] = time_part
+                applied.append("endTime")
+            continue
+        if name == "maType":
+            value = str(raw_value or "").strip().upper()
+            if value:
+                updates["trendMATypes"] = [value]
+                applied.append("trendMATypes")
+            continue
+        if name == "trailLongType":
+            value = str(raw_value or "").strip().upper()
+            if value:
+                updates["trailLongTypes"] = [value]
+                applied.append("trailLongTypes")
+            continue
+        if name == "trailShortType":
+            value = str(raw_value or "").strip().upper()
+            if value:
+                updates["trailShortTypes"] = [value]
+                applied.append("trailShortTypes")
+            continue
+
+        converted = _convert_import_value(name, raw_value)
+        updates[name] = converted
+        applied.append(name)
+
+    return updates, applied
+
+
+_ensure_presets_directory()
+
+
+def _normalize_preset_payload(values: Dict[str, Any]) -> Dict[str, Any]:
+    if not isinstance(values, dict):
+        raise ValueError("Preset values must be provided as a dictionary.")
+    normalized = _clone_default_template()
+    for key, value in values.items():
+        if key not in ALLOWED_PRESET_FIELDS:
+            continue
+        if key in LIST_FIELDS:
+            if isinstance(value, (list, tuple)):
+                cleaned = [str(item).strip().upper() for item in value if str(item).strip()]
+            elif isinstance(value, str) and value.strip():
+                cleaned = [value.strip().upper()]
+            else:
+                cleaned = []
+            if cleaned:
+                normalized[key] = cleaned
+            continue
+        if key in BOOL_FIELDS:
+            normalized[key] = _coerce_bool(value)
+            continue
+        if key in INT_FIELDS:
+            try:
+                converted = int(round(float(value)))
+            except (TypeError, ValueError):
+                continue
+            if key == "workerProcesses":
+                if converted < 1:
+                    converted = 1
+                elif converted > 32:
+                    converted = 32
+            normalized[key] = converted
+            continue
+        if key in FLOAT_FIELDS:
+            try:
+                converted_float = float(value)
+            except (TypeError, ValueError):
+                continue
+            if key == "minProfitThreshold":
+                converted_float = max(0.0, min(99000.0, converted_float))
+            normalized[key] = converted_float
+            continue
+        if key in STRING_FIELDS:
+            normalized[key] = str(value).strip()
+            continue
+        normalized[key] = value
+    return normalized
+
+
 @app.route("/")
 def index() -> object:
     return send_from_directory(Path(app.root_path), "index.html")
+
+
+@app.get("/api/presets")
+def list_presets_endpoint() -> object:
+    presets = _list_presets()
+    return jsonify({"presets": presets})
+
+
+@app.get("/api/presets/<string:name>")
+def load_preset_endpoint(name: str) -> object:
+    target = Path(name).stem
+    try:
+        values = _load_preset(target)
+    except FileNotFoundError:
+        return ("Preset not found.", HTTPStatus.NOT_FOUND)
+    except ValueError as exc:
+        app.logger.exception("Failed to load preset '%s'", name)
+        return (str(exc), HTTPStatus.INTERNAL_SERVER_ERROR)
+    return jsonify({"name": target, "values": values})
+
+
+@app.post("/api/presets")
+def create_preset_endpoint() -> object:
+    if not request.is_json:
+        return ("Expected JSON body.", HTTPStatus.BAD_REQUEST)
+    payload = request.get_json() or {}
+    try:
+        name = _validate_preset_name(payload.get("name"))
+    except ValueError as exc:
+        return (str(exc), HTTPStatus.BAD_REQUEST)
+
+    normalized_name_lower = name.lower()
+    for entry in _list_presets():
+        if entry["name"].lower() == normalized_name_lower:
+            return ("Preset with this name already exists.", HTTPStatus.CONFLICT)
+
+    try:
+        values = _normalize_preset_payload(payload.get("values", {}))
+    except ValueError as exc:
+        return (str(exc), HTTPStatus.BAD_REQUEST)
+
+    try:
+        _write_preset(name, values)
+    except Exception:  # pragma: no cover - defensive
+        app.logger.exception("Failed to save preset '%s'", name)
+        return ("Failed to save preset.", HTTPStatus.INTERNAL_SERVER_ERROR)
+
+    return jsonify({"name": name, "values": values}), HTTPStatus.CREATED
+
+
+@app.put("/api/presets/defaults")
+def overwrite_defaults_endpoint() -> object:
+    if not request.is_json:
+        return ("Expected JSON body.", HTTPStatus.BAD_REQUEST)
+    payload = request.get_json() or {}
+    try:
+        values = _normalize_preset_payload(payload.get("values", {}))
+    except ValueError as exc:
+        return (str(exc), HTTPStatus.BAD_REQUEST)
+
+    try:
+        _write_preset(DEFAULT_PRESET_NAME, values)
+    except Exception:  # pragma: no cover - defensive
+        app.logger.exception("Failed to overwrite default preset")
+        return ("Failed to save default preset.", HTTPStatus.INTERNAL_SERVER_ERROR)
+
+    return jsonify({"name": DEFAULT_PRESET_NAME, "values": values})
+
+
+@app.delete("/api/presets/<string:name>")
+def delete_preset_endpoint(name: str) -> object:
+    target = Path(name).stem
+    if target.lower() == DEFAULT_PRESET_NAME:
+        return ("Default preset cannot be deleted.", HTTPStatus.BAD_REQUEST)
+    path = _preset_path(target)
+    if not path.exists():
+        return ("Preset not found.", HTTPStatus.NOT_FOUND)
+    try:
+        path.unlink()
+    except Exception:  # pragma: no cover - defensive
+        app.logger.exception("Failed to delete preset '%s'", name)
+        return ("Failed to delete preset.", HTTPStatus.INTERNAL_SERVER_ERROR)
+    return ("", HTTPStatus.NO_CONTENT)
+
+
+@app.post("/api/presets/import-csv")
+def import_preset_from_csv() -> object:
+    if "file" not in request.files:
+        return ("CSV file is required.", HTTPStatus.BAD_REQUEST)
+    csv_file = request.files["file"]
+    if not csv_file or csv_file.filename == "":
+        return ("CSV file is required.", HTTPStatus.BAD_REQUEST)
+    try:
+        updates, applied = _parse_csv_parameter_block(csv_file)
+    except Exception:  # pragma: no cover - defensive
+        app.logger.exception("Failed to parse CSV for preset import")
+        return ("Failed to parse CSV file.", HTTPStatus.BAD_REQUEST)
+    if not updates:
+        return ("No fixed parameters found in CSV.", HTTPStatus.BAD_REQUEST)
+    return jsonify({"values": updates, "applied": applied})
 
 
 @app.post("/api/backtest")
