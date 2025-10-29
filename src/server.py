@@ -72,6 +72,7 @@ DEFAULT_PRESET: Dict[str, Any] = {
     "workerProcesses": 6,
     "minProfitFilter": False,
     "minProfitThreshold": 0.0,
+    "csvPath": "",
 }
 
 
@@ -105,7 +106,7 @@ FLOAT_FIELDS = {
 }
 
 LIST_FIELDS = {"trendMATypes", "trailLongTypes", "trailShortTypes"}
-STRING_FIELDS = {"startDate", "startTime", "endDate", "endTime"}
+STRING_FIELDS = {"startDate", "startTime", "endDate", "endTime", "csvPath"}
 ALLOWED_PRESET_FIELDS = set(DEFAULT_PRESET.keys())
 
 
@@ -116,7 +117,9 @@ def _clone_default_template() -> Dict[str, Any]:
             raise ValueError
     except (FileNotFoundError, ValueError, json.JSONDecodeError):
         current_defaults = DEFAULT_PRESET
-    return json.loads(json.dumps(current_defaults))
+    base = json.loads(json.dumps(DEFAULT_PRESET))
+    base.update(json.loads(json.dumps(current_defaults)))
+    return base
 
 
 def _ensure_presets_directory() -> None:
@@ -350,6 +353,24 @@ def _normalize_preset_payload(values: Dict[str, Any]) -> Dict[str, Any]:
     return normalized
 
 
+def _resolve_csv_path(raw_path: str) -> Path:
+    if raw_path is None:
+        raise ValueError("CSV path is empty.")
+    raw_value = str(raw_path).strip()
+    if not raw_value:
+        raise ValueError("CSV path is empty.")
+    candidate = Path(raw_value).expanduser()
+    if not candidate.is_absolute():
+        candidate = Path.cwd() / candidate
+    try:
+        resolved = candidate.resolve(strict=True)
+    except FileNotFoundError as exc:
+        raise FileNotFoundError(str(candidate)) from exc
+    if not resolved.is_file():
+        raise IsADirectoryError(str(resolved))
+    return resolved
+
+
 @app.route("/")
 def index() -> object:
     return send_from_directory(Path(app.root_path), "index.html")
@@ -401,6 +422,34 @@ def create_preset_endpoint() -> object:
         return ("Failed to save preset.", HTTPStatus.INTERNAL_SERVER_ERROR)
 
     return jsonify({"name": name, "values": values}), HTTPStatus.CREATED
+
+
+@app.put("/api/presets/<string:name>")
+def overwrite_preset_endpoint(name: str) -> object:
+    if not request.is_json:
+        return ("Expected JSON body.", HTTPStatus.BAD_REQUEST)
+    try:
+        normalized_name = _validate_preset_name(name)
+    except ValueError as exc:
+        return (str(exc), HTTPStatus.BAD_REQUEST)
+
+    preset_path = _preset_path(normalized_name)
+    if not preset_path.exists():
+        return ("Preset not found.", HTTPStatus.NOT_FOUND)
+
+    payload = request.get_json() or {}
+    try:
+        values = _normalize_preset_payload(payload.get("values", {}))
+    except ValueError as exc:
+        return (str(exc), HTTPStatus.BAD_REQUEST)
+
+    try:
+        _write_preset(normalized_name, values)
+    except Exception:  # pragma: no cover - defensive
+        app.logger.exception("Failed to overwrite preset '%s'", name)
+        return ("Failed to save preset.", HTTPStatus.INTERNAL_SERVER_ERROR)
+
+    return jsonify({"name": normalized_name, "values": values})
 
 
 @app.put("/api/presets/defaults")
@@ -457,11 +506,30 @@ def import_preset_from_csv() -> object:
 
 @app.post("/api/backtest")
 def run_backtest() -> object:
-    if "file" not in request.files:
-        return ("CSV file is required.", HTTPStatus.BAD_REQUEST)
+    csv_file = request.files.get("file")
+    csv_path_raw = (request.form.get("csvPath") or "").strip()
+    data_source = None
+    opened_file = None
 
-    csv_file = request.files["file"]
-    if csv_file.filename == "":
+    if csv_file and csv_file.filename:
+        data_source = csv_file
+    elif csv_path_raw:
+        try:
+            resolved_path = _resolve_csv_path(csv_path_raw)
+        except FileNotFoundError:
+            return ("CSV file not found.", HTTPStatus.BAD_REQUEST)
+        except IsADirectoryError:
+            return ("CSV path must point to a file.", HTTPStatus.BAD_REQUEST)
+        except ValueError:
+            return ("CSV file is required.", HTTPStatus.BAD_REQUEST)
+        except OSError:
+            return ("Failed to access CSV file.", HTTPStatus.BAD_REQUEST)
+        try:
+            opened_file = resolved_path.open("rb")
+        except OSError:
+            return ("Failed to access CSV file.", HTTPStatus.BAD_REQUEST)
+        data_source = opened_file
+    else:
         return ("CSV file is required.", HTTPStatus.BAD_REQUEST)
 
     payload_raw = request.form.get("payload", "{}")
@@ -476,12 +544,25 @@ def run_backtest() -> object:
         return (str(exc), HTTPStatus.BAD_REQUEST)
 
     try:
-        df = load_data(csv_file)
+        df = load_data(data_source)
     except ValueError as exc:
+        if opened_file:
+            opened_file.close()
+            opened_file = None
         return (str(exc), HTTPStatus.BAD_REQUEST)
     except Exception as exc:  # pragma: no cover - defensive
+        if opened_file:
+            opened_file.close()
+            opened_file = None
         app.logger.exception("Failed to load CSV")
         return ("Failed to load CSV data.", HTTPStatus.INTERNAL_SERVER_ERROR)
+    finally:
+        if opened_file:
+            try:
+                opened_file.close()
+            except OSError:  # pragma: no cover - defensive
+                pass
+            opened_file = None
 
     try:
         result = run_strategy(df, params)
@@ -681,11 +762,32 @@ def generate_output_filename(csv_filename: str, config: OptimizationConfig) -> s
 
 @app.post("/api/optimize")
 def run_optimization_endpoint() -> object:
-    if "file" not in request.files:
-        return ("CSV file is required.", HTTPStatus.BAD_REQUEST)
+    csv_file = request.files.get("file")
+    csv_path_raw = (request.form.get("csvPath") or "").strip()
+    opened_file = None
+    source_name = ""
 
-    csv_file = request.files["file"]
-    if csv_file.filename == "":
+    if csv_file and csv_file.filename:
+        data_source = csv_file
+        source_name = csv_file.filename
+    elif csv_path_raw:
+        try:
+            resolved_path = _resolve_csv_path(csv_path_raw)
+        except FileNotFoundError:
+            return ("CSV file not found.", HTTPStatus.BAD_REQUEST)
+        except IsADirectoryError:
+            return ("CSV path must point to a file.", HTTPStatus.BAD_REQUEST)
+        except ValueError:
+            return ("CSV file is required.", HTTPStatus.BAD_REQUEST)
+        except OSError:
+            return ("Failed to access CSV file.", HTTPStatus.BAD_REQUEST)
+        try:
+            opened_file = resolved_path.open("rb")
+        except OSError:
+            return ("Failed to access CSV file.", HTTPStatus.BAD_REQUEST)
+        data_source = opened_file
+        source_name = str(resolved_path)
+    else:
         return ("CSV file is required.", HTTPStatus.BAD_REQUEST)
 
     config_raw = request.form.get("config")
@@ -713,21 +815,40 @@ def run_optimization_endpoint() -> object:
                 worker_processes = 32
 
         optimization_config = _build_optimization_config(
-            csv_file, config_payload, worker_processes
+            data_source, config_payload, worker_processes
         )
     except ValueError as exc:
+        if opened_file:
+            opened_file.close()
+            opened_file = None
         return (str(exc), HTTPStatus.BAD_REQUEST)
     except Exception as exc:  # pragma: no cover - defensive
+        if opened_file:
+            opened_file.close()
+            opened_file = None
         app.logger.exception("Failed to construct optimization config")
         return ("Failed to prepare optimization config.", HTTPStatus.INTERNAL_SERVER_ERROR)
 
     try:
         results = run_optimization(optimization_config)
     except ValueError as exc:
+        if opened_file:
+            opened_file.close()
+            opened_file = None
         return (str(exc), HTTPStatus.BAD_REQUEST)
     except Exception as exc:  # pragma: no cover - defensive
+        if opened_file:
+            opened_file.close()
+            opened_file = None
         app.logger.exception("Optimization run failed")
         return ("Optimization execution failed.", HTTPStatus.INTERNAL_SERVER_ERROR)
+    finally:
+        if opened_file:
+            try:
+                opened_file.close()
+            except OSError:  # pragma: no cover - defensive
+                pass
+            opened_file = None
 
     fixed_parameters = []
     trend_types = _unique_preserve_order(optimization_config.ma_types_trend)
@@ -766,7 +887,7 @@ def run_optimization_endpoint() -> object:
         min_profit_threshold=optimization_config.min_profit_threshold,
     )
     buffer = io.BytesIO(csv_content.encode("utf-8"))
-    filename = generate_output_filename(csv_file.filename, optimization_config)
+    filename = generate_output_filename(source_name, optimization_config)
     buffer.seek(0)
     return send_file(
         buffer,
