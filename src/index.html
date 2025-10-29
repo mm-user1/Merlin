@@ -547,12 +547,14 @@
     .preset-item {
       display: flex;
       align-items: center;
-      gap: 6px;
+      justify-content: space-between;
+      gap: 8px;
       padding: 2px 8px;
     }
 
     .preset-entry {
       flex: 1;
+      min-width: 0;
       background: none;
       border: none;
       text-align: left;
@@ -569,26 +571,53 @@
       outline: none;
     }
 
-    .preset-delete {
+    .preset-actions {
+      display: flex;
+      align-items: center;
+      gap: 4px;
+      opacity: 0;
+      transition: opacity 0.2s ease;
+    }
+
+    .preset-item:hover .preset-actions,
+    .preset-item:focus-within .preset-actions {
+      opacity: 1;
+    }
+
+    .preset-action-btn {
+      width: 20px;
+      height: 20px;
+      display: inline-flex;
+      align-items: center;
+      justify-content: center;
       background: none;
       border: none;
       color: #7a7a7a;
-      font-size: 14px;
-      width: 24px;
-      height: 24px;
-      border-radius: 12px;
-      cursor: pointer;
-      opacity: 0;
-      transition: opacity 0.2s ease;
+      border-radius: 4px;
       padding: 0;
-      line-height: 24px;
+      cursor: pointer;
+      font-size: 12px;
+      line-height: 1;
+      transition: background 0.15s ease, color 0.15s ease;
     }
 
-    .preset-item:hover .preset-delete,
-    .preset-delete:focus {
-      opacity: 1;
+    .preset-action-btn:hover,
+    .preset-action-btn:focus {
+      color: #2a2a2a;
       background: #f0f0f0;
       outline: none;
+    }
+
+    .preset-action-btn:focus-visible {
+      box-shadow: 0 0 0 2px rgba(58, 58, 58, 0.35);
+    }
+
+    .preset-delete {
+      font-size: 13px;
+    }
+
+    .preset-overwrite {
+      font-size: 12px;
     }
 
     .preset-empty {
@@ -1422,6 +1451,7 @@
         startTime: '00:00',
         endDate: '2025-09-01',
         endTime: '00:00',
+        csvPath: '',
         trendMATypes: [...MA_TYPES],
         maLength: 45,
         closeCountLong: 7,
@@ -1460,6 +1490,7 @@
         startTime: 'Start Time',
         endDate: 'End Date',
         endTime: 'End Time',
+        csvPath: 'CSV Path',
         trendMATypes: 'Trend MA Types',
         maLength: 'MA Length',
         closeCountLong: 'Close Count Long',
@@ -1507,22 +1538,32 @@
       const presetListEl = document.getElementById('presetList');
       const presetEmptyEl = document.getElementById('presetEmpty');
       const presetImportInput = document.getElementById('presetImportInput');
+      let selectedCsvPath = '';
 
       function renderSelectedFiles(files) {
         if (!selectedFilesWrapper || !selectedFilesList) {
           return;
         }
 
+        const entries = [];
+        if (files && files.length) {
+          files.forEach((file) => {
+            entries.push(file.name);
+          });
+        } else if (selectedCsvPath) {
+          entries.push(selectedCsvPath);
+        }
+
         selectedFilesList.innerHTML = '';
-        if (!files || !files.length) {
+        if (!entries.length) {
           selectedFilesWrapper.style.display = 'none';
           return;
         }
 
         const fragment = document.createDocumentFragment();
-        files.forEach((file) => {
+        entries.forEach((label) => {
           const item = document.createElement('li');
-          item.textContent = file.name;
+          item.textContent = label;
           fragment.appendChild(item);
         });
 
@@ -1618,6 +1659,15 @@
       if (csvFileInputEl) {
         csvFileInputEl.addEventListener('change', () => {
           const files = Array.from(csvFileInputEl.files || []);
+          if (files.length) {
+            const firstFile = files[0];
+            const derivedPath =
+              (firstFile && (firstFile.path || firstFile.webkitRelativePath)) || '';
+            const fallbackName = firstFile && firstFile.name ? firstFile.name : '';
+            selectedCsvPath = (derivedPath || fallbackName || '').trim();
+          } else {
+            selectedCsvPath = '';
+          }
           renderSelectedFiles(files);
           calculateTotalCombinations();
         });
@@ -1861,6 +1911,13 @@
           return;
         }
 
+        if (Object.prototype.hasOwnProperty.call(values, 'csvPath')) {
+          const csvPathValue = typeof values.csvPath === 'string' ? values.csvPath.trim() : '';
+          selectedCsvPath = csvPathValue;
+        } else {
+          selectedCsvPath = '';
+        }
+
         if (Object.prototype.hasOwnProperty.call(values, 'dateFilter')) {
           setCheckboxValue('dateFilter', values.dateFilter);
         }
@@ -1938,7 +1995,6 @@
         if (clearResults) {
           if (csvFileInputEl) {
             csvFileInputEl.value = '';
-            renderSelectedFiles([]);
           }
           const resultsEl = document.getElementById('results');
           if (resultsEl) {
@@ -1962,6 +2018,8 @@
           }
         }
 
+        const currentFiles = csvFileInputEl ? Array.from(csvFileInputEl.files || []) : [];
+        renderSelectedFiles(currentFiles);
         syncMinProfitFilterUI();
         calculateTotalCombinations();
       }
@@ -1985,6 +2043,7 @@
         const trailShortTypes = collectSelectedTypes('trailShort');
         const { checkbox: minProfitCheckbox, input: minProfitInput } = getMinProfitElements();
         const workerInput = document.getElementById('workerProcesses');
+        const csvPathValue = typeof selectedCsvPath === 'string' ? selectedCsvPath.trim() : '';
 
         return {
           dateFilter: document.getElementById('dateFilter').checked,
@@ -1993,6 +2052,7 @@
           startTime: document.getElementById('startTime').value.trim(),
           endDate: document.getElementById('endDate').value.trim(),
           endTime: document.getElementById('endTime').value.trim(),
+          csvPath: csvPathValue,
           trendMATypes: trendTypes,
           maLength: parseNumber(document.getElementById('maLength').value, defaults.maLength),
           closeCountLong: parseNumber(document.getElementById('closeCountLong').value, defaults.closeCountLong),
@@ -2078,18 +2138,35 @@
             handlePresetSelection(item.name);
           });
 
+          const actionsContainer = document.createElement('div');
+          actionsContainer.className = 'preset-actions';
+
+          const overwriteButton = document.createElement('button');
+          overwriteButton.type = 'button';
+          overwriteButton.className = 'preset-action-btn preset-overwrite';
+          overwriteButton.setAttribute('aria-label', `Перезаписать пресет ${item.name}`);
+          overwriteButton.title = 'Перезаписать пресет';
+          overwriteButton.textContent = '⟳';
+          overwriteButton.addEventListener('click', (event) => {
+            event.stopPropagation();
+            handlePresetOverwrite(item.name);
+          });
+
           const deleteButton = document.createElement('button');
           deleteButton.type = 'button';
-          deleteButton.className = 'preset-delete';
+          deleteButton.className = 'preset-action-btn preset-delete';
           deleteButton.setAttribute('aria-label', `Удалить пресет ${item.name}`);
+          deleteButton.title = 'Удалить пресет';
           deleteButton.textContent = '✕';
           deleteButton.addEventListener('click', (event) => {
             event.stopPropagation();
             handlePresetDelete(item.name);
           });
 
+          actionsContainer.appendChild(overwriteButton);
+          actionsContainer.appendChild(deleteButton);
           row.appendChild(applyButton);
-          row.appendChild(deleteButton);
+          row.appendChild(actionsContainer);
           fragment.appendChild(row);
         });
 
@@ -2124,6 +2201,19 @@
         if (!response.ok) {
           const message = await response.text();
           throw new Error(message || 'Не удалось сохранить пресет.');
+        }
+        return response.json();
+      }
+
+      async function overwritePreset(name, values) {
+        const response = await fetch(`/api/presets/${encodeURIComponent(name)}`, {
+          method: 'PUT',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ values })
+        });
+        if (!response.ok) {
+          const message = await response.text();
+          throw new Error(message || 'Не удалось перезаписать пресет.');
         }
         return response.json();
       }
@@ -2251,6 +2341,22 @@
           await refreshPresetList(false);
         } catch (error) {
           showErrorMessage(error.message || 'Не удалось удалить пресет.');
+        }
+      }
+
+      async function handlePresetOverwrite(name) {
+        const confirmed = window.confirm(`Перезаписать пресет «${name}» текущими настройками?`);
+        if (!confirmed) {
+          return;
+        }
+        closePresetMenu();
+        const values = collectPresetValues();
+        try {
+          await overwritePreset(name, values);
+          await refreshPresetList(false);
+          window.alert(`Пресет «${name}» перезаписан.`);
+        } catch (error) {
+          showErrorMessage(error.message || 'Не удалось перезаписать пресет.');
         }
       }
 
@@ -2543,7 +2649,11 @@
 
         const files = Array.from(csvFileInputEl?.files || []);
         if (!files.length) {
-          estimatedTimeEl.textContent = 'Load CSV for calculation';
+          if (selectedCsvPath) {
+            estimatedTimeEl.textContent = 'ETA unavailable for saved path';
+          } else {
+            estimatedTimeEl.textContent = 'Load CSV for calculation';
+          }
           return;
         }
 
@@ -2698,8 +2808,10 @@
       async function submitOptimization(event) {
         event.preventDefault();
         const fileInput = document.getElementById('csvFile');
-        if (!fileInput || !fileInput.files.length) {
-          optimizerResultsEl.textContent = 'Please select at least one CSV file before running optimization.';
+        const fileList = fileInput ? Array.from(fileInput.files || []) : [];
+        const sources = fileList.length ? fileList : (selectedCsvPath ? [{ path: selectedCsvPath }] : []);
+        if (!sources.length) {
+          optimizerResultsEl.textContent = 'Please select at least one CSV file or saved path before running optimization.';
           optimizerResultsEl.classList.remove('ready');
           optimizerResultsEl.style.display = 'block';
           return;
@@ -2728,11 +2840,14 @@
           return;
         }
 
-        const files = Array.from(fileInput.files);
-        renderSelectedFiles(files);
+        if (fileList.length) {
+          renderSelectedFiles(fileList);
+        } else {
+          renderSelectedFiles([]);
+        }
         const config = buildOptimizationConfig(state);
-        const totalFiles = files.length;
-        const statusMessages = new Array(totalFiles).fill('');
+        const totalSources = sources.length;
+        const statusMessages = new Array(totalSources).fill('');
         const updateStatus = (index, message) => {
           statusMessages[index] = message;
           optimizerResultsEl.textContent = statusMessages.filter(Boolean).join('\n');
@@ -2751,10 +2866,13 @@
         let successCount = 0;
         const totalFormatted = total.toLocaleString('en-US');
 
-        for (let index = 0; index < totalFiles; index += 1) {
-          const file = files[index];
-          const fileNumber = index + 1;
-          const fileLabel = `Processing file ${fileNumber} of ${totalFiles}: ${file.name}`;
+        for (let index = 0; index < totalSources; index += 1) {
+          const source = sources[index];
+          const isFileObject = typeof File !== 'undefined' && source instanceof File;
+          const rawSourceName = isFileObject ? source.name : source && source.path;
+          const sourceName = rawSourceName || (isFileObject ? 'Unnamed file' : 'Saved path');
+          const sourceNumber = index + 1;
+          const fileLabel = `Processing source ${sourceNumber} of ${totalSources}: ${sourceName}`;
           const formatProgress = (current) => {
             const percent = total ? ((current / total) * 100) : 0;
             const currentFormatted = current.toLocaleString('en-US');
@@ -2767,7 +2885,11 @@
           progressText.textContent = formatProgress(0);
 
           const formData = new FormData();
-          formData.append('file', file, file.name);
+          if (isFileObject) {
+            formData.append('file', source, source.name);
+          } else if (source && source.path) {
+            formData.append('csvPath', source.path);
+          }
           formData.append('config', JSON.stringify(config));
 
           try {
@@ -2809,15 +2931,15 @@
 
             progressFill.style.width = '100%';
             progressText.textContent = formatProgress(total);
-            updateStatus(index, `✅ File ${fileNumber} of ${totalFiles} (${file.name}) processed successfully.`);
+            updateStatus(index, `✅ Source ${sourceNumber} of ${totalSources} (${sourceName}) processed successfully.`);
             successCount += 1;
           } catch (err) {
             const message = err && err.message ? err.message : 'Optimization failed.';
-            console.error(`Optimization failed for file ${file.name}`, err);
-            errors.push({ file: file.name, message });
+            console.error(`Optimization failed for source ${sourceName}`, err);
+            errors.push({ file: sourceName, message });
             progressFill.style.width = '0%';
             progressText.textContent = `${fileLabel} — error: ${message}`;
-            updateStatus(index, `❌ File ${fileNumber} of ${totalFiles} (${file.name}) failed: ${message}`);
+            updateStatus(index, `❌ Source ${sourceNumber} of ${totalSources} (${sourceName}) failed: ${message}`);
           }
         }
 
@@ -2829,14 +2951,14 @@
         }
 
         const summaryMessages = statusMessages.filter(Boolean);
-        if (successCount === totalFiles) {
-          summaryMessages.push(`Optimization complete! All ${totalFiles} file(s) processed successfully.`);
+        if (successCount === totalSources) {
+          summaryMessages.push(`Optimization complete! All ${totalSources} data source(s) processed successfully.`);
         } else if (successCount > 0) {
           summaryMessages.push(
-            `Optimization finished with ${successCount} successful file(s) and ${errors.length} error(s).`
+            `Optimization finished with ${successCount} successful data source(s) and ${errors.length} error(s).`
           );
         } else {
-          summaryMessages.push('Optimization failed for all selected files. See error details above.');
+          summaryMessages.push('Optimization failed for all selected data sources. See error details above.');
         }
         optimizerResultsEl.textContent = summaryMessages.join('\n');
       }
@@ -2892,8 +3014,11 @@
         errorEl.style.display = 'none';
         resultsEl.classList.remove('ready');
 
-        if (!fileInput.files.length) {
-          errorEl.textContent = 'Пожалуйста, выберите CSV файл с данными.';
+        const selectedFiles = Array.from(fileInput.files || []);
+        const primaryFile = selectedFiles.length ? selectedFiles[0] : null;
+
+        if (!primaryFile && !selectedCsvPath) {
+          errorEl.textContent = 'Пожалуйста, выберите CSV файл с данными или используйте сохранённый путь.';
           errorEl.style.display = 'block';
           return;
         }
@@ -2917,7 +3042,7 @@
             state.trailShortTypes.forEach((trailShortType) => {
               combinations.push({ trendType, trailLongType, trailShortType });
             });
-          });
+        });
         });
 
         if (!combinations.length) {
@@ -2931,6 +3056,12 @@
 
         const aggregatedResults = [];
 
+        if (primaryFile) {
+          renderSelectedFiles(selectedFiles);
+        } else {
+          renderSelectedFiles([]);
+        }
+
         for (let index = 0; index < combinations.length; index += 1) {
           const combo = combinations[index];
           const payload = {
@@ -2941,7 +3072,12 @@
           };
 
           const formData = new FormData();
-          formData.append('file', fileInput.files[0]);
+          if (primaryFile) {
+            formData.append('file', primaryFile, primaryFile.name);
+          }
+          if (selectedCsvPath) {
+            formData.append('csvPath', selectedCsvPath);
+          }
           formData.append('payload', JSON.stringify(payload));
 
           resultsEl.textContent = `Выполняется расчёт… (${index + 1}/${combinations.length})`;
