@@ -472,6 +472,136 @@
       border-top: 1px solid #bbbbbb;
     }
 
+    .preset-dropdown {
+      position: relative;
+      display: flex;
+      align-items: center;
+    }
+
+    .preset-toggle {
+      min-width: 140px;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      gap: 6px;
+    }
+
+    .preset-toggle::after {
+      content: '▾';
+      font-size: 12px;
+    }
+
+    .preset-dropdown.open .preset-toggle::after {
+      content: '▴';
+    }
+
+    .preset-menu {
+      position: absolute;
+      bottom: calc(100% + 8px);
+      left: 0;
+      display: none;
+      flex-direction: column;
+      min-width: 220px;
+      background: #ffffff;
+      border: 1px solid #bbbbbb;
+      border-radius: 6px;
+      box-shadow: 0 6px 16px rgba(0, 0, 0, 0.15);
+      padding: 6px 0;
+      z-index: 20;
+    }
+
+    .preset-dropdown.open .preset-menu {
+      display: flex;
+    }
+
+    .preset-menu button {
+      background: none;
+      border: none;
+      text-align: left;
+      color: #2a2a2a;
+      font-size: 13px;
+      padding: 8px 14px;
+      cursor: pointer;
+      width: 100%;
+    }
+
+    .preset-menu button:hover,
+    .preset-menu button:focus {
+      background: #f0f0f0;
+      outline: none;
+    }
+
+    .preset-separator {
+      height: 1px;
+      margin: 4px 0;
+      background: #d6d6d6;
+    }
+
+    .preset-list {
+      max-height: 180px;
+      overflow-y: auto;
+      display: flex;
+      flex-direction: column;
+    }
+
+    .preset-item {
+      display: flex;
+      align-items: center;
+      gap: 6px;
+      padding: 2px 8px;
+    }
+
+    .preset-entry {
+      flex: 1;
+      background: none;
+      border: none;
+      text-align: left;
+      color: #2a2a2a;
+      font-size: 13px;
+      padding: 6px 6px;
+      cursor: pointer;
+      border-radius: 4px;
+    }
+
+    .preset-entry:hover,
+    .preset-entry:focus {
+      background: #f0f0f0;
+      outline: none;
+    }
+
+    .preset-delete {
+      background: none;
+      border: none;
+      color: #7a7a7a;
+      font-size: 14px;
+      width: 24px;
+      height: 24px;
+      border-radius: 12px;
+      cursor: pointer;
+      opacity: 0;
+      transition: opacity 0.2s ease;
+      padding: 0;
+      line-height: 24px;
+    }
+
+    .preset-item:hover .preset-delete,
+    .preset-delete:focus {
+      opacity: 1;
+      background: #f0f0f0;
+      outline: none;
+    }
+
+    .preset-empty {
+      display: none;
+      padding: 6px 14px;
+      font-size: 12px;
+      color: #6a6a6a;
+    }
+
+    .preset-import-input {
+      display: none;
+    }
+
     button {
       background: #4a4a4a;
       color: #ffffff;
@@ -902,7 +1032,20 @@
               </div>
 
               <div class="button-group">
-                <button type="button" class="secondary" id="defaultsBtn">Defaults</button>
+                <div class="preset-dropdown" id="presetDropdown">
+                  <button type="button" class="secondary preset-toggle" id="presetToggle">Presets</button>
+                  <div class="preset-menu" id="presetMenu" role="menu" aria-hidden="true">
+                    <button type="button" class="preset-action" data-action="apply-defaults" role="menuitem">Apply defaults</button>
+                    <button type="button" class="preset-action" data-action="save-as" role="menuitem">Save as…</button>
+                    <div class="preset-separator"></div>
+                    <div class="preset-empty" id="presetEmpty">No saved presets yet</div>
+                    <div class="preset-list" id="presetList"></div>
+                    <div class="preset-separator"></div>
+                    <button type="button" class="preset-action" data-action="save-defaults" role="menuitem">Save as defaults</button>
+                    <button type="button" class="preset-action" data-action="import" role="menuitem">Import from CSV…</button>
+                    <input type="file" id="presetImportInput" class="preset-import-input" accept=".csv" />
+                  </div>
+                </div>
                 <div style="display: flex; gap: 10px;">
                   <button type="button" class="secondary" id="cancelBtn">Cancel</button>
                   <button type="submit" id="runBtn">Run</button>
@@ -1272,7 +1415,7 @@
       // 2025-04-01 → 2025-09-01 on a 15 minute timeframe results in 14 689 bars.
       const REFERENCE_BAR_COUNT = 14689;
 
-      const defaults = {
+      let defaults = {
         dateFilter: true,
         backtester: true,
         startDate: '2025-04-01',
@@ -1308,6 +1451,46 @@
         minProfitThreshold: 0
       };
 
+      const DEFAULT_PRESET_KEY = 'defaults';
+      const PRESET_NAME_PATTERN = /^[A-Za-z0-9 _-]{1,64}$/;
+      const PRESET_LABELS = {
+        dateFilter: 'Date Filter',
+        backtester: 'Backtester',
+        startDate: 'Start Date',
+        startTime: 'Start Time',
+        endDate: 'End Date',
+        endTime: 'End Time',
+        trendMATypes: 'Trend MA Types',
+        maLength: 'MA Length',
+        closeCountLong: 'Close Count Long',
+        closeCountShort: 'Close Count Short',
+        stopLongX: 'Stop Long X',
+        stopLongRR: 'Stop Long RR',
+        stopLongLP: 'Stop Long LP',
+        stopShortX: 'Stop Short X',
+        stopShortRR: 'Stop Short RR',
+        stopShortLP: 'Stop Short LP',
+        stopLongMaxPct: 'Stop Long Max %',
+        stopShortMaxPct: 'Stop Short Max %',
+        stopLongMaxDays: 'Stop Long Max Days',
+        stopShortMaxDays: 'Stop Short Max Days',
+        trailRRLong: 'Trail RR Long',
+        trailRRShort: 'Trail RR Short',
+        trailLongTypes: 'Trail MA Long Type',
+        trailLongLength: 'Trail MA Long Length',
+        trailLongOffset: 'Trail MA Long Offset',
+        trailShortTypes: 'Trail MA Short Type',
+        trailShortLength: 'Trail MA Short Length',
+        trailShortOffset: 'Trail MA Short Offset',
+        riskPerTrade: 'Risk Per Trade',
+        contractSize: 'Contract Size',
+        workerProcesses: 'Worker Processes',
+        minProfitFilter: 'Net Profit Filter',
+        minProfitThreshold: 'Net Profit Min %'
+      };
+
+      let knownPresets = [];
+
       const optimizerForm = document.getElementById('optimizerForm');
       const optimizerResultsEl = document.getElementById('optimizerResults');
       const progressContainer = document.getElementById('optimizerProgress');
@@ -1318,6 +1501,12 @@
       const csvFileInputEl = document.getElementById('csvFile');
       const selectedFilesWrapper = document.getElementById('selectedFilesWrapper');
       const selectedFilesList = document.getElementById('selectedFilesList');
+      const presetDropdownEl = document.getElementById('presetDropdown');
+      const presetToggleEl = document.getElementById('presetToggle');
+      const presetMenuEl = document.getElementById('presetMenu');
+      const presetListEl = document.getElementById('presetList');
+      const presetEmptyEl = document.getElementById('presetEmpty');
+      const presetImportInput = document.getElementById('presetImportInput');
 
       function renderSelectedFiles(files) {
         if (!selectedFilesWrapper || !selectedFilesList) {
@@ -1339,6 +1528,70 @@
 
         selectedFilesList.appendChild(fragment);
         selectedFilesWrapper.style.display = 'block';
+      }
+
+      function clonePreset(data) {
+        try {
+          return JSON.parse(JSON.stringify(data || {}));
+        } catch (error) {
+          return {};
+        }
+      }
+
+      function formatPresetLabel(key) {
+        return PRESET_LABELS[key] || key;
+      }
+
+      function showErrorMessage(message) {
+        const errorEl = document.getElementById('error');
+        if (!errorEl) {
+          return;
+        }
+        errorEl.textContent = message;
+        errorEl.style.display = message ? 'block' : 'none';
+      }
+
+      function clearErrorMessage() {
+        showErrorMessage('');
+      }
+
+      function showResultsMessage(message) {
+        const resultsEl = document.getElementById('results');
+        if (!resultsEl) {
+          return;
+        }
+        resultsEl.textContent = message;
+        resultsEl.classList.remove('loading');
+        if (message) {
+          resultsEl.classList.add('ready');
+        } else {
+          resultsEl.classList.remove('ready');
+        }
+      }
+
+      function setCheckboxValue(id, checked) {
+        const element = document.getElementById(id);
+        if (!element) {
+          return;
+        }
+        element.checked = Boolean(checked);
+      }
+
+      function setInputValue(id, value) {
+        const element = document.getElementById(id);
+        if (!element) {
+          return;
+        }
+        if (value === undefined || value === null) {
+          element.value = '';
+        } else {
+          element.value = value;
+        }
+      }
+
+      function parseNumber(value, fallback = 0) {
+        const parsed = Number(value);
+        return Number.isFinite(parsed) ? parsed : fallback;
       }
 
       function getMinProfitElements() {
@@ -1603,67 +1856,458 @@
         });
       }
 
-      function applyDefaults() {
-        document.getElementById('dateFilter').checked = defaults.dateFilter;
-        document.getElementById('backtester').checked = defaults.backtester;
-        document.getElementById('startDate').value = defaults.startDate;
-        document.getElementById('startTime').value = defaults.startTime;
-        document.getElementById('endDate').value = defaults.endDate;
-        document.getElementById('endTime').value = defaults.endTime;
-        document.getElementById('maLength').value = defaults.maLength;
-        document.getElementById('closeCountLong').value = defaults.closeCountLong;
-        document.getElementById('closeCountShort').value = defaults.closeCountShort;
-        document.getElementById('stopLongX').value = defaults.stopLongX;
-        document.getElementById('stopLongRR').value = defaults.stopLongRR;
-        document.getElementById('stopLongLP').value = defaults.stopLongLP;
-        document.getElementById('stopShortX').value = defaults.stopShortX;
-        document.getElementById('stopShortRR').value = defaults.stopShortRR;
-        document.getElementById('stopShortLP').value = defaults.stopShortLP;
-        document.getElementById('stopLongMaxPct').value = defaults.stopLongMaxPct;
-        document.getElementById('stopShortMaxPct').value = defaults.stopShortMaxPct;
-        document.getElementById('stopLongMaxDays').value = defaults.stopLongMaxDays;
-        document.getElementById('stopShortMaxDays').value = defaults.stopShortMaxDays;
-        document.getElementById('trailRRLong').value = defaults.trailRRLong;
-        document.getElementById('trailRRShort').value = defaults.trailRRShort;
-        document.getElementById('trailLongLength').value = defaults.trailLongLength;
-        document.getElementById('trailLongOffset').value = defaults.trailLongOffset;
-        document.getElementById('trailShortLength').value = defaults.trailShortLength;
-        document.getElementById('trailShortOffset').value = defaults.trailShortOffset;
-        document.getElementById('riskPerTrade').value = defaults.riskPerTrade;
-        document.getElementById('contractSize').value = defaults.contractSize;
-        const workerInput = document.getElementById('workerProcesses');
-        if (workerInput) {
-          workerInput.value = defaults.workerProcesses;
+      function applyPresetValues(values, { clearResults = false } = {}) {
+        if (!values || typeof values !== 'object') {
+          return;
         }
+
+        if (Object.prototype.hasOwnProperty.call(values, 'dateFilter')) {
+          setCheckboxValue('dateFilter', values.dateFilter);
+        }
+        if (Object.prototype.hasOwnProperty.call(values, 'backtester')) {
+          setCheckboxValue('backtester', values.backtester);
+        }
+
+        if (Object.prototype.hasOwnProperty.call(values, 'startDate')) {
+          setInputValue('startDate', values.startDate);
+        }
+        if (Object.prototype.hasOwnProperty.call(values, 'startTime')) {
+          setInputValue('startTime', values.startTime);
+        }
+        if (Object.prototype.hasOwnProperty.call(values, 'endDate')) {
+          setInputValue('endDate', values.endDate);
+        }
+        if (Object.prototype.hasOwnProperty.call(values, 'endTime')) {
+          setInputValue('endTime', values.endTime);
+        }
+
+        const numericFields = [
+          'maLength',
+          'closeCountLong',
+          'closeCountShort',
+          'stopLongX',
+          'stopLongRR',
+          'stopLongLP',
+          'stopShortX',
+          'stopShortRR',
+          'stopShortLP',
+          'stopLongMaxPct',
+          'stopShortMaxPct',
+          'stopLongMaxDays',
+          'stopShortMaxDays',
+          'trailRRLong',
+          'trailRRShort',
+          'trailLongLength',
+          'trailLongOffset',
+          'trailShortLength',
+          'trailShortOffset',
+          'riskPerTrade',
+          'contractSize'
+        ];
+        numericFields.forEach((field) => {
+          if (Object.prototype.hasOwnProperty.call(values, field)) {
+            setInputValue(field, values[field]);
+          }
+        });
+
+        if (Object.prototype.hasOwnProperty.call(values, 'workerProcesses')) {
+          const workerInput = document.getElementById('workerProcesses');
+          if (workerInput) {
+            workerInput.value = values.workerProcesses;
+          }
+        }
+
+        if (Object.prototype.hasOwnProperty.call(values, 'trendMATypes') && Array.isArray(values.trendMATypes)) {
+          setCheckboxGroup('trend', values.trendMATypes);
+        }
+        if (Object.prototype.hasOwnProperty.call(values, 'trailLongTypes') && Array.isArray(values.trailLongTypes)) {
+          setCheckboxGroup('trailLong', values.trailLongTypes);
+        }
+        if (Object.prototype.hasOwnProperty.call(values, 'trailShortTypes') && Array.isArray(values.trailShortTypes)) {
+          setCheckboxGroup('trailShort', values.trailShortTypes);
+        }
+
         const { checkbox: minProfitCheckbox, input: minProfitInput } = getMinProfitElements();
-        if (minProfitCheckbox) {
-          minProfitCheckbox.checked = defaults.minProfitFilter;
+        if (minProfitCheckbox && Object.prototype.hasOwnProperty.call(values, 'minProfitFilter')) {
+          minProfitCheckbox.checked = Boolean(values.minProfitFilter);
         }
-        if (minProfitInput) {
-          minProfitInput.value = defaults.minProfitThreshold;
+        if (minProfitInput && Object.prototype.hasOwnProperty.call(values, 'minProfitThreshold')) {
+          setInputValue('minProfitThreshold', values.minProfitThreshold);
         }
-        if (csvFileInputEl) {
-          csvFileInputEl.value = '';
-          renderSelectedFiles([]);
+
+        if (clearResults) {
+          if (csvFileInputEl) {
+            csvFileInputEl.value = '';
+            renderSelectedFiles([]);
+          }
+          const resultsEl = document.getElementById('results');
+          if (resultsEl) {
+            resultsEl.textContent = 'Нажмите «Run» для запуска бэктеста…';
+            resultsEl.classList.remove('ready', 'loading');
+          }
+          clearErrorMessage();
+          if (optimizerResultsEl) {
+            optimizerResultsEl.style.display = 'none';
+            optimizerResultsEl.textContent = '';
+            optimizerResultsEl.classList.remove('ready', 'loading');
+          }
+          if (progressContainer) {
+            progressContainer.style.display = 'none';
+            if (progressFill) {
+              progressFill.style.width = '0%';
+            }
+            if (progressText) {
+              progressText.textContent = 'Processing: 0 / 0 (0%)';
+            }
+          }
         }
-        setCheckboxGroup('trend', defaults.trendMATypes);
-        setCheckboxGroup('trailLong', defaults.trailLongTypes);
-        setCheckboxGroup('trailShort', defaults.trailShortTypes);
-        const resultsEl = document.getElementById('results');
-        resultsEl.textContent = 'Нажмите «Run» для запуска бэктеста…';
-        resultsEl.classList.remove('ready', 'loading');
-        document.getElementById('error').style.display = 'none';
-        if (optimizerResultsEl) {
-          optimizerResultsEl.style.display = 'none';
-          optimizerResultsEl.textContent = '';
-        }
-        if (progressContainer) {
-          progressContainer.style.display = 'none';
-          progressFill.style.width = '0%';
-          progressText.textContent = 'Processing: 0 / 0 (0%)';
-        }
+
         syncMinProfitFilterUI();
         calculateTotalCombinations();
+      }
+
+      function updateDefaults(values) {
+        const merged = { ...defaults, ...clonePreset(values) };
+        defaults = merged;
+      }
+
+      function applyDefaults(options = {}) {
+        const clearResults =
+          options && Object.prototype.hasOwnProperty.call(options, 'clearResults')
+            ? Boolean(options.clearResults)
+            : true;
+        applyPresetValues(defaults, { clearResults });
+      }
+
+      function collectPresetValues() {
+        const trendTypes = collectSelectedTypes('trend');
+        const trailLongTypes = collectSelectedTypes('trailLong');
+        const trailShortTypes = collectSelectedTypes('trailShort');
+        const { checkbox: minProfitCheckbox, input: minProfitInput } = getMinProfitElements();
+        const workerInput = document.getElementById('workerProcesses');
+
+        return {
+          dateFilter: document.getElementById('dateFilter').checked,
+          backtester: document.getElementById('backtester').checked,
+          startDate: document.getElementById('startDate').value.trim(),
+          startTime: document.getElementById('startTime').value.trim(),
+          endDate: document.getElementById('endDate').value.trim(),
+          endTime: document.getElementById('endTime').value.trim(),
+          trendMATypes: trendTypes,
+          maLength: parseNumber(document.getElementById('maLength').value, defaults.maLength),
+          closeCountLong: parseNumber(document.getElementById('closeCountLong').value, defaults.closeCountLong),
+          closeCountShort: parseNumber(document.getElementById('closeCountShort').value, defaults.closeCountShort),
+          stopLongX: parseNumber(document.getElementById('stopLongX').value, defaults.stopLongX),
+          stopLongRR: parseNumber(document.getElementById('stopLongRR').value, defaults.stopLongRR),
+          stopLongLP: parseNumber(document.getElementById('stopLongLP').value, defaults.stopLongLP),
+          stopShortX: parseNumber(document.getElementById('stopShortX').value, defaults.stopShortX),
+          stopShortRR: parseNumber(document.getElementById('stopShortRR').value, defaults.stopShortRR),
+          stopShortLP: parseNumber(document.getElementById('stopShortLP').value, defaults.stopShortLP),
+          stopLongMaxPct: parseNumber(document.getElementById('stopLongMaxPct').value, defaults.stopLongMaxPct),
+          stopShortMaxPct: parseNumber(document.getElementById('stopShortMaxPct').value, defaults.stopShortMaxPct),
+          stopLongMaxDays: parseNumber(document.getElementById('stopLongMaxDays').value, defaults.stopLongMaxDays),
+          stopShortMaxDays: parseNumber(document.getElementById('stopShortMaxDays').value, defaults.stopShortMaxDays),
+          trailRRLong: parseNumber(document.getElementById('trailRRLong').value, defaults.trailRRLong),
+          trailRRShort: parseNumber(document.getElementById('trailRRShort').value, defaults.trailRRShort),
+          trailLongTypes,
+          trailLongLength: parseNumber(document.getElementById('trailLongLength').value, defaults.trailLongLength),
+          trailLongOffset: parseNumber(document.getElementById('trailLongOffset').value, defaults.trailLongOffset),
+          trailShortTypes,
+          trailShortLength: parseNumber(document.getElementById('trailShortLength').value, defaults.trailShortLength),
+          trailShortOffset: parseNumber(document.getElementById('trailShortOffset').value, defaults.trailShortOffset),
+          riskPerTrade: parseNumber(document.getElementById('riskPerTrade').value, defaults.riskPerTrade),
+          contractSize: parseNumber(document.getElementById('contractSize').value, defaults.contractSize),
+          workerProcesses: workerInput
+            ? parseNumber(workerInput.value, defaults.workerProcesses)
+            : defaults.workerProcesses,
+          minProfitFilter: Boolean(minProfitCheckbox && minProfitCheckbox.checked),
+          minProfitThreshold: minProfitInput
+            ? parseNumber(minProfitInput.value, defaults.minProfitThreshold)
+            : defaults.minProfitThreshold,
+        };
+      }
+
+      async function loadPreset(name, { clearResults = false } = {}) {
+        let response;
+        try {
+          response = await fetch(`/api/presets/${encodeURIComponent(name)}`);
+        } catch (error) {
+          throw new Error('Не удалось связаться с сервером для загрузки пресета.');
+        }
+
+        if (!response.ok) {
+          const message = await response.text();
+          throw new Error(message || 'Не удалось загрузить пресет.');
+        }
+
+        const data = await response.json();
+        const values = data?.values || {};
+        if (name.toLowerCase() === DEFAULT_PRESET_KEY) {
+          updateDefaults(values);
+          applyDefaults({ clearResults });
+        } else {
+          applyPresetValues(values, { clearResults });
+        }
+        return values;
+      }
+
+      function renderPresetList() {
+        if (!presetListEl || !presetEmptyEl) {
+          return;
+        }
+
+        presetListEl.innerHTML = '';
+        const userPresets = knownPresets.filter((item) => !item.is_default);
+        if (!userPresets.length) {
+          presetEmptyEl.style.display = 'block';
+          return;
+        }
+
+        presetEmptyEl.style.display = 'none';
+        const fragment = document.createDocumentFragment();
+        userPresets.forEach((item) => {
+          const row = document.createElement('div');
+          row.className = 'preset-item';
+
+          const applyButton = document.createElement('button');
+          applyButton.type = 'button';
+          applyButton.className = 'preset-entry';
+          applyButton.textContent = item.name;
+          applyButton.addEventListener('click', (event) => {
+            event.stopPropagation();
+            handlePresetSelection(item.name);
+          });
+
+          const deleteButton = document.createElement('button');
+          deleteButton.type = 'button';
+          deleteButton.className = 'preset-delete';
+          deleteButton.setAttribute('aria-label', `Удалить пресет ${item.name}`);
+          deleteButton.textContent = '✕';
+          deleteButton.addEventListener('click', (event) => {
+            event.stopPropagation();
+            handlePresetDelete(item.name);
+          });
+
+          row.appendChild(applyButton);
+          row.appendChild(deleteButton);
+          fragment.appendChild(row);
+        });
+
+        presetListEl.appendChild(fragment);
+      }
+
+      async function refreshPresetList(silent = false) {
+        try {
+          const response = await fetch('/api/presets');
+          if (!response.ok) {
+            const message = await response.text();
+            throw new Error(message || 'Не удалось получить список пресетов.');
+          }
+          const data = await response.json();
+          knownPresets = Array.isArray(data?.presets) ? data.presets : [];
+        } catch (error) {
+          knownPresets = [];
+          if (!silent) {
+            showErrorMessage(error.message || 'Не удалось получить список пресетов.');
+          }
+          console.error(error);
+        }
+        renderPresetList();
+      }
+
+      async function savePreset(name, values) {
+        const response = await fetch('/api/presets', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ name, values })
+        });
+        if (!response.ok) {
+          const message = await response.text();
+          throw new Error(message || 'Не удалось сохранить пресет.');
+        }
+        return response.json();
+      }
+
+      async function saveDefaults(values) {
+        const response = await fetch('/api/presets/defaults', {
+          method: 'PUT',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ values })
+        });
+        if (!response.ok) {
+          const message = await response.text();
+          throw new Error(message || 'Не удалось сохранить дефолтные настройки.');
+        }
+        return response.json();
+      }
+
+      async function deletePreset(name) {
+        const response = await fetch(`/api/presets/${encodeURIComponent(name)}`, {
+          method: 'DELETE'
+        });
+        if (!response.ok) {
+          const message = await response.text();
+          throw new Error(message || 'Не удалось удалить пресет.');
+        }
+      }
+
+      async function importPresetFromCsv(file) {
+        const formData = new FormData();
+        formData.append('file', file, file.name);
+
+        const response = await fetch('/api/presets/import-csv', {
+          method: 'POST',
+          body: formData
+        });
+
+        if (!response.ok) {
+          const message = await response.text();
+          throw new Error(message || 'Не удалось импортировать настройки из CSV.');
+        }
+
+        return response.json();
+      }
+
+      async function handleApplyDefaults() {
+        closePresetMenu();
+        try {
+          await loadPreset(DEFAULT_PRESET_KEY, { clearResults: true });
+          clearErrorMessage();
+        } catch (error) {
+          showErrorMessage(error.message || 'Не удалось загрузить дефолтные настройки.');
+        }
+      }
+
+      async function handlePresetSelection(name) {
+        closePresetMenu();
+        try {
+          await loadPreset(name, { clearResults: false });
+          clearErrorMessage();
+        } catch (error) {
+          showErrorMessage(error.message || 'Не удалось загрузить пресет.');
+        }
+      }
+
+      async function handleSaveAsPreset() {
+        closePresetMenu();
+        const values = collectPresetValues();
+        let presetName = '';
+
+        while (true) {
+          const input = window.prompt('Введите имя пресета:', '');
+          if (input === null) {
+            return;
+          }
+          const trimmed = input.trim();
+          if (!trimmed) {
+            window.alert('Имя пресета не может быть пустым.');
+            continue;
+          }
+          if (trimmed.toLowerCase() === DEFAULT_PRESET_KEY) {
+            window.alert('Нельзя использовать имя "defaults".');
+            continue;
+          }
+          if (!PRESET_NAME_PATTERN.test(trimmed)) {
+            window.alert('Имя может содержать только буквы, цифры, пробелы, дефисы и нижнее подчёркивание.');
+            continue;
+          }
+          if (knownPresets.some((item) => item.name.toLowerCase() === trimmed.toLowerCase())) {
+            window.alert('Пресет с таким именем уже существует.');
+            continue;
+          }
+          presetName = trimmed;
+          break;
+        }
+
+        try {
+          await savePreset(presetName, values);
+          await refreshPresetList(false);
+          window.alert(`Пресет «${presetName}» сохранён.`);
+        } catch (error) {
+          showErrorMessage(error.message || 'Не удалось сохранить пресет.');
+        }
+      }
+
+      async function handleSaveDefaults() {
+        closePresetMenu();
+        const values = collectPresetValues();
+        try {
+          const response = await saveDefaults(values);
+          updateDefaults(response?.values || values);
+          window.alert('Текущие настройки сохранены как дефолтные.');
+        } catch (error) {
+          showErrorMessage(error.message || 'Не удалось сохранить дефолтные настройки.');
+        }
+      }
+
+      async function handlePresetDelete(name) {
+        const confirmed = window.confirm(`Удалить пресет «${name}»?`);
+        if (!confirmed) {
+          return;
+        }
+        closePresetMenu();
+        try {
+          await deletePreset(name);
+          await refreshPresetList(false);
+        } catch (error) {
+          showErrorMessage(error.message || 'Не удалось удалить пресет.');
+        }
+      }
+
+      function openPresetMenu() {
+        if (!presetDropdownEl) {
+          return;
+        }
+        presetDropdownEl.classList.add('open');
+        if (presetToggleEl) {
+          presetToggleEl.setAttribute('aria-expanded', 'true');
+        }
+        if (presetMenuEl) {
+          presetMenuEl.setAttribute('aria-hidden', 'false');
+        }
+      }
+
+      function closePresetMenu() {
+        if (!presetDropdownEl) {
+          return;
+        }
+        presetDropdownEl.classList.remove('open');
+        if (presetToggleEl) {
+          presetToggleEl.setAttribute('aria-expanded', 'false');
+        }
+        if (presetMenuEl) {
+          presetMenuEl.setAttribute('aria-hidden', 'true');
+        }
+      }
+
+      function togglePresetMenu() {
+        if (!presetDropdownEl) {
+          return;
+        }
+        if (presetDropdownEl.classList.contains('open')) {
+          closePresetMenu();
+        } else {
+          openPresetMenu();
+        }
+      }
+
+      function handleImportAction() {
+        if (!presetImportInput) {
+          return;
+        }
+        presetImportInput.value = '';
+        presetImportInput.click();
+      }
+
+      async function initializePresets() {
+        try {
+          await loadPreset(DEFAULT_PRESET_KEY, { clearResults: true });
+          clearErrorMessage();
+        } catch (error) {
+          console.error(error);
+          applyDefaults({ clearResults: true });
+        }
+        await refreshPresetList(true);
       }
 
       function composeDateTime(datePart, timePart) {
@@ -2329,13 +2973,79 @@
         resultsEl.classList.add('ready');
       }
 
-      document.getElementById('defaultsBtn').addEventListener('click', () => {
-        applyDefaults();
+      if (presetToggleEl) {
+        presetToggleEl.addEventListener('click', (event) => {
+          event.stopPropagation();
+          togglePresetMenu();
+        });
+      }
+
+      if (presetMenuEl) {
+        presetMenuEl.addEventListener('click', (event) => {
+          event.stopPropagation();
+          const actionButton = event.target.closest('.preset-action');
+          if (!actionButton) {
+            return;
+          }
+          const action = actionButton.dataset.action;
+          if (action === 'apply-defaults') {
+            handleApplyDefaults();
+          } else if (action === 'save-as') {
+            handleSaveAsPreset();
+          } else if (action === 'save-defaults') {
+            handleSaveDefaults();
+          } else if (action === 'import') {
+            handleImportAction();
+          }
+        });
+      }
+
+      if (presetImportInput) {
+        presetImportInput.addEventListener('change', async (event) => {
+          const file = event.target.files && event.target.files[0];
+          if (!file) {
+            presetImportInput.value = '';
+            closePresetMenu();
+            return;
+          }
+          try {
+            const data = await importPresetFromCsv(file);
+            applyPresetValues(data?.values || {}, { clearResults: false });
+            const appliedKeys = Array.from(new Set(data?.applied || []));
+            const appliedLabels = appliedKeys.map((key) => formatPresetLabel(key));
+            const message = appliedLabels.length
+              ? `Импортированы параметры: ${appliedLabels.join(', ')}.`
+              : 'Импорт из CSV не изменил настройки.';
+            showResultsMessage(message);
+            clearErrorMessage();
+          } catch (error) {
+            showErrorMessage(error.message || 'Не удалось импортировать настройки из CSV.');
+          } finally {
+            presetImportInput.value = '';
+            closePresetMenu();
+          }
+        });
+      }
+
+      document.addEventListener('click', (event) => {
+        if (
+          presetDropdownEl &&
+          presetDropdownEl.classList.contains('open') &&
+          !presetDropdownEl.contains(event.target)
+        ) {
+          closePresetMenu();
+        }
+      });
+
+      document.addEventListener('keydown', (event) => {
+        if (event.key === 'Escape') {
+          closePresetMenu();
+        }
       });
 
       document.getElementById('cancelBtn').addEventListener('click', () => {
         document.getElementById('backtestForm').reset();
-        applyDefaults();
+        applyDefaults({ clearResults: true });
       });
 
       document.getElementById('backtestForm').addEventListener('submit', submitForm);
@@ -2347,7 +3057,7 @@
       bindOptimizerInputs();
       bindMinProfitFilterControl();
       bindMASelectors();
-      applyDefaults();
+      initializePresets();
     });
   </script>
 </body>
