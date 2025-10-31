@@ -390,6 +390,7 @@ def _simulate_combination(params_dict: Dict[str, Any]) -> OptimizationResult:
     equity_curve: List[float] = []
     monthly_returns: List[float] = []
     month_start_equity = realized_equity
+    # Track the mark-to-market equity (including open positions) for Sharpe ratio
     last_equity = realized_equity
     gross_profit = 0.0
     gross_loss = 0.0
@@ -603,8 +604,8 @@ def _simulate_combination(params_dict: Dict[str, Any]) -> OptimizationResult:
             current_equity += (entry_price - c) * position_size
         equity_curve.append(current_equity)
 
-        # For Sharpe calculations we track realized equity only
-        last_equity = realized_equity
+        # Track mark-to-market equity for Sharpe ratio calculations
+        last_equity = current_equity
         prev_position = position
 
     equity_series = pd.Series(realized_curve, index=_time_index[: len(realized_curve)])
@@ -612,7 +613,7 @@ def _simulate_combination(params_dict: Dict[str, Any]) -> OptimizationResult:
     max_drawdown_pct = compute_max_drawdown(equity_series)
 
     if has_month_data and month_start_equity > 0:
-        monthly_returns.append((realized_equity / month_start_equity - 1.0) * 100.0)
+        monthly_returns.append((last_equity / month_start_equity - 1.0) * 100.0)
 
     profit_factor: Optional[float]
     if gross_loss > 0:
