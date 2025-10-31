@@ -1,6 +1,7 @@
 """Optimization engine for S_01 TrailingMA grid search."""
 from __future__ import annotations
 
+import bisect
 import itertools
 import math
 import multiprocessing as mp
@@ -23,6 +24,24 @@ from backtest_engine import (
 # Constants
 CHUNK_SIZE = 2000
 
+SCORE_METRIC_ATTRS: Dict[str, str] = {
+    "romad": "romad",
+    "sharpe": "sharpe_ratio",
+    "pf": "profit_factor",
+    "ulcer": "ulcer_index",
+    "recovery": "recovery_factor",
+    "consistency": "consistency_score",
+}
+
+DEFAULT_SCORE_CONFIG: Dict[str, Any] = {
+    "weights": {},
+    "enabled_metrics": {},
+    "invert_metrics": {},
+    "normalization_method": "percentile",
+    "filter_enabled": False,
+    "min_score_threshold": 0.0,
+}
+
 
 @dataclass
 class OptimizationConfig:
@@ -42,6 +61,7 @@ class OptimizationConfig:
     worker_processes: int = 6
     filter_min_profit: bool = False
     min_profit_threshold: float = 0.0
+    score_config: Optional[Dict[str, Any]] = None
 
 
 @dataclass
@@ -73,6 +93,13 @@ class OptimizationResult:
     net_profit_pct: float
     max_drawdown_pct: float
     total_trades: int
+    romad: Optional[float] = None
+    sharpe_ratio: Optional[float] = None
+    profit_factor: Optional[float] = None
+    ulcer_index: Optional[float] = None
+    recovery_factor: Optional[float] = None
+    consistency_score: Optional[float] = None
+    score: float = 0.0
 
 
 # Globals populated inside worker processes
@@ -86,6 +113,7 @@ _lowest_cache: Dict[int, np.ndarray]
 _highest_cache: Dict[int, np.ndarray]
 _atr_values: np.ndarray
 _time_in_range: np.ndarray
+_month_arr: np.ndarray
 _risk_per_trade_pct: float
 _contract_size: float
 _commission_rate: float
@@ -233,6 +261,7 @@ def _init_worker(
 
     global _data_close, _data_high, _data_low, _times, _time_index
     global _ma_cache, _lowest_cache, _highest_cache, _atr_values, _time_in_range
+    global _month_arr
     global _risk_per_trade_pct, _contract_size, _commission_rate
 
     close_series = df["Close"].astype(float)
@@ -244,6 +273,10 @@ def _init_worker(
     _data_low = low_series.to_numpy()
     _time_index = df.index
     _times = df.index.to_numpy()
+    try:
+        _month_arr = _time_index.month.to_numpy(dtype=np.int16)
+    except AttributeError:  # pragma: no cover - defensive
+        _month_arr = pd.to_datetime(_time_index).month.to_numpy(dtype=np.int16)
 
     _ma_cache = {}
     for ma_type, length in ma_specs:
@@ -354,6 +387,13 @@ def _simulate_combination(params_dict: Dict[str, Any]) -> OptimizationResult:
 
     trades_count = 0
     realized_curve: List[float] = []
+    equity_curve: List[float] = []
+    monthly_returns: List[float] = []
+    month_start_equity = realized_equity
+    last_equity = realized_equity
+    gross_profit = 0.0
+    gross_loss = 0.0
+    has_month_data = len(_month_arr) == len(_data_close)
 
     for i in range(len(_data_close)):
         c = float(_data_close[i])
@@ -392,6 +432,11 @@ def _simulate_combination(params_dict: Dict[str, Any]) -> OptimizationResult:
         exit_price: Optional[float] = None
         current_time = _time_index[i]
 
+        if i > 0 and has_month_data and _month_arr[i] != _month_arr[i - 1]:
+            if month_start_equity > 0:
+                monthly_returns.append((last_equity / month_start_equity - 1.0) * 100.0)
+            month_start_equity = last_equity
+
         if position > 0:
             if (
                 not trail_activated_long
@@ -421,6 +466,11 @@ def _simulate_combination(params_dict: Dict[str, Any]) -> OptimizationResult:
             if exit_price is not None:
                 gross_pnl = (exit_price - entry_price) * position_size
                 exit_commission = exit_price * position_size * _commission_rate
+                trade_pnl = gross_pnl - entry_commission - exit_commission
+                if trade_pnl > 0:
+                    gross_profit += trade_pnl
+                elif trade_pnl < 0:
+                    gross_loss += abs(trade_pnl)
                 realized_equity += gross_pnl - exit_commission
                 entry_commission = 0.0
                 position = 0
@@ -462,6 +512,11 @@ def _simulate_combination(params_dict: Dict[str, Any]) -> OptimizationResult:
             if exit_price is not None:
                 gross_pnl = (entry_price - exit_price) * position_size
                 exit_commission = exit_price * position_size * _commission_rate
+                trade_pnl = gross_pnl - entry_commission - exit_commission
+                if trade_pnl > 0:
+                    gross_profit += trade_pnl
+                elif trade_pnl < 0:
+                    gross_loss += abs(trade_pnl)
                 realized_equity += gross_pnl - exit_commission
                 entry_commission = 0.0
                 position = 0
@@ -541,11 +596,75 @@ def _simulate_combination(params_dict: Dict[str, Any]) -> OptimizationResult:
                         realized_equity -= entry_commission
 
         realized_curve.append(realized_equity)
+        current_equity = realized_equity
+        if position > 0 and not math.isnan(entry_price):
+            current_equity += (c - entry_price) * position_size
+        elif position < 0 and not math.isnan(entry_price):
+            current_equity += (entry_price - c) * position_size
+        equity_curve.append(current_equity)
+        last_equity = current_equity
         prev_position = position
 
     equity_series = pd.Series(realized_curve, index=_time_index[: len(realized_curve)])
     net_profit_pct = ((realized_equity - equity) / equity) * 100
     max_drawdown_pct = compute_max_drawdown(equity_series)
+
+    if has_month_data and equity_curve and month_start_equity > 0:
+        monthly_returns.append((last_equity / month_start_equity - 1.0) * 100.0)
+
+    profit_factor: Optional[float]
+    if gross_loss > 0:
+        profit_factor = gross_profit / gross_loss if gross_loss != 0 else None
+    else:
+        if gross_profit > 0:
+            profit_factor = 999.0
+        else:
+            profit_factor = 1.0 if trades_count > 0 else None
+
+    if profit_factor is None:
+        profit_factor = 1.0
+
+    romad: Optional[float]
+    recovery_factor: Optional[float]
+    if net_profit_pct < 0:
+        romad = 0.0
+        recovery_factor = 0.0
+    else:
+        if abs(max_drawdown_pct) < 1e-9:
+            romad = net_profit_pct * 100.0
+            recovery_factor = net_profit_pct * 100.0
+        elif max_drawdown_pct != 0:
+            romad = net_profit_pct / abs(max_drawdown_pct)
+            recovery_factor = net_profit_pct / abs(max_drawdown_pct)
+        else:
+            romad = 0.0
+            recovery_factor = 0.0
+
+    sharpe_ratio: Optional[float] = None
+    if len(monthly_returns) >= 2:
+        monthly_array = np.array(monthly_returns, dtype=float)
+        if monthly_array.size >= 2:
+            avg_return = float(np.mean(monthly_array))
+            sd_return = float(np.std(monthly_array, ddof=0))
+            if sd_return != 0:
+                rfr = (0.02 * 100.0) / 12.0
+                sharpe_ratio = (avg_return - rfr) / sd_return
+
+    ulcer_index: Optional[float] = None
+    if equity_curve:
+        equity_array = np.asarray(equity_curve, dtype=float)
+        if equity_array.size:
+            running_max = np.maximum.accumulate(equity_array)
+            with np.errstate(divide="ignore", invalid="ignore"):
+                drawdowns = np.where(running_max > 0, equity_array / running_max - 1.0, 0.0)
+            drawdown_squared_sum = float(np.square(drawdowns).sum())
+            ulcer_index = math.sqrt(drawdown_squared_sum / equity_array.size) * 100.0
+
+    consistency_score: Optional[float] = None
+    if len(monthly_returns) >= 3:
+        total_months = len(monthly_returns)
+        profitable_months = sum(1 for value in monthly_returns if value is not None and value > 0)
+        consistency_score = (profitable_months / total_months) * 100.0 if total_months > 0 else None
 
     return OptimizationResult(
         ma_type=ma_type,
@@ -573,7 +692,113 @@ def _simulate_combination(params_dict: Dict[str, Any]) -> OptimizationResult:
         net_profit_pct=net_profit_pct,
         max_drawdown_pct=max_drawdown_pct,
         total_trades=trades_count,
+        romad=romad,
+        sharpe_ratio=sharpe_ratio,
+        profit_factor=profit_factor,
+        ulcer_index=ulcer_index,
+        recovery_factor=recovery_factor,
+        consistency_score=consistency_score,
     )
+
+
+def calculate_score(
+    results: List[OptimizationResult],
+    config: Optional[Dict[str, Any]],
+) -> List[OptimizationResult]:
+    """Calculate composite score for optimization results."""
+
+    if not results:
+        return results
+
+    if config is None:
+        config = {}
+
+    normalized_config = DEFAULT_SCORE_CONFIG.copy()
+    normalized_config.update({k: v for k, v in (config or {}).items() if v is not None})
+
+    def _as_bool(value: Any) -> bool:
+        if isinstance(value, bool):
+            return value
+        if isinstance(value, (int, float)):
+            return bool(value)
+        if isinstance(value, str):
+            lowered = value.strip().lower()
+            if lowered in {"true", "1", "yes", "y", "on"}:
+                return True
+            if lowered in {"false", "0", "no", "n", "off"}:
+                return False
+        return False
+
+    weights = normalized_config.get("weights") or {}
+    enabled_metrics = normalized_config.get("enabled_metrics") or {}
+    invert_metrics = normalized_config.get("invert_metrics") or {}
+    filter_enabled = _as_bool(normalized_config.get("filter_enabled", False))
+    try:
+        min_score_threshold = float(normalized_config.get("min_score_threshold", 0.0))
+    except (TypeError, ValueError):
+        min_score_threshold = 0.0
+    min_score_threshold = max(0.0, min(100.0, min_score_threshold))
+
+    normalization_method_raw = normalized_config.get("normalization_method", "percentile")
+    normalization_method = (
+        str(normalization_method_raw).strip().lower() if normalization_method_raw is not None else "percentile"
+    )
+    if normalization_method not in {"", "percentile"}:
+        normalization_method = "percentile"
+
+    metrics_to_normalize: List[str] = []
+    for metric in SCORE_METRIC_ATTRS:
+        if _as_bool(enabled_metrics.get(metric, False)):
+            metrics_to_normalize.append(metric)
+
+    normalized_values: Dict[str, Dict[int, float]] = {}
+    for metric_name in metrics_to_normalize:
+        attr_name = SCORE_METRIC_ATTRS[metric_name]
+        metric_values = [
+            getattr(item, attr_name)
+            for item in results
+            if getattr(item, attr_name) is not None
+        ]
+        if not metric_values:
+            normalized_values[metric_name] = {id(item): 50.0 for item in results}
+            continue
+        sorted_vals = sorted(float(value) for value in metric_values)
+        total = len(sorted_vals)
+        normalized_values[metric_name] = {}
+        invert = _as_bool(invert_metrics.get(metric_name, False))
+        for item in results:
+            value = getattr(item, attr_name)
+            if value is None:
+                rank = 50.0
+            else:
+                idx = bisect.bisect_left(sorted_vals, float(value))
+                rank = (idx / total) * 100.0
+                if invert:
+                    rank = 100.0 - rank
+            normalized_values[metric_name][id(item)] = rank
+
+    for item in results:
+        item.score = 0.0
+        score_total = 0.0
+        weight_total = 0.0
+        for metric_name in metrics_to_normalize:
+            weight_raw = weights.get(metric_name, 0.0)
+            try:
+                weight = float(weight_raw)
+            except (TypeError, ValueError):
+                weight = 0.0
+            weight = max(0.0, min(1.0, weight))
+            if weight <= 0:
+                continue
+            score_total += normalized_values[metric_name][id(item)] * weight
+            weight_total += weight
+        if weight_total > 0:
+            item.score = score_total / weight_total
+
+    if filter_enabled:
+        results = [item for item in results if item.score >= min_score_threshold]
+
+    return results
 
 
 def run_optimization(config: OptimizationConfig) -> List[OptimizationResult]:
@@ -627,6 +852,18 @@ def run_optimization(config: OptimizationConfig) -> List[OptimizationResult]:
             results.extend(batch_results)
             progress_iter.update(len(batch) - 1)
 
+    if config.score_config is None:
+        score_config = DEFAULT_SCORE_CONFIG
+    else:
+        score_config = config.score_config
+    results = calculate_score(results, score_config)
+
+    if config.filter_min_profit:
+        threshold = float(config.min_profit_threshold)
+        results = [
+            item for item in results if float(item.net_profit_pct) >= threshold
+        ]
+
     results.sort(key=lambda item: item.net_profit_pct, reverse=True)
     return results
 
@@ -657,12 +894,25 @@ CSV_COLUMN_SPECS: List[Tuple[str, Optional[str], str, Optional[str]]] = [
     ("Net Profit%", None, "net_profit_pct", "percent"),
     ("Max DD%", None, "max_drawdown_pct", "percent"),
     ("Trades", None, "total_trades", None),
+    ("Score", None, "score", "float"),
+    ("RoMaD", None, "romad", "optional_float"),
+    ("Sharpe Ratio", None, "sharpe_ratio", "optional_float"),
+    ("Profit Factor", None, "profit_factor", "optional_float"),
+    ("Ulcer Index", None, "ulcer_index", "optional_float"),
+    ("Recovery Factor", None, "recovery_factor", "optional_float"),
+    ("Consistency Score", None, "consistency_score", "optional_float"),
 ]
 
 
 def _format_csv_value(value: Any, formatter: Optional[str]) -> str:
     if formatter == "percent":
         return f"{float(value):.2f}%"
+    if formatter == "float":
+        return f"{float(value):.2f}"
+    if formatter == "optional_float":
+        if value is None:
+            return ""
+        return f"{float(value):.2f}"
     return str(value)
 
 
