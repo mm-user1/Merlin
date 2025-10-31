@@ -58,6 +58,10 @@ def main() -> None:
     print(f"Net Profit %: {result.net_profit_pct:.2f}")
     print(f"Max Portfolio Drawdown %: {result.max_drawdown_pct:.2f}")
     print(f"Total Trades: {result.total_trades}")
+    if result.sharpe_ratio is not None:
+        print(f"Sharpe Ratio: {result.sharpe_ratio:.2f}")
+    else:
+        print("Sharpe Ratio: N/A")
 
 
 if __name__ == "__main__":

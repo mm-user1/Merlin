@@ -46,12 +46,14 @@ class StrategyResult:
     max_drawdown_pct: float
     total_trades: int
     trades: List[TradeRecord]
+    sharpe_ratio: Optional[float] = None
 
     def to_dict(self) -> Dict[str, Any]:
         return {
             "net_profit_pct": self.net_profit_pct,
             "max_drawdown_pct": self.max_drawdown_pct,
             "total_trades": self.total_trades,
+            "sharpe_ratio": self.sharpe_ratio,
         }
 
 
@@ -440,7 +442,18 @@ def run_strategy(df: pd.DataFrame, params: StrategyParams) -> StrategyResult:
 
     trades: List[TradeRecord] = []
     realized_curve: List[float] = []
+    monthly_returns: List[float] = []
 
+    if len(times) > 0:
+        try:
+            month_periods = times.tz_convert("UTC").tz_localize(None).to_period("M")
+        except TypeError:
+            month_periods = times.to_period("M")
+    else:
+        month_periods = pd.PeriodIndex([], freq="M")
+
+    month_start_equity = realized_equity
+    last_equity = realized_equity
     for i in range(len(df)):
         time = times[i]
         c = close.iat[i]
@@ -452,6 +465,21 @@ def run_strategy(df: pd.DataFrame, params: StrategyParams) -> StrategyResult:
         highest_value = highest_short.iat[i]
         trail_long_value = trail_ma_long.iat[i]
         trail_short_value = trail_ma_short.iat[i]
+
+        in_range = time_in_range[i]
+        if in_range and i > 0 and not time_in_range[i - 1]:
+            month_start_equity = last_equity
+
+        if (
+            in_range
+            and i > 0
+            and time_in_range[i - 1]
+            and len(month_periods) > i
+            and month_periods[i] != month_periods[i - 1]
+        ):
+            if month_start_equity > 0:
+                monthly_returns.append((last_equity / month_start_equity - 1.0) * 100.0)
+            month_start_equity = last_equity
 
         if not np.isnan(ma_value):
             if c > ma_value:
@@ -646,6 +674,7 @@ def run_strategy(df: pd.DataFrame, params: StrategyParams) -> StrategyResult:
         elif position < 0 and not math.isnan(entry_price):
             mark_to_market += (entry_price - c) * position_size
         realized_curve.append(realized_equity)
+        last_equity = mark_to_market
         prev_position = position
 
     equity_series = pd.Series(realized_curve, index=df.index[: len(realized_curve)])
@@ -653,9 +682,21 @@ def run_strategy(df: pd.DataFrame, params: StrategyParams) -> StrategyResult:
     max_drawdown_pct = compute_max_drawdown(equity_series)
     total_trades = len(trades)
 
+    sharpe_ratio: Optional[float] = None
+    n_months = len(monthly_returns)
+    if n_months >= 2:
+        monthly_array = np.array(monthly_returns, dtype=float)
+        avg_return = float(np.mean(monthly_array))
+        sd_return = float(np.std(monthly_array, ddof=1)) if n_months > 1 else 0.0
+        if sd_return != 0:
+            rfr = (0.02 * 100.0) / 12.0
+            scale = math.sqrt(n_months / 12.0)
+            sharpe_ratio = ((avg_return - rfr) / sd_return) * scale
+
     return StrategyResult(
         net_profit_pct=net_profit_pct,
         max_drawdown_pct=max_drawdown_pct,
         total_trades=total_trades,
         trades=trades,
+        sharpe_ratio=sharpe_ratio,
     )
