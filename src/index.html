@@ -264,6 +264,27 @@
       font-weight: 600;
     }
 
+    .score-metric-row {
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      padding: 6px 0;
+    }
+
+    .score-metric-row input[type="checkbox"] {
+      width: 16px;
+      height: 16px;
+    }
+
+    .score-metric-row input[type="number"] {
+      width: 70px;
+    }
+
+    .score-metric-row label {
+      min-width: 140px;
+      font-size: 13px;
+    }
+
     .date-input {
       width: 150px;
     }
@@ -786,6 +807,94 @@
                         disabled
                       />
                     </div>
+                  </div>
+                </div>
+              </div>
+
+              <div class="section">
+                <div class="section-title">Score Configuration</div>
+
+                <div class="form-group">
+                  <div class="filter-group" id="scoreFilterGroup">
+                    <div class="checkbox-group">
+                      <input type="checkbox" id="scoreFilter" />
+                      <label for="scoreFilter">Score Filter</label>
+                    </div>
+                    <div class="filter-input-group">
+                      <label for="scoreThreshold">Min Score</label>
+                      <input
+                        type="number"
+                        id="scoreThreshold"
+                        min="0"
+                        max="100"
+                        step="0.1"
+                        value="60"
+                        disabled
+                      />
+                    </div>
+                    <button type="button" class="secondary" id="scoreConfigBtn" style="margin-left: 10px;">⚙️ Configure</button>
+                  </div>
+                </div>
+
+                <div class="collapsible" id="scoreConfigCollapsible">
+                  <div class="collapsible-header">
+                    <span class="collapsible-icon">▼</span>
+                    <span class="section-title" style="margin: 0; border: none;">Score Formula</span>
+                  </div>
+                  <div class="collapsible-content">
+                    <div style="font-size: 12px; color: #5a5a5a; margin-bottom: 10px;">
+                      Adjust weights (0.00-1.00) for each metric. Disabled metrics are excluded from Score.
+                    </div>
+
+                    <div class="param-group" style="flex-direction: column; gap: 8px;">
+                      <div class="score-metric-row">
+                        <input type="checkbox" id="metric-romad" checked />
+                        <label for="metric-romad" style="min-width: 140px;">RoMaD</label>
+                        <input type="number" id="weight-romad" step="0.05" min="0" max="1" value="0.25" style="width: 70px;" />
+                        <span style="font-size: 11px; color: #777;">Profit / |MaxDD|</span>
+                      </div>
+
+                      <div class="score-metric-row">
+                        <input type="checkbox" id="metric-sharpe" checked />
+                        <label for="metric-sharpe" style="min-width: 140px;">Sharpe Ratio</label>
+                        <input type="number" id="weight-sharpe" step="0.05" min="0" max="1" value="0.20" style="width: 70px;" />
+                        <span style="font-size: 11px; color: #777;">Risk-adjusted return</span>
+                      </div>
+
+                      <div class="score-metric-row">
+                        <input type="checkbox" id="metric-pf" checked />
+                        <label for="metric-pf" style="min-width: 140px;">Profit Factor</label>
+                        <input type="number" id="weight-pf" step="0.05" min="0" max="1" value="0.20" style="width: 70px;" />
+                        <span style="font-size: 11px; color: #777;">Gross Win / Loss</span>
+                      </div>
+
+                      <div class="score-metric-row">
+                        <input type="checkbox" id="metric-ulcer" checked />
+                        <label for="metric-ulcer" style="min-width: 140px;">Ulcer Index</label>
+                        <input type="number" id="weight-ulcer" step="0.05" min="0" max="1" value="0.15" style="width: 70px;" />
+                        <input type="checkbox" id="invert-ulcer" checked style="margin-left: 8px;" />
+                        <label for="invert-ulcer" style="font-size: 11px; min-width: auto;">Invert</label>
+                      </div>
+
+                      <div class="score-metric-row">
+                        <input type="checkbox" id="metric-recovery" checked />
+                        <label for="metric-recovery" style="min-width: 140px;">Recovery Factor</label>
+                        <input type="number" id="weight-recovery" step="0.05" min="0" max="1" value="0.10" style="width: 70px;" />
+                      </div>
+
+                      <div class="score-metric-row">
+                        <input type="checkbox" id="metric-consistency" checked />
+                        <label for="metric-consistency" style="min-width: 140px;">Consistency Score</label>
+                        <input type="number" id="weight-consistency" step="0.05" min="0" max="1" value="0.10" style="width: 70px;" />
+                        <span style="font-size: 11px; color: #777;">Profitable months %</span>
+                      </div>
+                    </div>
+
+                    <div style="margin-top: 12px; padding: 8px; background: #fff; border: 1px solid #ccc; border-radius: 3px; font-size: 12px;">
+                      <strong>Formula Preview:</strong> <span id="formulaPreview">Calculating...</span>
+                    </div>
+
+                    <button type="button" class="secondary" id="resetScoreBtn" style="margin-top: 10px;">Reset to Defaults</button>
                   </div>
                 </div>
               </div>
@@ -1444,6 +1553,28 @@
       // 2025-04-01 → 2025-09-01 on a 15 minute timeframe results in 14 689 bars.
       const REFERENCE_BAR_COUNT = 14689;
 
+      const SCORE_METRICS = ['romad', 'sharpe', 'pf', 'ulcer', 'recovery', 'consistency'];
+      const SCORE_DEFAULT_THRESHOLD = 60;
+      const SCORE_DEFAULT_WEIGHTS = {
+        romad: 0.25,
+        sharpe: 0.20,
+        pf: 0.20,
+        ulcer: 0.15,
+        recovery: 0.10,
+        consistency: 0.10
+      };
+      const SCORE_DEFAULT_ENABLED = {
+        romad: true,
+        sharpe: true,
+        pf: true,
+        ulcer: true,
+        recovery: true,
+        consistency: true
+      };
+      const SCORE_DEFAULT_INVERT = {
+        ulcer: true
+      };
+
       let defaults = {
         dateFilter: true,
         backtester: true,
@@ -1478,7 +1609,12 @@
         contractSize: 0.01,
         workerProcesses: 6,
         minProfitFilter: false,
-        minProfitThreshold: 0
+        minProfitThreshold: 0,
+        scoreFilterEnabled: false,
+        scoreThreshold: SCORE_DEFAULT_THRESHOLD,
+        scoreWeights: { ...SCORE_DEFAULT_WEIGHTS },
+        scoreEnabledMetrics: { ...SCORE_DEFAULT_ENABLED },
+        scoreInvertMetrics: { ...SCORE_DEFAULT_INVERT }
       };
 
       const DEFAULT_PRESET_KEY = 'defaults';
@@ -1517,7 +1653,12 @@
         contractSize: 'Contract Size',
         workerProcesses: 'Worker Processes',
         minProfitFilter: 'Net Profit Filter',
-        minProfitThreshold: 'Net Profit Min %'
+        minProfitThreshold: 'Net Profit Min %',
+        scoreFilterEnabled: 'Score Filter',
+        scoreThreshold: 'Score Min Score',
+        scoreWeights: 'Score Weights',
+        scoreEnabledMetrics: 'Score Enabled Metrics',
+        scoreInvertMetrics: 'Score Invert Metrics'
       };
 
       let knownPresets = [];
@@ -1643,6 +1784,14 @@
         };
       }
 
+      function getScoreElements() {
+        return {
+          checkbox: document.getElementById('scoreFilter'),
+          input: document.getElementById('scoreThreshold'),
+          group: document.getElementById('scoreFilterGroup'),
+        };
+      }
+
       function syncMinProfitFilterUI() {
         const { checkbox, input, group } = getMinProfitElements();
         if (!checkbox || !input) {
@@ -1654,6 +1803,157 @@
         if (group) {
           group.classList.toggle('active', isChecked);
         }
+      }
+
+      function syncScoreFilterUI() {
+        const { checkbox, input, group } = getScoreElements();
+        if (!checkbox || !input) {
+          return;
+        }
+
+        const isChecked = Boolean(checkbox.checked);
+        input.disabled = !isChecked;
+        if (group) {
+          group.classList.toggle('active', isChecked);
+        }
+      }
+
+      function readScoreUIState() {
+        const { checkbox, input } = getScoreElements();
+        const weights = {};
+        const enabled = {};
+        SCORE_METRICS.forEach((metric) => {
+          const metricCheckbox = document.getElementById(`metric-${metric}`);
+          const weightInput = document.getElementById(`weight-${metric}`);
+          enabled[metric] = Boolean(metricCheckbox && metricCheckbox.checked);
+          const rawWeight = weightInput ? Number(weightInput.value) : NaN;
+          const fallback = SCORE_DEFAULT_WEIGHTS[metric] ?? 0;
+          const parsedWeight = Number.isFinite(rawWeight) ? rawWeight : fallback;
+          weights[metric] = Math.min(1, Math.max(0, parsedWeight));
+        });
+
+        const invertCheckbox = document.getElementById('invert-ulcer');
+        const invert = {
+          ulcer: Boolean(invertCheckbox && invertCheckbox.checked),
+        };
+
+        const thresholdRaw = input ? Number(input.value) : NaN;
+        const threshold = Number.isFinite(thresholdRaw)
+          ? Math.min(100, Math.max(0, thresholdRaw))
+          : SCORE_DEFAULT_THRESHOLD;
+
+        return {
+          scoreFilterEnabled: Boolean(checkbox && checkbox.checked),
+          scoreThreshold: threshold,
+          scoreWeights: weights,
+          scoreEnabledMetrics: enabled,
+          scoreInvertMetrics: invert,
+        };
+      }
+
+      function applyScoreSettings(settings = {}) {
+        const filterCheckbox = document.getElementById('scoreFilter');
+        const thresholdInput = document.getElementById('scoreThreshold');
+        const formulaPreview = document.getElementById('formulaPreview');
+
+        const effectiveWeights = { ...SCORE_DEFAULT_WEIGHTS, ...(settings.scoreWeights || {}) };
+        const effectiveEnabled = { ...SCORE_DEFAULT_ENABLED, ...(settings.scoreEnabledMetrics || {}) };
+        const effectiveInvert = { ...SCORE_DEFAULT_INVERT, ...(settings.scoreInvertMetrics || {}) };
+
+        const filterEnabled = Object.prototype.hasOwnProperty.call(settings, 'scoreFilterEnabled')
+          ? Boolean(settings.scoreFilterEnabled)
+          : Boolean(defaults.scoreFilterEnabled);
+        const thresholdValue = Object.prototype.hasOwnProperty.call(settings, 'scoreThreshold')
+          ? Number(settings.scoreThreshold)
+          : Number(defaults.scoreThreshold);
+
+        if (filterCheckbox) {
+          filterCheckbox.checked = filterEnabled;
+        }
+        if (thresholdInput) {
+          const safeValue = Number.isFinite(thresholdValue)
+            ? Math.min(100, Math.max(0, thresholdValue))
+            : SCORE_DEFAULT_THRESHOLD;
+          thresholdInput.value = safeValue;
+        }
+
+        SCORE_METRICS.forEach((metric) => {
+          const metricCheckbox = document.getElementById(`metric-${metric}`);
+          const weightInput = document.getElementById(`weight-${metric}`);
+          if (metricCheckbox) {
+            metricCheckbox.checked = Boolean(effectiveEnabled[metric]);
+          }
+          if (weightInput) {
+            const weightValue = Number.isFinite(Number(effectiveWeights[metric]))
+              ? Math.min(1, Math.max(0, Number(effectiveWeights[metric])))
+              : SCORE_DEFAULT_WEIGHTS[metric];
+            weightInput.value = weightValue;
+          }
+        });
+
+        const invertCheckbox = document.getElementById('invert-ulcer');
+        if (invertCheckbox) {
+          invertCheckbox.checked = Boolean(effectiveInvert.ulcer);
+        }
+
+        syncScoreFilterUI();
+        if (formulaPreview) {
+          updateScoreFormulaPreview();
+        }
+      }
+
+      function updateScoreFormulaPreview() {
+        const previewEl = document.getElementById('formulaPreview');
+        if (!previewEl) {
+          return;
+        }
+
+        const state = readScoreUIState();
+        const enabledWeights = SCORE_METRICS
+          .filter((metric) => state.scoreEnabledMetrics[metric] && state.scoreWeights[metric] > 0)
+          .map((metric) => {
+            const labelMap = {
+              romad: 'RoMaD',
+              sharpe: 'Sharpe Ratio',
+              pf: 'Profit Factor',
+              ulcer: 'Ulcer Index',
+              recovery: 'Recovery Factor',
+              consistency: 'Consistency Score',
+            };
+            const label = labelMap[metric] || metric;
+            const weight = state.scoreWeights[metric];
+            return `${weight.toFixed(2)}×${label}`;
+          });
+
+        if (!enabledWeights.length) {
+          previewEl.textContent = 'Score disabled (no metrics enabled).';
+          return;
+        }
+        previewEl.textContent = `Score = ${enabledWeights.join(' + ')}`;
+      }
+
+      function collectScoreConfig() {
+        const state = readScoreUIState();
+        const config = {
+          filter_enabled: state.scoreFilterEnabled,
+          min_score_threshold: state.scoreThreshold,
+          weights: {},
+          enabled_metrics: {},
+          invert_metrics: {},
+          normalization_method: 'percentile'
+        };
+
+        SCORE_METRICS.forEach((metric) => {
+          config.enabled_metrics[metric] = Boolean(state.scoreEnabledMetrics[metric]);
+          const normalizedWeight = Math.min(1, Math.max(0, state.scoreWeights[metric]));
+          config.weights[metric] = config.enabled_metrics[metric] ? normalizedWeight : 0;
+        });
+
+        if (state.scoreInvertMetrics.ulcer) {
+          config.invert_metrics.ulcer = true;
+        }
+
+        return config;
       }
 
       if (csvFileInputEl) {
@@ -1992,6 +2292,31 @@
           setInputValue('minProfitThreshold', values.minProfitThreshold);
         }
 
+        const scoreSettings = {
+          scoreFilterEnabled: Object.prototype.hasOwnProperty.call(values, 'scoreFilterEnabled')
+            ? values.scoreFilterEnabled
+            : defaults.scoreFilterEnabled,
+          scoreThreshold: Object.prototype.hasOwnProperty.call(values, 'scoreThreshold')
+            ? values.scoreThreshold
+            : defaults.scoreThreshold,
+          scoreWeights: clonePreset(
+            Object.prototype.hasOwnProperty.call(values, 'scoreWeights')
+              ? values.scoreWeights
+              : defaults.scoreWeights
+          ),
+          scoreEnabledMetrics: clonePreset(
+            Object.prototype.hasOwnProperty.call(values, 'scoreEnabledMetrics')
+              ? values.scoreEnabledMetrics
+              : defaults.scoreEnabledMetrics
+          ),
+          scoreInvertMetrics: clonePreset(
+            Object.prototype.hasOwnProperty.call(values, 'scoreInvertMetrics')
+              ? values.scoreInvertMetrics
+              : defaults.scoreInvertMetrics
+          ),
+        };
+        applyScoreSettings(scoreSettings);
+
         if (clearResults) {
           if (csvFileInputEl) {
             csvFileInputEl.value = '';
@@ -2021,6 +2346,8 @@
         const currentFiles = csvFileInputEl ? Array.from(csvFileInputEl.files || []) : [];
         renderSelectedFiles(currentFiles);
         syncMinProfitFilterUI();
+        syncScoreFilterUI();
+        updateScoreFormulaPreview();
         calculateTotalCombinations();
       }
 
@@ -2044,6 +2371,7 @@
         const { checkbox: minProfitCheckbox, input: minProfitInput } = getMinProfitElements();
         const workerInput = document.getElementById('workerProcesses');
         const csvPathValue = typeof selectedCsvPath === 'string' ? selectedCsvPath.trim() : '';
+        const scoreState = readScoreUIState();
 
         return {
           dateFilter: document.getElementById('dateFilter').checked,
@@ -2084,6 +2412,11 @@
           minProfitThreshold: minProfitInput
             ? parseNumber(minProfitInput.value, defaults.minProfitThreshold)
             : defaults.minProfitThreshold,
+          scoreFilterEnabled: Boolean(scoreState.scoreFilterEnabled),
+          scoreThreshold: scoreState.scoreThreshold,
+          scoreWeights: { ...scoreState.scoreWeights },
+          scoreEnabledMetrics: { ...scoreState.scoreEnabledMetrics },
+          scoreInvertMetrics: { ...scoreState.scoreInvertMetrics },
         };
       }
 
@@ -2801,7 +3134,8 @@
           atr_period: 14,
           worker_processes: workerProcesses,
           filter_min_profit: filterEnabled,
-          min_profit_threshold: minProfitThreshold
+          min_profit_threshold: minProfitThreshold,
+          score_config: collectScoreConfig()
         };
       }
 
@@ -3005,6 +3339,61 @@
         syncMinProfitFilterUI();
       }
 
+      function bindScoreControls() {
+        const { checkbox, input } = getScoreElements();
+        if (checkbox) {
+          checkbox.addEventListener('change', () => {
+            syncScoreFilterUI();
+            updateScoreFormulaPreview();
+          });
+        }
+        if (input) {
+          input.addEventListener('input', updateScoreFormulaPreview);
+        }
+
+        SCORE_METRICS.forEach((metric) => {
+          const metricCheckbox = document.getElementById(`metric-${metric}`);
+          const weightInput = document.getElementById(`weight-${metric}`);
+          if (metricCheckbox) {
+            metricCheckbox.addEventListener('change', updateScoreFormulaPreview);
+          }
+          if (weightInput) {
+            weightInput.addEventListener('input', updateScoreFormulaPreview);
+          }
+        });
+
+        const invertCheckbox = document.getElementById('invert-ulcer');
+        if (invertCheckbox) {
+          invertCheckbox.addEventListener('change', updateScoreFormulaPreview);
+        }
+
+        const configButton = document.getElementById('scoreConfigBtn');
+        const collapsible = document.getElementById('scoreConfigCollapsible');
+        if (configButton && collapsible) {
+          configButton.addEventListener('click', () => {
+            const isOpen = collapsible.classList.toggle('open');
+            configButton.setAttribute('aria-expanded', String(isOpen));
+          });
+        }
+
+        const resetButton = document.getElementById('resetScoreBtn');
+        if (resetButton) {
+          resetButton.addEventListener('click', () => {
+            applyScoreSettings({
+              scoreFilterEnabled: false,
+              scoreThreshold: SCORE_DEFAULT_THRESHOLD,
+              scoreWeights: clonePreset(SCORE_DEFAULT_WEIGHTS),
+              scoreEnabledMetrics: clonePreset(SCORE_DEFAULT_ENABLED),
+              scoreInvertMetrics: clonePreset(SCORE_DEFAULT_INVERT),
+            });
+            updateScoreFormulaPreview();
+          });
+        }
+
+        syncScoreFilterUI();
+        updateScoreFormulaPreview();
+      }
+
       async function submitForm(event) {
         event.preventDefault();
         const resultsEl = document.getElementById('results');
@@ -3192,6 +3581,7 @@
 
       bindOptimizerInputs();
       bindMinProfitFilterControl();
+      bindScoreControls();
       bindMASelectors();
       initializePresets();
     });

@@ -34,6 +34,38 @@ MA_TYPES: Tuple[str, ...] = (
     "VWAP",
 )
 
+SCORE_METRIC_KEYS: Tuple[str, ...] = (
+    "romad",
+    "sharpe",
+    "pf",
+    "ulcer",
+    "recovery",
+    "consistency",
+)
+
+DEFAULT_OPTIMIZER_SCORE_CONFIG: Dict[str, Any] = {
+    "filter_enabled": False,
+    "min_score_threshold": 60.0,
+    "weights": {
+        "romad": 0.25,
+        "sharpe": 0.20,
+        "pf": 0.20,
+        "ulcer": 0.15,
+        "recovery": 0.10,
+        "consistency": 0.10,
+    },
+    "enabled_metrics": {
+        "romad": True,
+        "sharpe": True,
+        "pf": True,
+        "ulcer": True,
+        "recovery": True,
+        "consistency": True,
+    },
+    "invert_metrics": {"ulcer": True},
+    "normalization_method": "percentile",
+}
+
 PRESETS_DIR = Path(__file__).resolve().parent / "Presets"
 DEFAULT_PRESET_NAME = "defaults"
 VALID_PRESET_NAME_RE = re.compile(r"^[A-Za-z0-9 _\-]{1,64}$")
@@ -72,11 +104,30 @@ DEFAULT_PRESET: Dict[str, Any] = {
     "workerProcesses": 6,
     "minProfitFilter": False,
     "minProfitThreshold": 0.0,
+    "scoreFilterEnabled": False,
+    "scoreThreshold": 60.0,
+    "scoreWeights": {
+        "romad": 0.25,
+        "sharpe": 0.20,
+        "pf": 0.20,
+        "ulcer": 0.15,
+        "recovery": 0.10,
+        "consistency": 0.10,
+    },
+    "scoreEnabledMetrics": {
+        "romad": True,
+        "sharpe": True,
+        "pf": True,
+        "ulcer": True,
+        "recovery": True,
+        "consistency": True,
+    },
+    "scoreInvertMetrics": {"ulcer": True},
     "csvPath": "",
 }
 
 
-BOOL_FIELDS = {"dateFilter", "backtester", "minProfitFilter"}
+BOOL_FIELDS = {"dateFilter", "backtester", "minProfitFilter", "scoreFilterEnabled"}
 INT_FIELDS = {
     "maLength",
     "closeCountLong",
@@ -103,6 +154,7 @@ FLOAT_FIELDS = {
     "riskPerTrade",
     "contractSize",
     "minProfitThreshold",
+    "scoreThreshold",
 }
 
 LIST_FIELDS = {"trendMATypes", "trailLongTypes", "trailShortTypes"}
@@ -595,6 +647,74 @@ def _build_optimization_config(csv_file, payload: dict, worker_processes=None) -
                 return False
         return default
 
+    def _sanitize_score_config(raw_config: Any) -> Dict[str, Any]:
+        source = raw_config if isinstance(raw_config, dict) else {}
+        normalized = json.loads(json.dumps(DEFAULT_OPTIMIZER_SCORE_CONFIG))
+
+        filter_value = source.get("filter_enabled")
+        if filter_value is None:
+            filter_value = source.get("filterEnabled")
+        normalized["filter_enabled"] = _parse_bool(
+            filter_value, normalized.get("filter_enabled", False)
+        )
+
+        threshold_value = source.get("min_score_threshold")
+        if threshold_value is None:
+            threshold_value = source.get("minScoreThreshold")
+        try:
+            threshold = float(threshold_value)
+        except (TypeError, ValueError):
+            threshold = normalized.get("min_score_threshold", 0.0)
+        normalized["min_score_threshold"] = max(0.0, min(100.0, threshold))
+
+        weights_raw = source.get("weights")
+        if isinstance(weights_raw, dict):
+            weights: Dict[str, float] = {}
+            for key in SCORE_METRIC_KEYS:
+                try:
+                    weight_value = float(weights_raw.get(key, normalized["weights"].get(key, 0.0)))
+                except (TypeError, ValueError):
+                    weight_value = normalized["weights"].get(key, 0.0)
+                weights[key] = max(0.0, min(1.0, weight_value))
+            normalized["weights"].update(weights)
+
+        enabled_raw = source.get("enabled_metrics")
+        if enabled_raw is None:
+            enabled_raw = source.get("enabledMetrics")
+        if isinstance(enabled_raw, dict):
+            enabled: Dict[str, bool] = {}
+            for key in SCORE_METRIC_KEYS:
+                enabled[key] = _parse_bool(
+                    enabled_raw.get(key, normalized["enabled_metrics"].get(key, False)),
+                    normalized["enabled_metrics"].get(key, False),
+                )
+            normalized["enabled_metrics"].update(enabled)
+
+        invert_raw = source.get("invert_metrics")
+        if invert_raw is None:
+            invert_raw = source.get("invertMetrics")
+        invert_flags: Dict[str, bool] = {}
+        if isinstance(invert_raw, dict):
+            for key in SCORE_METRIC_KEYS:
+                invert_flags[key] = _parse_bool(
+                    invert_raw.get(key, False),
+                    False,
+                )
+        else:
+            for key in SCORE_METRIC_KEYS:
+                invert_flags[key] = normalized["invert_metrics"].get(key, False)
+        normalized["invert_metrics"] = {
+            key: value for key, value in invert_flags.items() if value
+        }
+
+        normalization_value = source.get("normalization_method")
+        if normalization_value is None:
+            normalization_value = source.get("normalizationMethod")
+        if isinstance(normalization_value, str) and normalization_value.strip():
+            normalized["normalization_method"] = normalization_value.strip().lower()
+
+        return normalized
+
     enabled_params = payload.get("enabled_params")
     if not isinstance(enabled_params, dict):
         raise ValueError("enabled_params must be a dictionary.")
@@ -664,6 +784,12 @@ def _build_optimization_config(csv_file, payload: dict, worker_processes=None) -
         worker_processes_value = 1
     elif worker_processes_value > 32:
         worker_processes_value = 32
+
+    score_config_payload = payload.get("score_config")
+    if score_config_payload is None:
+        score_config_payload = payload.get("scoreConfig")
+    score_config = _sanitize_score_config(score_config_payload)
+
     return OptimizationConfig(
         csv_file=csv_file,
         enabled_params=enabled_params,
@@ -679,6 +805,7 @@ def _build_optimization_config(csv_file, payload: dict, worker_processes=None) -
         worker_processes=worker_processes_value,
         filter_min_profit=filter_min_profit,
         min_profit_threshold=min_profit_threshold,
+        score_config=score_config,
     )
 
 
