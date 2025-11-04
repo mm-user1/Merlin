@@ -2,7 +2,6 @@ numpy
 pandas
 matplotlib
 backtesting
-dearpygui
 flask
 tqdm
 optuna==4.4.0
