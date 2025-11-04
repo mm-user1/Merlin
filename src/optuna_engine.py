@@ -315,11 +315,21 @@ class OptunaOptimizer:
             self.pruned_trials += 1
             raise optuna.TrialPruned("Below minimum profit threshold")
 
+        # For composite score target, calculate score dynamically based on all results so far
+        score_config = self.base_config.score_config or DEFAULT_SCORE_CONFIG
         objective_value: float
+
         if self.optuna_config.target == "score":
-            # Score will be calculated after optimization completes
-            # Use RoMaD as temporary objective during optimization
-            objective_value = float(result.romad or 0.0)
+            # Add current result to accumulated results
+            temp_results = self.trial_results + [result]
+            # Calculate scores for all results using percentile ranking
+            scored_results = calculate_score(temp_results, score_config)
+            # Get the score of the current (last) result
+            if scored_results:
+                result = scored_results[-1]
+                objective_value = float(result.score)
+            else:
+                objective_value = 0.0
         elif self.optuna_config.target == "net_profit":
             objective_value = float(result.net_profit_pct)
         elif self.optuna_config.target == "romad":
@@ -330,6 +340,13 @@ class OptunaOptimizer:
             objective_value = -float(result.max_drawdown_pct)
         else:
             objective_value = float(result.romad or 0.0)
+
+        # Check score threshold filter (only applies when score is calculated)
+        if self.optuna_config.target == "score" and score_config.get("filter_enabled"):
+            min_score = float(score_config.get("min_score_threshold", 0.0))
+            if result.score < min_score:
+                self.pruned_trials += 1
+                raise optuna.TrialPruned("Below minimum score threshold")
 
         if self.pruner is not None:
             trial.report(objective_value, step=0)
