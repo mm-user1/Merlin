@@ -13,15 +13,14 @@ from optuna.samplers import RandomSampler, TPESampler
 from optuna.trial import TrialState
 import pandas as pd
 
+import optimizer_engine
 from backtest_engine import load_data
 from optimizer_engine import (
     DEFAULT_SCORE_CONFIG,
     OptimizationResult,
     PARAMETER_MAP,
     _generate_numeric_sequence,
-    _init_worker,
     _parse_timestamp,
-    _simulate_combination,
     calculate_score,
 )
 
@@ -253,25 +252,27 @@ class OptunaOptimizer:
         When running with n_jobs, each worker process needs to initialize its caches.
         We check if the global caches are initialized, and if not, call _init_worker.
         """
-        import optimizer_engine
-
-        # Check if worker is initialized by looking for the global cache
-        # If _data_close is not defined or is empty, we need to initialize
+        # Check if worker is initialized by trying to access _ma_cache
+        # On Windows with spawn, globals aren't defined until _init_worker is called
         needs_init = False
         try:
-            if optimizer_engine._data_close is None or len(optimizer_engine._data_close) == 0:
+            # Try to access the cache - this will raise NameError if not initialized
+            _ = optimizer_engine._ma_cache
+            # If it exists, check if it's populated
+            if not optimizer_engine._ma_cache:
                 needs_init = True
         except (AttributeError, NameError):
+            # Cache doesn't exist yet - need to initialize
             needs_init = True
 
         if needs_init:
             if self.worker_init_args is None:
                 raise RuntimeError("Worker initialization parameters not set.")
             # Initialize worker caches in this process
-            _init_worker(*self.worker_init_args)
+            optimizer_engine._init_worker(*self.worker_init_args)
 
         # Now call simulation directly
-        return _simulate_combination(params_dict)
+        return optimizer_engine._simulate_combination(params_dict)
 
     def _prepare_trial_parameters(self, trial: optuna.Trial, search_space: Dict[str, Dict[str, Any]]) -> Dict[str, Any]:
         params_dict: Dict[str, Any] = {}
