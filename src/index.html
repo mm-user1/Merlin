@@ -159,6 +159,36 @@
       box-shadow: inset 0 1px 2px rgba(0, 0, 0, 0.05);
     }
 
+    .status-text {
+      font-size: 12px;
+      color: #2a2a2a;
+      margin-top: 8px;
+    }
+
+    .status-text.error {
+      color: #c62828;
+    }
+
+    .wf-table {
+      width: 100%;
+      border-collapse: collapse;
+      background: #ffffff;
+      border: 1px solid #d0d0d0;
+      font-size: 12px;
+    }
+
+    .wf-table th,
+    .wf-table td {
+      padding: 6px 8px;
+      border: 1px solid #d0d0d0;
+      text-align: left;
+    }
+
+    .wf-table th {
+      background: #f0f0f0;
+      font-weight: 600;
+    }
+
     .selected-files-title {
       font-size: 12px;
       font-weight: 600;
@@ -1357,6 +1387,121 @@
                   </div>
                 </div>
 
+                <div class="section" id="walkforwardSection">
+                  <div class="section-title">Walk-Forward Analysis</div>
+                  <div class="form-group">
+                    <div class="checkbox-group">
+                      <input type="checkbox" id="enableWalkForward" />
+                      <label for="enableWalkForward">Enable Walk-Forward Analysis</label>
+                    </div>
+                  </div>
+
+                  <div id="walkforwardSettings" style="display: none; gap: 12px; flex-direction: column;">
+                    <div class="form-group" style="flex-direction: column; align-items: flex-start; gap: 6px;">
+                      <label>Window mode:</label>
+                      <div class="radio-group">
+                        <label>
+                          <input type="radio" name="wfMode" id="wfModeRolling" value="rolling" checked /> Rolling
+                        </label>
+                        <label>
+                          <input type="radio" name="wfMode" id="wfModeAnchored" value="anchored" /> Anchored
+                        </label>
+                      </div>
+                    </div>
+
+                    <div class="form-group" style="flex-direction: column; align-items: flex-start; gap: 6px;">
+                      <label>Data allocation (% of total data):</label>
+                      <div style="display: flex; flex-wrap: wrap; gap: 12px;">
+                        <label>WF Zone
+                          <input type="number" id="wfZonePctInput" min="60" max="90" value="80" style="width: 80px; margin-left: 6px;" />
+                        </label>
+                        <label>Forward Reserve
+                          <input type="number" id="forwardReservePctInput" min="10" max="40" value="20" style="width: 80px; margin-left: 6px;" />
+                        </label>
+                      </div>
+                    </div>
+
+                    <div class="form-group" style="flex-direction: column; align-items: flex-start; gap: 6px;">
+                      <label>Window composition (% of WF zone):</label>
+                      <div style="display: flex; flex-wrap: wrap; gap: 12px;">
+                        <label>IS
+                          <input type="number" id="isPctInput" min="40" max="85" value="70" style="width: 80px; margin-left: 6px;" />
+                        </label>
+                        <label>OOS
+                          <input type="number" id="oosPctInput" min="15" max="60" value="30" style="width: 80px; margin-left: 6px;" />
+                        </label>
+                      </div>
+                    </div>
+
+                    <div class="form-group" style="display: flex; flex-wrap: wrap; gap: 12px;">
+                      <label>Gap (bars)
+                        <input type="number" id="gapBarsInput" min="0" max="20" value="2" style="width: 70px; margin-left: 6px;" />
+                      </label>
+                      <label>Step (% of OOS)
+                        <input type="number" id="stepPctInput" min="25" max="200" value="100" style="width: 70px; margin-left: 6px;" />
+                      </label>
+                    </div>
+
+                    <div class="form-group" style="flex-direction: column; align-items: flex-start; gap: 6px;">
+                      <label>Selection criteria:</label>
+                      <div style="display: flex; flex-wrap: wrap; gap: 12px;">
+                        <label>Top-K per window
+                          <input type="number" id="topkPerWindowInput" min="5" max="50" value="20" style="width: 70px; margin-left: 6px;" />
+                        </label>
+                        <label>Min OOS win rate (%)
+                          <input type="number" id="minOosWinRateInput" min="0" max="100" value="70" style="width: 80px; margin-left: 6px;" />
+                        </label>
+                        <label>Max IS→OOS degradation (%)
+                          <input type="number" id="maxDegradationInput" min="0" max="100" value="40" style="width: 80px; margin-left: 6px;" />
+                        </label>
+                        <label>Min OOS trades
+                          <input type="number" id="minTradesInput" min="0" max="200" value="10" style="width: 70px; margin-left: 6px;" />
+                        </label>
+                        <label>Min forward profit (%)
+                          <input type="number" id="minForwardProfitInput" min="-100" max="200" value="0" style="width: 80px; margin-left: 6px;" />
+                        </label>
+                      </div>
+                    </div>
+
+                    <div class="form-group" style="flex-direction: column; align-items: flex-start; gap: 6px;">
+                      <label>Cross-validation:</label>
+                      <div style="display: flex; gap: 12px; flex-wrap: wrap; align-items: center;">
+                        <select id="cvModeSelect" style="width: 140px;">
+                          <option value="auto">Auto</option>
+                          <option value="enabled">Enabled</option>
+                          <option value="disabled">Disabled</option>
+                        </select>
+                        <label>Folds
+                          <input type="number" id="cvFoldsInput" min="3" max="10" value="5" style="width: 70px; margin-left: 6px;" />
+                        </label>
+                        <label>Gap (bars)
+                          <input type="number" id="cvGapBarsInput" min="0" max="20" value="0" style="width: 70px; margin-left: 6px;" />
+                        </label>
+                      </div>
+                    </div>
+
+                    <div class="form-group" style="display: flex; gap: 12px; flex-wrap: wrap;">
+                      <label>Warmup multiplier
+                        <input type="number" id="warmupMultiplierInput" min="1" max="5" step="0.1" value="1.5" style="width: 70px; margin-left: 6px;" />
+                      </label>
+                      <label>Min warmup bars
+                        <input type="number" id="minWarmupBarsInput" min="100" max="20000" value="1000" style="width: 90px; margin-left: 6px;" />
+                      </label>
+                    </div>
+
+                    <div class="form-group" style="display: flex; gap: 12px; align-items: center;">
+                      <button type="button" class="primary" id="runWalkforwardBtn">Run Walk-Forward</button>
+                      <a id="walkforwardDownload" class="secondary" href="#" download="walkforward_results.csv" style="display: none;">Download CSV</a>
+                    </div>
+
+                    <div id="walkforwardStatus" class="status-text"></div>
+                    <div id="walkforwardResults" style="display: none; flex-direction: column; gap: 10px;">
+                      <div id="walkforwardSummary"></div>
+                      <div id="walkforwardRanking"></div>
+                    </div>
+                  </div>
+                </div>
+
                 <div class="section">
                   <div class="opt-section">
                     <div class="opt-section-title">T MA</div>
@@ -1853,7 +1998,32 @@
       const presetListEl = document.getElementById('presetList');
       const presetEmptyEl = document.getElementById('presetEmpty');
       const presetImportInput = document.getElementById('presetImportInput');
+      const enableWalkForward = document.getElementById('enableWalkForward');
+      const walkforwardSettings = document.getElementById('walkforwardSettings');
+      const wfZonePctInput = document.getElementById('wfZonePctInput');
+      const forwardReservePctInput = document.getElementById('forwardReservePctInput');
+      const isPctInput = document.getElementById('isPctInput');
+      const oosPctInput = document.getElementById('oosPctInput');
+      const gapBarsInput = document.getElementById('gapBarsInput');
+      const stepPctInput = document.getElementById('stepPctInput');
+      const topkPerWindowInput = document.getElementById('topkPerWindowInput');
+      const minOosWinRateInput = document.getElementById('minOosWinRateInput');
+      const maxDegradationInput = document.getElementById('maxDegradationInput');
+      const minTradesInput = document.getElementById('minTradesInput');
+      const minForwardProfitInput = document.getElementById('minForwardProfitInput');
+      const cvModeSelect = document.getElementById('cvModeSelect');
+      const cvFoldsInput = document.getElementById('cvFoldsInput');
+      const cvGapBarsInput = document.getElementById('cvGapBarsInput');
+      const warmupMultiplierInput = document.getElementById('warmupMultiplierInput');
+      const minWarmupBarsInput = document.getElementById('minWarmupBarsInput');
+      const runWalkforwardBtn = document.getElementById('runWalkforwardBtn');
+      const walkforwardStatus = document.getElementById('walkforwardStatus');
+      const walkforwardResults = document.getElementById('walkforwardResults');
+      const walkforwardSummary = document.getElementById('walkforwardSummary');
+      const walkforwardRanking = document.getElementById('walkforwardRanking');
+      const walkforwardDownload = document.getElementById('walkforwardDownload');
       let selectedCsvPath = '';
+      let walkforwardDownloadUrl = null;
 
       function renderSelectedFiles(files) {
         if (!selectedFilesWrapper || !selectedFilesList) {
@@ -1956,6 +2126,20 @@
             }, 2000);
           }
         });
+      }
+
+      if (enableWalkForward) {
+        enableWalkForward.addEventListener('change', toggleWalkforwardSettings);
+        toggleWalkforwardSettings();
+      }
+      if (wfZonePctInput) {
+        wfZonePctInput.addEventListener('change', () => syncWalkforwardAllocation('zone'));
+      }
+      if (forwardReservePctInput) {
+        forwardReservePctInput.addEventListener('change', () => syncWalkforwardAllocation('forward'));
+      }
+      if (runWalkforwardBtn) {
+        runWalkforwardBtn.addEventListener('click', submitWalkForward);
       }
 
       toggleOptimizationMode();
@@ -3437,6 +3621,248 @@
           optuna_warmup_trials: normalizedWarmup,
           optuna_save_study: Boolean(optunaSaveStudy && optunaSaveStudy.checked)
         };
+      }
+
+      function extractOptunaSettings(config) {
+        if (!config) {
+          return {};
+        }
+        return {
+          optuna_target: config.optuna_target,
+          optuna_budget_mode: config.optuna_budget_mode,
+          optuna_n_trials: config.optuna_n_trials,
+          optuna_time_limit: config.optuna_time_limit,
+          optuna_convergence: config.optuna_convergence,
+          optuna_enable_pruning: config.optuna_enable_pruning,
+          optuna_sampler: config.optuna_sampler,
+          optuna_pruner: config.optuna_pruner,
+          optuna_warmup_trials: config.optuna_warmup_trials,
+          optuna_save_study: config.optuna_save_study
+        };
+      }
+
+      function clearWalkforwardDownload() {
+        if (walkforwardDownloadUrl) {
+          URL.revokeObjectURL(walkforwardDownloadUrl);
+          walkforwardDownloadUrl = null;
+        }
+        if (walkforwardDownload) {
+          walkforwardDownload.style.display = 'none';
+          walkforwardDownload.removeAttribute('href');
+        }
+      }
+
+      function toggleWalkforwardSettings() {
+        const enabled = Boolean(enableWalkForward && enableWalkForward.checked);
+        if (walkforwardSettings) {
+          walkforwardSettings.style.display = enabled ? 'flex' : 'none';
+        }
+        if (!enabled) {
+          if (walkforwardStatus) {
+            walkforwardStatus.textContent = '';
+            walkforwardStatus.classList.remove('error');
+          }
+          if (walkforwardResults) {
+            walkforwardResults.style.display = 'none';
+          }
+          clearWalkforwardDownload();
+        }
+      }
+
+      function syncWalkforwardAllocation(source) {
+        if (!wfZonePctInput || !forwardReservePctInput) {
+          return;
+        }
+        if (source === 'zone') {
+          const zone = Math.min(95, Math.max(50, Number(wfZonePctInput.value) || 80));
+          wfZonePctInput.value = zone;
+          forwardReservePctInput.value = Math.min(40, Math.max(5, 100 - zone));
+        } else {
+          const forward = Math.min(40, Math.max(5, Number(forwardReservePctInput.value) || 20));
+          forwardReservePctInput.value = forward;
+          wfZonePctInput.value = Math.min(95, Math.max(50, 100 - forward));
+        }
+      }
+
+      function collectWalkforwardConfig() {
+        if (!enableWalkForward || !enableWalkForward.checked) {
+          return null;
+        }
+        const mode = document.querySelector('input[name="wfMode"]:checked')?.value || 'rolling';
+        return {
+          mode,
+          wf_zone_pct: Number(wfZonePctInput?.value) || 80,
+          forward_reserve_pct: Number(forwardReservePctInput?.value) || 20,
+          is_pct: Number(isPctInput?.value) || 70,
+          oos_pct: Number(oosPctInput?.value) || 30,
+          gap_bars: Number(gapBarsInput?.value) || 2,
+          step_pct: Number(stepPctInput?.value) || 100,
+          topk_per_window: Number(topkPerWindowInput?.value) || 20,
+          min_oos_win_rate: Number(minOosWinRateInput?.value) || 70,
+          max_degradation: Number(maxDegradationInput?.value) || 40,
+          min_trades_oos: Number(minTradesInput?.value) || 10,
+          min_forward_profit: Number(minForwardProfitInput?.value) || 0,
+          cv_mode: cvModeSelect ? cvModeSelect.value : 'auto',
+          cv_folds: Number(cvFoldsInput?.value) || 5,
+          cv_gap_bars: Number(cvGapBarsInput?.value) || 0,
+          warmup_multiplier: Number(warmupMultiplierInput?.value) || 1.5,
+          min_warmup_bars: Number(minWarmupBarsInput?.value) || 1000
+        };
+      }
+
+      function renderWalkforwardResults(data) {
+        if (!walkforwardResults || !walkforwardSummary || !walkforwardRanking) {
+          return;
+        }
+        const summary = data?.summary || {};
+        const ranking = Array.isArray(data?.ranking) ? data.ranking : [];
+
+        const summaryLines = [
+          `<div><strong>Total windows:</strong> ${summary.total_windows ?? '-'}</div>`,
+          `<div><strong>Top forward profit:</strong> ${
+            typeof summary.top_forward_profit === 'number'
+              ? `${summary.top_forward_profit.toFixed(2)}%`
+              : '-'
+          }</div>`,
+          `<div><strong>Top average OOS profit:</strong> ${
+            typeof summary.top_avg_oos_profit === 'number'
+              ? `${summary.top_avg_oos_profit.toFixed(2)}%`
+              : '-'
+          }</div>`
+        ];
+        walkforwardSummary.innerHTML = summaryLines.join('');
+
+        if (ranking.length) {
+          const rows = ranking
+            .map((item, index) => {
+              const forwardProfit = typeof item.forward_profit === 'number'
+                ? `${item.forward_profit.toFixed(2)}%`
+                : '-';
+              const oosProfit = typeof item.avg_oos_profit === 'number'
+                ? `${item.avg_oos_profit.toFixed(2)}%`
+                : '-';
+              const winRate = typeof item.oos_win_rate === 'number'
+                ? `${(item.oos_win_rate * 100).toFixed(1)}%`
+                : '-';
+              const score = typeof item.score === 'number' ? item.score.toFixed(1) : '-';
+              return `<tr>
+                <td>${index + 1}</td>
+                <td>${item.param_hash ? item.param_hash.slice(0, 12) : '-'}</td>
+                <td>${forwardProfit}</td>
+                <td>${oosProfit}</td>
+                <td>${winRate}</td>
+                <td>${item.status || '-'}</td>
+                <td>${score}</td>
+              </tr>`;
+            })
+            .join('');
+          walkforwardRanking.innerHTML = `
+            <table class="wf-table">
+              <thead>
+                <tr>
+                  <th>#</th>
+                  <th>Hash</th>
+                  <th>Forward %</th>
+                  <th>Avg OOS %</th>
+                  <th>OOS Win</th>
+                  <th>Status</th>
+                  <th>Score</th>
+                </tr>
+              </thead>
+              <tbody>${rows}</tbody>
+            </table>
+          `;
+        } else {
+          walkforwardRanking.textContent = 'No parameter sets passed the filters.';
+        }
+
+        walkforwardResults.style.display = 'flex';
+        clearWalkforwardDownload();
+        if (data?.csv && walkforwardDownload) {
+          const blob = new Blob([data.csv], { type: 'text/csv' });
+          walkforwardDownloadUrl = URL.createObjectURL(blob);
+          walkforwardDownload.href = walkforwardDownloadUrl;
+          walkforwardDownload.style.display = 'inline-block';
+        }
+      }
+
+      async function submitWalkForward(event) {
+        event.preventDefault();
+
+        if (!enableWalkForward || !enableWalkForward.checked) {
+          if (walkforwardStatus) {
+            walkforwardStatus.textContent = 'Enable Walk-Forward Analysis to run this workflow.';
+            walkforwardStatus.classList.add('error');
+          }
+          return;
+        }
+
+        const files = Array.from(csvFileInputEl?.files || []);
+        if (!files.length) {
+          if (walkforwardStatus) {
+            walkforwardStatus.textContent = 'Please select a CSV file before running walk-forward analysis.';
+            walkforwardStatus.classList.add('error');
+          }
+          if (walkforwardResults) {
+            walkforwardResults.style.display = 'none';
+          }
+          clearWalkforwardDownload();
+          return;
+        }
+
+        const state = gatherFormState();
+        const optunaConfig = buildOptunaConfig(state);
+        const wfConfig = collectWalkforwardConfig();
+        if (!wfConfig) {
+          if (walkforwardStatus) {
+            walkforwardStatus.textContent = 'Unable to read walk-forward configuration.';
+            walkforwardStatus.classList.add('error');
+          }
+          return;
+        }
+
+        const payload = {
+          optimization: optunaConfig,
+          optuna: extractOptunaSettings(optunaConfig),
+          wf: wfConfig
+        };
+
+        const formData = new FormData();
+        formData.append('csv', files[0]);
+        formData.append('payload', JSON.stringify(payload));
+
+        if (walkforwardStatus) {
+          walkforwardStatus.textContent = 'Running walk-forward analysis…';
+          walkforwardStatus.classList.remove('error');
+        }
+        if (runWalkforwardBtn) {
+          runWalkforwardBtn.disabled = true;
+        }
+
+        try {
+          const response = await fetch('/api/walkforward', { method: 'POST', body: formData });
+          const data = await response.json();
+          if (!response.ok || data.status !== 'success') {
+            throw new Error(data.message || 'Walk-forward analysis failed.');
+          }
+          if (walkforwardStatus) {
+            walkforwardStatus.textContent = 'Walk-forward analysis completed.';
+          }
+          renderWalkforwardResults(data);
+        } catch (error) {
+          if (walkforwardStatus) {
+            walkforwardStatus.textContent = error.message || 'Failed to run walk-forward analysis.';
+            walkforwardStatus.classList.add('error');
+          }
+          if (walkforwardResults) {
+            walkforwardResults.style.display = 'none';
+          }
+          clearWalkforwardDownload();
+        } finally {
+          if (runWalkforwardBtn) {
+            runWalkforwardBtn.disabled = false;
+          }
+        }
       }
 
       async function submitOptimization(event) {

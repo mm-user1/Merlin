@@ -48,7 +48,12 @@ class OptunaConfig:
 class OptunaOptimizer:
     """Optuna-based optimiser that reuses the grid search simulation engine."""
 
-    def __init__(self, base_config, optuna_config: OptunaConfig) -> None:
+    def __init__(
+        self,
+        base_config,
+        optuna_config: OptunaConfig,
+        dataframe: Optional[pd.DataFrame] = None,
+    ) -> None:
         self.base_config = base_config
         self.optuna_config = optuna_config
         self.pool: Optional[mp.pool.Pool] = None
@@ -59,6 +64,7 @@ class OptunaOptimizer:
         self.pruned_trials: int = 0
         self.study: Optional[optuna.Study] = None
         self.pruner: Optional[optuna.pruners.BasePruner] = None
+        self.dataframe = dataframe.copy() if dataframe is not None else None
 
     # ------------------------------------------------------------------
     # Search space handling
@@ -382,7 +388,10 @@ class OptunaOptimizer:
         self.trials_without_improvement = 0
         self.pruned_trials = 0
 
-        df = load_data(self.base_config.csv_file)
+        if self.dataframe is not None:
+            df = self.dataframe.copy()
+        else:
+            df = load_data(self.base_config.csv_file)
         search_space = self._build_search_space()
         self._setup_worker_pool(df)
 
@@ -501,8 +510,12 @@ class OptunaOptimizer:
         return self.trial_results
 
 
-def run_optuna_optimization(base_config, optuna_config: OptunaConfig) -> List[OptimizationResult]:
+def run_optuna_optimization(
+    base_config,
+    optuna_config: OptunaConfig,
+    dataframe: Optional[pd.DataFrame] = None,
+) -> List[OptimizationResult]:
     """Execute Optuna optimisation using the provided configuration."""
 
-    optimizer = OptunaOptimizer(base_config, optuna_config)
+    optimizer = OptunaOptimizer(base_config, optuna_config, dataframe=dataframe)
     return optimizer.optimize()

@@ -10,6 +10,7 @@ from typing import Any, Dict, List, Optional, Tuple
 from flask import Flask, jsonify, request, send_file, send_from_directory
 
 from backtest_engine import StrategyParams, load_data, run_strategy
+from optuna_engine import OptunaConfig
 from optimizer_engine import (
     CSV_COLUMN_SPECS,
     OptimizationResult,
@@ -17,6 +18,13 @@ from optimizer_engine import (
     PARAMETER_MAP,
     export_to_csv,
     run_optimization,
+)
+from walkforward_engine import (
+    CVMode,
+    WFMode,
+    WalkForwardConfig,
+    WalkForwardEngine,
+    export_wf_results_to_csv,
 )
 
 app = Flask(__name__)
@@ -896,6 +904,110 @@ def _build_optimization_config(csv_file, payload: dict, worker_processes=None) -
     return config
 
 
+def _build_optuna_config_from_payload(payload: Dict[str, Any]) -> OptunaConfig:
+    if not isinstance(payload, dict):
+        raise ValueError("Invalid Optuna configuration payload.")
+
+    def _parse_int(value: Any, default: int, minimum: Optional[int] = None) -> int:
+        try:
+            parsed = int(float(value))
+        except (TypeError, ValueError):
+            parsed = default
+        if minimum is not None:
+            parsed = max(minimum, parsed)
+        return parsed
+
+    def _parse_bool(value: Any, default: bool) -> bool:
+        if isinstance(value, bool):
+            return value
+        if isinstance(value, (int, float)):
+            return bool(value)
+        if isinstance(value, str):
+            lowered = value.strip().lower()
+            if lowered in {"true", "1", "yes", "y", "on"}:
+                return True
+            if lowered in {"false", "0", "no", "n", "off"}:
+                return False
+        return default
+
+    target = str(payload.get("optuna_target", "score")).strip().lower() or "score"
+    budget_mode = str(payload.get("optuna_budget_mode", "trials")).strip().lower() or "trials"
+    sampler = str(payload.get("optuna_sampler", "tpe")).strip().lower() or "tpe"
+    pruner = str(payload.get("optuna_pruner", "median")).strip().lower() or "median"
+
+    return OptunaConfig(
+        target=target,
+        budget_mode=budget_mode,
+        n_trials=_parse_int(payload.get("optuna_n_trials", 500), 500, 10),
+        time_limit=_parse_int(payload.get("optuna_time_limit", 3600), 3600, 60),
+        convergence_patience=_parse_int(payload.get("optuna_convergence", 50), 50, 10),
+        enable_pruning=_parse_bool(payload.get("optuna_enable_pruning", True), True),
+        sampler=sampler,
+        pruner=pruner,
+        warmup_trials=_parse_int(payload.get("optuna_warmup_trials", 20), 20, 0),
+        save_study=_parse_bool(payload.get("optuna_save_study", False), False),
+        study_name=payload.get("optuna_study_name"),
+    )
+
+
+def _parse_walkforward_config(payload: Dict[str, Any]) -> WalkForwardConfig:
+    payload = payload or {}
+
+    def _get_float(key: str, default: float) -> float:
+        value = payload.get(key)
+        if value is None:
+            camel_key = "".join(
+                part.capitalize() if index else part for index, part in enumerate(key.split("_"))
+            )
+            value = payload.get(camel_key)
+        try:
+            return float(value)
+        except (TypeError, ValueError):
+            return float(default)
+
+    def _get_int(key: str, default: int) -> int:
+        return int(round(_get_float(key, default)))
+
+    mode_raw = str(payload.get("mode") or payload.get("wf_mode") or "rolling").strip().lower()
+    mode = WFMode(mode_raw) if mode_raw in {item.value for item in WFMode} else WFMode.ROLLING
+
+    cv_mode_raw = str(payload.get("cv_mode") or payload.get("cvMode") or "auto").strip().lower()
+    cv_mode = CVMode(cv_mode_raw) if cv_mode_raw in {item.value for item in CVMode} else CVMode.AUTO
+
+    wf_zone_pct = _get_float("wf_zone_pct", 80.0)
+    forward_pct = _get_float("forward_reserve_pct", 20.0)
+    if "forward_reserve_pct" not in payload and "forwardReservePct" not in payload:
+        forward_pct = 100.0 - wf_zone_pct
+
+    min_win_rate_value = _get_float("min_oos_win_rate", 70.0)
+    min_win_rate = min_win_rate_value / 100.0 if min_win_rate_value > 1 else min_win_rate_value
+
+    max_degradation_value = _get_float("max_degradation", 40.0)
+    max_degradation = (
+        max_degradation_value / 100.0 if max_degradation_value > 1 else max_degradation_value
+    )
+
+    return WalkForwardConfig(
+        mode=mode,
+        wf_zone_pct=wf_zone_pct,
+        forward_reserve_pct=forward_pct,
+        is_pct=_get_float("is_pct", 70.0),
+        oos_pct=_get_float("oos_pct", 30.0),
+        gap_bars=_get_int("gap_bars", 2),
+        step_pct=_get_float("step_pct", 100.0),
+        cv_mode=cv_mode,
+        cv_folds=_get_int("cv_folds", 5),
+        cv_gap_bars=_get_int("cv_gap_bars", 0),
+        topk_per_window=_get_int("topk_per_window", 20),
+        min_oos_win_rate=min_win_rate,
+        max_degradation=max_degradation,
+        min_trades_oos=_get_int("min_trades_oos", 10),
+        min_forward_profit=_get_float("min_forward_profit", 0.0),
+        warmup_multiplier=_get_float("warmup_multiplier", 1.5),
+        min_warmup_bars=_get_int("min_warmup_bars", 1000),
+    )
+
+
 _DATE_PREFIX_RE = re.compile(r"\b\d{4}[.\-/]\d{2}[.\-/]\d{2}\b")
 _DATE_VALUE_RE = re.compile(r"(\d{4})[.\-/]?(\d{2})[.\-/]?(\d{2})")
 
@@ -1170,6 +1282,94 @@ def run_optimization_endpoint() -> object:
         mimetype="text/csv",
         as_attachment=True,
         download_name=filename,
+    )
+
+
+@app.post("/api/walkforward")
+def run_walkforward_endpoint() -> Any:
+    csv_file = request.files.get("csv")
+    if not csv_file or not getattr(csv_file, "filename", ""):
+        return jsonify({"status": "error", "message": "CSV file is required."}), HTTPStatus.BAD_REQUEST
+
+    payload_raw = request.form.get("payload", "")
+    try:
+        payload = json.loads(payload_raw) if payload_raw else {}
+    except json.JSONDecodeError:
+        return jsonify({"status": "error", "message": "Invalid JSON payload."}), HTTPStatus.BAD_REQUEST
+
+    optimization_payload = payload.get("optimization") or {}
+    optuna_payload = payload.get("optuna") or {}
+    wf_payload = payload.get("wf") or {}
+
+    try:
+        df = load_data(csv_file)
+    except Exception as exc:  # pragma: no cover - defensive
+        return jsonify({"status": "error", "message": str(exc)}), HTTPStatus.BAD_REQUEST
+
+    csv_buffer = io.StringIO()
+    df.to_csv(csv_buffer)
+    csv_buffer.seek(0)
+
+    try:
+        optimization_config = _build_optimization_config(csv_buffer, optimization_payload)
+        optuna_config = _build_optuna_config_from_payload(optuna_payload)
+        wf_config = _parse_walkforward_config(wf_payload)
+    except ValueError as exc:
+        return jsonify({"status": "error", "message": str(exc)}), HTTPStatus.BAD_REQUEST
+
+    engine = WalkForwardEngine(wf_config)
+
+    try:
+        result = engine.run_optimization(df, optimization_config, optuna_config)
+    except Exception as exc:  # pragma: no cover - defensive
+        return jsonify({"status": "error", "message": str(exc)}), HTTPStatus.BAD_REQUEST
+
+    csv_output = io.StringIO()
+    export_wf_results_to_csv(result, csv_output)
+
+    best_hash = result.final_ranking[0][0] if result.final_ranking else None
+    best_score = result.final_ranking[0][1] if result.final_ranking else None
+    forward_map = {item.param_hash: item for item in result.forward_results}
+    agg_map = {item.param_hash: item for item in result.aggregated_results}
+    best_forward = forward_map.get(best_hash) if best_hash else None
+    best_agg = agg_map.get(best_hash) if best_hash else None
+
+    ranking_preview: List[Dict[str, Any]] = []
+    for param_hash, score in result.final_ranking[:5]:
+        forward = forward_map.get(param_hash)
+        agg = agg_map.get(param_hash)
+        entry = {
+            "param_hash": param_hash,
+            "score": round(score, 4),
+            "forward_profit": forward.forward_profit if forward else None,
+            "forward_drawdown": forward.forward_drawdown if forward else None,
+            "forward_sharpe": forward.forward_sharpe if forward else None,
+            "avg_oos_profit": agg.avg_oos_profit if agg else None,
+            "oos_win_rate": agg.oos_win_rate if agg else None,
+            "status": forward.status if forward else None,
+            "params": agg.params.to_dict() if agg else None,
+        }
+        ranking_preview.append(entry)
+
+    summary = {
+        "total_windows": len(result.windows),
+        "forward_start_index": result.forward_start_idx,
+        "forward_end_index": result.forward_end_idx,
+        "top_param_hash": best_hash,
+        "top_forward_profit": best_forward.forward_profit if best_forward else None,
+        "top_forward_trades": best_forward.forward_trades if best_forward else None,
+        "top_forward_sharpe": best_forward.forward_sharpe if best_forward else None,
+        "top_score": round(best_score, 4) if best_score is not None else None,
+        "top_avg_oos_profit": best_agg.avg_oos_profit if best_agg else None,
+    }
+
+    return jsonify(
+        {
+            "status": "success",
+            "summary": summary,
+            "ranking": ranking_preview,
+            "csv": csv_output.getvalue(),
+        }
     )
 
 
