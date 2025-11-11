@@ -22,64 +22,68 @@
 
     .pane {
       background: #f5f5f5;
-      border: 1px solid #bbbbbb;
-      border-radius: 6px;
-      margin: 12px;
-    }
-
-    .pane header {
-      background: #4a4a4a;
-      color: #ffffff;
-      font-size: 14px;
-      padding: 8px 10px;
+      border: none;
+      border-radius: 0;
+      margin: 0;
+      height: 100vh;
     }
 
     .split {
       display: grid;
-      grid-template-columns: 1fr 1fr;
-      gap: 12px;
-      padding: 12px;
+      grid-template-columns: 1fr 1.2fr 1fr;
+      gap: 0;
+      padding: 0;
+      height: 100%;
     }
 
-    @media (max-width: 980px) {
+    @media (max-width: 1400px) {
       .split {
         grid-template-columns: 1fr;
       }
     }
 
     .frame {
-      background: #e8e8e8;
-      border: 1px solid #bbbbbb;
-      border-radius: 6px;
-      padding: 20px;
+      background: #f5f5f5;
+      border: none;
+      border-right: 1px solid #cccccc;
+      border-radius: 0;
+      padding: 0;
+      height: 100%;
+      overflow-y: auto;
+    }
+
+    .frame:last-child {
+      border-right: none;
     }
 
     .window {
       background: #f5f5f5;
-      border: 1px solid #999999;
-      border-radius: 4px;
-      box-shadow: 0 2px 10px rgba(0, 0, 0, 0.15);
+      border: none;
+      border-radius: 0;
+      box-shadow: none;
       width: 100%;
+      height: 100%;
     }
 
     .backtester-window {
-      max-width: 800px;
-      margin: 0 auto;
+      max-width: none;
+      margin: 0;
     }
 
     .optimizer-window {
-      max-width: 1400px;
-      margin: 0 auto;
+      max-width: none;
+      margin: 0;
     }
 
     .title-bar {
-      background: #4a4a4a;
-      color: #ffffff;
-      padding: 8px 12px;
+      background: #d0d0d0;
+      color: #2a2a2a;
+      padding: 10px 20px;
       display: flex;
-      justify-content: space-between;
+      justify-content: flex-start;
       align-items: center;
-      border-radius: 4px 4px 0 0;
+      border-radius: 0;
+      border-bottom: 1px solid #bbbbbb;
     }
 
     .title-bar h2 {
@@ -87,37 +91,16 @@
       font-weight: 500;
     }
 
-    .window-controls {
-      display: flex;
-      gap: 8px;
-    }
-
-    .window-controls button {
-      background: none;
-      border: none;
-      color: #ffffff;
-      cursor: pointer;
-      padding: 4px 8px;
-      font-size: 16px;
-    }
-
     .window .content {
       padding: 20px;
     }
 
     .optimizer-window .content {
-      display: flex;
-      gap: 20px;
+      display: block;
     }
 
     .left-panel {
-      flex: 0 0 48%;
-    }
-
-    .right-panel {
-      flex: 0 0 48%;
-      border-left: 2px solid #bbbbbb;
-      padding-left: 20px;
+      width: 100%;
     }
 
     .section {
@@ -751,17 +734,11 @@
 </head>
 <body>
   <div class="pane">
-    <header>S_01 TrailingMA — Backtester (слева) + Optimizer (справа, без Date Filter)</header>
     <div class="split">
       <div class="frame">
         <div class="window backtester-window">
           <div class="title-bar">
-            <h2>S_01 TrailingMA Backtester</h2>
-            <div class="window-controls">
-              <button type="button">−</button>
-              <button type="button">□</button>
-              <button type="button">×</button>
-            </div>
+            <h2>Backtester</h2>
           </div>
           <div class="content">
             <form id="backtestForm">
@@ -1211,12 +1188,7 @@
       <div class="frame">
         <div class="window optimizer-window">
           <div class="title-bar">
-            <h2>S_01 TrailingMA Backtester with Parameter Optimizer</h2>
-            <div class="window-controls">
-              <button type="button">−</button>
-              <button type="button">□</button>
-              <button type="button">×</button>
-            </div>
+            <h2>Optimizer Parameters</h2>
           </div>
           <div class="content">
             <div class="left-panel">
@@ -1633,115 +1605,126 @@
                   </div>
                 </div>
 
-                <!-- Walk-Forward Analysis Section -->
-                <div class="wf-section" style="margin-top: 30px; padding: 20px; border: 2px solid #3498db; border-radius: 8px; background-color: #f8f9fa;">
-                  <h3 style="color: #3498db; margin-bottom: 12px;">⚡ Walk-Forward Analysis</h3>
-
-                  <div class="form-group vertical" style="align-items: flex-start;">
-                    <label style="margin-bottom: 8px;">
-                      <input type="checkbox" id="enableWF" onchange="toggleWFSettings()" />
-                      <strong>Enable Walk-Forward Optimization</strong>
-                    </label>
-                    <p style="font-size: 12px; color: #666; margin: 0;">
-                      Splits data into multiple training/testing windows to find robust parameters.
-                    </p>
-                  </div>
-
-                  <div id="wfSettings" style="display: none; margin-top: 20px;">
-                    <div class="form-group" style="margin-bottom: 12px;">
-                      <label style="min-width: 150px;">Number of Windows:</label>
-                      <input type="number" id="wfNumWindows" value="5" min="3" max="10" style="width: 100px;" />
-                      <span style="font-size: 12px; color: #666; margin-left: 10px;">(Recommended: 5-6 for 1-2 years of data)</span>
-                    </div>
-
-                    <div class="form-group" style="margin-bottom: 12px;">
-                      <label style="min-width: 150px;">Gap (bars):</label>
-                      <input type="number" id="wfGapBars" value="100" min="0" max="500" style="width: 100px;" />
-                      <span style="font-size: 12px; color: #666; margin-left: 10px;">(Bars between training and testing to prevent look-ahead bias)</span>
-                    </div>
-
-                    <div class="form-group" style="margin-bottom: 12px;">
-                      <label style="min-width: 150px;">Top-K per Window:</label>
-                      <input type="number" id="wfTopK" value="20" min="5" max="50" style="width: 100px;" />
-                      <span style="font-size: 12px; color: #666; margin-left: 10px;">(Best parameter sets to test on each window)</span>
-                    </div>
-
-                    <div style="background-color: #e8f4f8; padding: 15px; border-radius: 5px;">
-                      <strong>Fixed Settings (Stage 1):</strong>
-                      <ul style="margin-top: 10px; font-size: 13px; color: #555; padding-left: 18px;">
-                        <li>WF Zone: 80% of data</li>
-                        <li>Forward Reserve: 20% of data</li>
-                        <li>Each window: 70% training (IS), 30% testing (OOS)</li>
-                        <li>Rolling window mode</li>
-                      </ul>
-                    </div>
-                  </div>
-                </div>
-
-                <div class="opt-actions">
-                  <button type="submit" id="runOptimizationBtn">Run Optimization</button>
-                </div>
-
-                <div id="optimizerProgress" style="display: none;">
-                  <div id="gridProgress" style="display: none;">
-                    <div class="progress-bar">
-                      <div id="progressFill" class="progress-fill"></div>
-                    </div>
-                    <div id="progressText">Processing: 0 / 0 (0%)</div>
-                  </div>
-
-                  <div id="optunaProgress" style="display: none;">
-                    <div class="progress-bar">
-                      <div id="optunaProgressFill" class="progress-fill"></div>
-                    </div>
-                    <div id="optunaProgressText">Trial: 0 / 500 (0%)</div>
-
-                    <div
-                      style="margin-top: 15px; padding: 12px; background: #ffffff; border: 1px solid #cccccc; border-radius: 4px;"
-                    >
-                      <div style="font-size: 13px; font-weight: 600; margin-bottom: 8px; color: #2a2a2a;">Best trial so far:</div>
-                      <div id="optunaBestTrial" style="font-size: 12px; color: #2a2a2a; line-height: 1.6;">
-                        Waiting for first trial...
-                      </div>
-                    </div>
-
-                    <div style="margin-top: 10px; font-size: 12px; color: #5a5a5a;">
-                      <span id="optunaCurrentTrial">Current trial: -</span><br />
-                      <span id="optunaEta">Est. time remaining: -</span>
-                    </div>
-                  </div>
-                </div>
-
-                <div id="wfResults" style="display: none; margin-top: 30px;">
-                  <h3 style="margin-bottom: 15px;">Walk-Forward Results</h3>
-
-                  <div id="wfStatus" style="margin-bottom: 15px; font-size: 14px; color: #555;"></div>
-
-                  <div id="wfSummary" style="background-color: #d4edda; padding: 15px; border-radius: 5px; margin-bottom: 20px;"></div>
-
-                  <h4 style="margin-bottom: 10px;">Top 10 Parameter Sets</h4>
-                  <table id="wfTable" style="width: 100%; border-collapse: collapse;">
-                    <thead>
-                      <tr style="background-color: #3498db; color: white;">
-                        <th style="padding: 10px; border: 1px solid #ddd;">Rank</th>
-                        <th style="padding: 10px; border: 1px solid #ddd;">Param ID</th>
-                        <th style="padding: 10px; border: 1px solid #ddd;">Appearances</th>
-                        <th style="padding: 10px; border: 1px solid #ddd;">Avg OOS Profit %</th>
-                        <th style="padding: 10px; border: 1px solid #ddd;">OOS Win Rate</th>
-                        <th style="padding: 10px; border: 1px solid #ddd;">Forward Profit %</th>
-                      </tr>
-                    </thead>
-                    <tbody id="wfTableBody"></tbody>
-                  </table>
-
-                  <div style="margin-top: 20px; font-size: 14px; color: #666;">
-                    Full detailed results will be automatically downloaded as CSV.
-                  </div>
-                </div>
-
-                <div id="optimizerResults" class="results-area" style="display: none;"></div>
               </form>
             </div>
+          </div>
+        </div>
+      </div>
+
+      <!-- Third column: Optimizer Run -->
+      <div class="frame">
+        <div class="window optimizer-run-window">
+          <div class="title-bar">
+            <h2>Optimizer Run</h2>
+          </div>
+          <div class="content">
+            <!-- Walk-Forward Analysis Section -->
+            <div class="wf-section" style="margin-top: 0; padding: 20px; border: 2px solid #3498db; border-radius: 8px; background-color: #f8f9fa;">
+              <h3 style="color: #3498db; margin-bottom: 12px;">⚡ Walk-Forward Analysis</h3>
+
+              <div class="form-group vertical" style="align-items: flex-start;">
+                <label style="margin-bottom: 8px;">
+                  <input type="checkbox" id="enableWF" onchange="toggleWFSettings()" />
+                  <strong>Enable Walk-Forward Optimization</strong>
+                </label>
+                <p style="font-size: 12px; color: #666; margin: 0;">
+                  Splits data into multiple training/testing windows to find robust parameters.
+                </p>
+              </div>
+
+              <div id="wfSettings" style="display: none; margin-top: 20px;">
+                <div class="form-group" style="margin-bottom: 12px;">
+                  <label style="min-width: 150px;">Number of Windows:</label>
+                  <input type="number" id="wfNumWindows" value="5" min="3" max="10" style="width: 100px;" />
+                  <span style="font-size: 12px; color: #666; margin-left: 10px;">(Recommended: 5-6 for 1-2 years of data)</span>
+                </div>
+
+                <div class="form-group" style="margin-bottom: 12px;">
+                  <label style="min-width: 150px;">Gap (bars):</label>
+                  <input type="number" id="wfGapBars" value="100" min="0" max="500" style="width: 100px;" />
+                  <span style="font-size: 12px; color: #666; margin-left: 10px;">(Bars between training and testing to prevent look-ahead bias)</span>
+                </div>
+
+                <div class="form-group" style="margin-bottom: 12px;">
+                  <label style="min-width: 150px;">Top-K per Window:</label>
+                  <input type="number" id="wfTopK" value="20" min="5" max="50" style="width: 100px;" />
+                  <span style="font-size: 12px; color: #666; margin-left: 10px;">(Best parameter sets to test on each window)</span>
+                </div>
+
+                <div style="background-color: #e8f4f8; padding: 15px; border-radius: 5px;">
+                  <strong>Fixed Settings (Stage 1):</strong>
+                  <ul style="margin-top: 10px; font-size: 13px; color: #555; padding-left: 18px;">
+                    <li>WF Zone: 80% of data</li>
+                    <li>Forward Reserve: 20% of data</li>
+                    <li>Each window: 70% training (IS), 30% testing (OOS)</li>
+                    <li>Rolling window mode</li>
+                  </ul>
+                </div>
+              </div>
+            </div>
+
+            <div class="opt-actions" style="margin-top: 20px;">
+              <button type="button" id="runOptimizationBtn" onclick="document.getElementById('optimizerForm').requestSubmit()">Run Optimization</button>
+            </div>
+
+            <div id="optimizerProgress" style="display: none;">
+              <div id="gridProgress" style="display: none;">
+                <div class="progress-bar">
+                  <div id="progressFill" class="progress-fill"></div>
+                </div>
+                <div id="progressText">Processing: 0 / 0 (0%)</div>
+              </div>
+
+              <div id="optunaProgress" style="display: none;">
+                <div class="progress-bar">
+                  <div id="optunaProgressFill" class="progress-fill"></div>
+                </div>
+                <div id="optunaProgressText">Trial: 0 / 500 (0%)</div>
+
+                <div
+                  style="margin-top: 15px; padding: 12px; background: #ffffff; border: 1px solid #cccccc; border-radius: 4px;"
+                >
+                  <div style="font-size: 13px; font-weight: 600; margin-bottom: 8px; color: #2a2a2a;">Best trial so far:</div>
+                  <div id="optunaBestTrial" style="font-size: 12px; color: #2a2a2a; line-height: 1.6;">
+                    Waiting for first trial...
+                  </div>
+                </div>
+
+                <div style="margin-top: 10px; font-size: 12px; color: #5a5a5a;">
+                  <span id="optunaCurrentTrial">Current trial: -</span><br />
+                  <span id="optunaEta">Est. time remaining: -</span>
+                </div>
+              </div>
+            </div>
+
+            <div id="wfResults" style="display: none; margin-top: 30px;">
+              <h3 style="margin-bottom: 15px;">Walk-Forward Results</h3>
+
+              <div id="wfStatus" style="margin-bottom: 15px; font-size: 14px; color: #555;"></div>
+
+              <div id="wfSummary" style="background-color: #d4edda; padding: 15px; border-radius: 5px; margin-bottom: 20px;"></div>
+
+              <h4 style="margin-bottom: 10px;">Top 10 Parameter Sets</h4>
+              <table id="wfTable" style="width: 100%; border-collapse: collapse;">
+                <thead>
+                  <tr style="background-color: #3498db; color: white;">
+                    <th style="padding: 10px; border: 1px solid #ddd;">Rank</th>
+                    <th style="padding: 10px; border: 1px solid #ddd;">Param ID</th>
+                    <th style="padding: 10px; border: 1px solid #ddd;">Appearances</th>
+                    <th style="padding: 10px; border: 1px solid #ddd;">Avg OOS Profit %</th>
+                    <th style="padding: 10px; border: 1px solid #ddd;">OOS Win Rate</th>
+                    <th style="padding: 10px; border: 1px solid #ddd;">Forward Profit %</th>
+                  </tr>
+                </thead>
+                <tbody id="wfTableBody"></tbody>
+              </table>
+
+              <div style="margin-top: 20px; font-size: 14px; color: #666;">
+                Full detailed results will be automatically downloaded as CSV.
+              </div>
+            </div>
+
+            <div id="optimizerResults" class="results-area" style="display: none;"></div>
           </div>
         </div>
       </div>
