@@ -452,13 +452,25 @@ class WalkForwardEngine:
         return f"{ma_type} {ma_length}_{param_hash}"
 
 
-def export_wf_results_csv(result: WFResult) -> str:
-    """Export Walk-Forward results to CSV string"""
+def export_wf_results_csv(result: WFResult, df: Optional[pd.DataFrame] = None) -> str:
+    """Export Walk-Forward results to CSV string
+
+    Args:
+        result: WFResult object containing walk-forward analysis results
+        df: Optional DataFrame with datetime index for converting bar numbers to dates
+    """
     import csv
     from io import StringIO
 
     output = StringIO()
     writer = csv.writer(output)
+
+    def bar_to_date(bar_idx: int) -> str:
+        """Convert bar index to date string (YYYY-MM-DD)"""
+        if df is not None and 0 <= bar_idx < len(df):
+            timestamp = df.index[bar_idx]
+            return timestamp.strftime('%Y-%m-%d')
+        return str(bar_idx)
 
     writer.writerow(["=== WALK-FORWARD ANALYSIS - RESULTS ==="])
     writer.writerow([])
@@ -537,12 +549,12 @@ def export_wf_results_csv(result: WFResult) -> str:
         writer.writerow(
             [
                 window.window_id,
-                window.is_start,
-                window.is_end,
-                window.gap_start,
-                window.gap_end,
-                window.oos_start,
-                window.oos_end,
+                bar_to_date(window.is_start),
+                bar_to_date(window.is_end),
+                bar_to_date(window.gap_start),
+                bar_to_date(window.gap_end),
+                bar_to_date(window.oos_start),
+                bar_to_date(window.oos_end),
                 best_param_id,
                 f"{best_oos_profit:.2f}%",
             ]
