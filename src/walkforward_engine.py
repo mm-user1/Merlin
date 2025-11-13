@@ -80,6 +80,10 @@ class WFResult:
     aggregated: List[AggregatedResult]
     forward_profits: List[float]  # Forward test results for Top-10
     forward_params: List[Dict[str, Any]]
+    wf_zone_start: int  # Start bar of WF zone (after warmup)
+    wf_zone_end: int  # End bar of WF zone
+    forward_start: int  # Start bar of Forward Reserve
+    forward_end: int  # End bar of Forward Reserve
 
 
 class WalkForwardEngine:
@@ -287,6 +291,10 @@ class WalkForwardEngine:
             f"Forward Test complete: {len([profit for profit in forward_profits if profit > 0])}/{len(forward_profits)} profitable"
         )
 
+        # Calculate WF zone boundaries
+        wf_zone_start = windows[0].is_start if windows else self.config.warmup_bars
+        wf_zone_end = fwd_start
+
         wf_result = WFResult(
             config=self.config,
             windows=windows,
@@ -294,6 +302,10 @@ class WalkForwardEngine:
             aggregated=aggregated,
             forward_profits=forward_profits,
             forward_params=forward_params,
+            wf_zone_start=wf_zone_start,
+            wf_zone_end=wf_zone_end,
+            forward_start=fwd_start,
+            forward_end=fwd_end,
         )
 
         return wf_result
@@ -475,11 +487,21 @@ def export_wf_results_csv(result: WFResult, df: Optional[pd.DataFrame] = None) -
     writer.writerow(["=== WALK-FORWARD ANALYSIS - RESULTS ==="])
     writer.writerow([])
 
-    writer.writerow(["=== SUMMARY ==="])
-    writer.writerow(["Total Windows", len(result.windows)])
-    writer.writerow(["WF Zone", f"{result.config.wf_zone_pct}%"])
-    writer.writerow(["Forward Reserve", f"{result.config.forward_pct}%"])
-    writer.writerow(["Gap Between IS/OOS", f"{result.config.gap_bars} bars"])
+    writer.writerow(["=== SUMMARY ===", "", "", ""])
+    writer.writerow(["Total Windows", len(result.windows), "Start", "End"])
+    writer.writerow([
+        "WF Zone",
+        f"{result.config.wf_zone_pct}%",
+        bar_to_date(result.wf_zone_start),
+        bar_to_date(result.wf_zone_end - 1)
+    ])
+    writer.writerow([
+        "Forward Reserve",
+        f"{result.config.forward_pct}%",
+        bar_to_date(result.forward_start),
+        bar_to_date(result.forward_end - 1)
+    ])
+    writer.writerow(["Gap Between IS/OOS", f"{result.config.gap_bars} bars", "", ""])
     writer.writerow(["Top-K Per Window", result.config.topk_per_window])
     writer.writerow([])
 
