@@ -80,6 +80,10 @@ class WFResult:
     aggregated: List[AggregatedResult]
     forward_profits: List[float]  # Forward test results for Top-10
     forward_params: List[Dict[str, Any]]
+    wf_zone_start: int  # Start bar of WF zone (after warmup)
+    wf_zone_end: int  # End bar of WF zone
+    forward_start: int  # Start bar of Forward Reserve
+    forward_end: int  # End bar of Forward Reserve
 
 
 class WalkForwardEngine:
@@ -287,6 +291,10 @@ class WalkForwardEngine:
             f"Forward Test complete: {len([profit for profit in forward_profits if profit > 0])}/{len(forward_profits)} profitable"
         )
 
+        # Calculate WF zone boundaries
+        wf_zone_start = windows[0].is_start if windows else self.config.warmup_bars
+        wf_zone_end = fwd_start
+
         wf_result = WFResult(
             config=self.config,
             windows=windows,
@@ -294,6 +302,10 @@ class WalkForwardEngine:
             aggregated=aggregated,
             forward_profits=forward_profits,
             forward_params=forward_params,
+            wf_zone_start=wf_zone_start,
+            wf_zone_end=wf_zone_end,
+            forward_start=fwd_start,
+            forward_end=fwd_end,
         )
 
         return wf_result
@@ -452,22 +464,44 @@ class WalkForwardEngine:
         return f"{ma_type} {ma_length}_{param_hash}"
 
 
-def export_wf_results_csv(result: WFResult) -> str:
-    """Export Walk-Forward results to CSV string"""
+def export_wf_results_csv(result: WFResult, df: Optional[pd.DataFrame] = None) -> str:
+    """Export Walk-Forward results to CSV string
+
+    Args:
+        result: WFResult object containing walk-forward analysis results
+        df: Optional DataFrame with datetime index for converting bar numbers to dates
+    """
     import csv
     from io import StringIO
 
     output = StringIO()
     writer = csv.writer(output)
 
+    def bar_to_date(bar_idx: int) -> str:
+        """Convert bar index to date string (YYYY-MM-DD)"""
+        if df is not None and 0 <= bar_idx < len(df):
+            timestamp = df.index[bar_idx]
+            return timestamp.strftime('%Y-%m-%d')
+        return str(bar_idx)
+
     writer.writerow(["=== WALK-FORWARD ANALYSIS - RESULTS ==="])
     writer.writerow([])
 
-    writer.writerow(["=== SUMMARY ==="])
-    writer.writerow(["Total Windows", len(result.windows)])
-    writer.writerow(["WF Zone", f"{result.config.wf_zone_pct}%"])
-    writer.writerow(["Forward Reserve", f"{result.config.forward_pct}%"])
-    writer.writerow(["Gap Between IS/OOS", f"{result.config.gap_bars} bars"])
+    writer.writerow(["=== SUMMARY ===", "", "", ""])
+    writer.writerow(["Total Windows", len(result.windows), "Start", "End"])
+    writer.writerow([
+        "WF Zone",
+        f"{result.config.wf_zone_pct}%",
+        bar_to_date(result.wf_zone_start),
+        bar_to_date(result.wf_zone_end - 1)
+    ])
+    writer.writerow([
+        "Forward Reserve",
+        f"{result.config.forward_pct}%",
+        bar_to_date(result.forward_start),
+        bar_to_date(result.forward_end - 1)
+    ])
+    writer.writerow(["Gap Between IS/OOS", f"{result.config.gap_bars} bars", "", ""])
     writer.writerow(["Top-K Per Window", result.config.topk_per_window])
     writer.writerow([])
 
@@ -537,12 +571,12 @@ def export_wf_results_csv(result: WFResult) -> str:
         writer.writerow(
             [
                 window.window_id,
-                window.is_start,
-                window.is_end,
-                window.gap_start,
-                window.gap_end,
-                window.oos_start,
-                window.oos_end,
+                bar_to_date(window.is_start),
+                bar_to_date(window.is_end),
+                bar_to_date(window.gap_start),
+                bar_to_date(window.gap_end),
+                bar_to_date(window.oos_start),
+                bar_to_date(window.oos_end),
                 best_param_id,
                 f"{best_oos_profit:.2f}%",
             ]

@@ -735,7 +735,7 @@ def run_walkforward_optimization() -> object:
         return jsonify({"error": "Walk-forward optimization failed."}), HTTPStatus.INTERNAL_SERVER_ERROR
 
     # Generate CSV content without saving to disk
-    csv_content = export_wf_results_csv(result)
+    csv_content = export_wf_results_csv(result, df)
 
     top10: List[Dict[str, Any]] = []
     for rank, agg in enumerate(result.aggregated[:10], 1):
