@@ -674,8 +674,8 @@ def export_wf_results_csv(result: WFResult, df: Optional[pd.DataFrame] = None) -
             "Param ID",
             "Appearances",
             "OOS Win Rate",
-            "Avg OOS Profit %",
             "Avg IS Profit %",
+            "Avg OOS Profit %",
             "Forward Profit %",
         ]
     )
@@ -693,8 +693,8 @@ def export_wf_results_csv(result: WFResult, df: Optional[pd.DataFrame] = None) -
                 agg.param_id,
                 f"{agg.appearances}/{len(result.windows)}",
                 f"{agg.oos_win_rate * 100:.1f}%",
-                f"{agg.avg_oos_profit:.2f}%",
                 f"{agg.avg_is_profit:.2f}%",
+                f"{agg.avg_oos_profit:.2f}%",
                 f"{forward_profit:.2f}%"
                 if isinstance(forward_profit, float)
                 else forward_profit,
