@@ -3642,59 +3642,53 @@
             body: formData
           });
 
-          // Check if response is a file download (ZIP) or JSON
-          const contentType = response.headers.get('content-type');
+          // Always expect JSON response
+          const data = await response.json();
 
-          if (contentType && contentType.includes('application/zip')) {
-            // Handle ZIP file download
-            if (!response.ok) {
-              if (wfStatusEl) {
-                wfStatusEl.textContent = `❌ Failed to download results.`;
-              }
-              return;
-            }
-
-            const blob = await response.blob();
-            const url = window.URL.createObjectURL(blob);
-            const link = document.createElement('a');
-            link.href = url;
-
-            // Extract filename from Content-Disposition header or use default
-            const disposition = response.headers.get('content-disposition');
-            let filename = `wf_results_${new Date().getTime()}.zip`;
-            if (disposition && disposition.includes('filename=')) {
-              const matches = /filename[^;=\n]*=((['"]).*?\2|[^;\n]*)/.exec(disposition);
-              if (matches != null && matches[1]) {
-                filename = matches[1].replace(/['"]/g, '');
-              }
-            }
-
-            link.download = filename;
-            document.body.appendChild(link);
-            link.click();
-            document.body.removeChild(link);
-            window.URL.revokeObjectURL(url);
-
+          if (!response.ok || data.status !== 'success') {
+            const message = data && data.error ? data.error : 'Walk-Forward request failed.';
             if (wfStatusEl) {
-              wfStatusEl.textContent = '✅ Walk-Forward completed successfully. Results downloaded as ZIP.';
+              wfStatusEl.textContent = `❌ ${message}`;
             }
-            if (wfSummaryEl) {
-              wfSummaryEl.innerHTML = '<strong>Trade history exported!</strong> Check the downloaded ZIP file for WFA results CSV and individual trade history files.';
-            }
-          } else {
-            // Handle JSON response (no trades export)
-            const data = await response.json();
+            return;
+          }
 
-            if (!response.ok || data.status !== 'success') {
-              const message = data && data.error ? data.error : 'Walk-Forward request failed.';
-              if (wfStatusEl) {
-                wfStatusEl.textContent = `❌ ${message}`;
+          // Always display results table
+          wfStatusEl.textContent = '✅ Walk-Forward completed successfully.';
+          displayWFResults(data);
+
+          // If trades were exported, download the ZIP file
+          if (data.export_trades && data.zip_base64) {
+            try {
+              // Decode base64 to binary
+              const binaryString = atob(data.zip_base64);
+              const bytes = new Uint8Array(binaryString.length);
+              for (let i = 0; i < binaryString.length; i++) {
+                bytes[i] = binaryString.charCodeAt(i);
               }
-              return;
-            }
+              const blob = new Blob([bytes], { type: 'application/zip' });
 
-            wfStatusEl.textContent = '✅ Walk-Forward completed successfully.';
-            displayWFResults(data);
+              // Trigger download
+              const url = window.URL.createObjectURL(blob);
+              const link = document.createElement('a');
+              link.href = url;
+              link.download = data.zip_filename || `wf_results_${new Date().getTime()}.zip`;
+              document.body.appendChild(link);
+              link.click();
+              document.body.removeChild(link);
+              window.URL.revokeObjectURL(url);
+
+              // Update status to indicate trade export
+              if (wfSummaryEl) {
+                const currentSummary = wfSummaryEl.innerHTML;
+                wfSummaryEl.innerHTML = currentSummary + '<br><strong>Trade history exported!</strong> Downloaded ZIP contains WFA results CSV and individual trade history files.';
+              }
+            } catch (zipError) {
+              console.error('Failed to download ZIP:', zipError);
+              if (wfStatusEl) {
+                wfStatusEl.textContent += ' (Warning: Failed to download trade history ZIP)';
+              }
+            }
           }
         } catch (error) {
           if (wfStatusEl) {

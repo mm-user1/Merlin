@@ -780,6 +780,21 @@ def run_walkforward_optimization() -> object:
     # Generate CSV content without saving to disk
     csv_content = export_wf_results_csv(result, df)
 
+    # Build top10 summary (common for both modes)
+    top10: List[Dict[str, Any]] = []
+    for rank, agg in enumerate(result.aggregated[:10], 1):
+        forward_profit = result.forward_profits[rank - 1] if rank <= len(result.forward_profits) else None
+        top10.append(
+            {
+                "rank": rank,
+                "param_id": agg.param_id,
+                "appearances": f"{agg.appearances}/{len(result.windows)}",
+                "avg_oos_profit": round(agg.avg_oos_profit, 2),
+                "oos_win_rate": round(agg.oos_win_rate * 100, 1),
+                "forward_profit": round(forward_profit, 2) if isinstance(forward_profit, (int, float)) else None,
+            }
+        )
+
     # Get export trades settings from request
     export_trades = data.get("exportTrades") == "true"
     top_k_str = data.get("topK", "10")
@@ -797,6 +812,7 @@ def run_walkforward_optimization() -> object:
         import tempfile
         import zipfile
         import shutil
+        import base64
         from pathlib import Path
         from walkforward_engine import export_wfa_trades_history, _extract_symbol_from_csv_filename
 
@@ -836,23 +852,34 @@ def run_walkforward_optimization() -> object:
                     trade_path = temp_dir / trade_file
                     zf.write(trade_path, trade_file)
 
+            # Read ZIP into base64
+            with open(zip_path, 'rb') as f:
+                zip_bytes = f.read()
+            zip_base64 = base64.b64encode(zip_bytes).decode('utf-8')
+
+            # Cleanup temporary directory
+            shutil.rmtree(temp_dir, ignore_errors=True)
+
             # Close opened file before sending response
             if opened_file:
                 opened_file.close()
 
-            # Send ZIP file
-            response = send_file(
-                zip_path,
-                mimetype='application/zip',
-                as_attachment=True,
-                download_name=zip_filename
-            )
+            # Return JSON with embedded ZIP
+            response_payload = {
+                "status": "success",
+                "summary": {
+                    "total_windows": len(result.windows),
+                    "top_param_id": result.aggregated[0].param_id if result.aggregated else "N/A",
+                    "top_avg_oos_profit": round(result.aggregated[0].avg_oos_profit, 2) if result.aggregated else 0.0,
+                },
+                "top10": top10,
+                "csv_content": csv_content,
+                "export_trades": True,
+                "zip_filename": zip_filename,
+                "zip_base64": zip_base64,
+            }
 
-            # Cleanup temporary directory after sending
-            # Note: Flask will handle the file, so we can't delete immediately
-            # The temp directory will be cleaned up by the OS eventually
-
-            return response
+            return jsonify(response_payload)
 
         except Exception as e:
             # Cleanup on error
@@ -865,20 +892,6 @@ def run_walkforward_optimization() -> object:
 
     else:
         # No trades export - return JSON response (existing behavior)
-        top10: List[Dict[str, Any]] = []
-        for rank, agg in enumerate(result.aggregated[:10], 1):
-            forward_profit = result.forward_profits[rank - 1] if rank <= len(result.forward_profits) else None
-            top10.append(
-                {
-                    "rank": rank,
-                    "param_id": agg.param_id,
-                    "appearances": f"{agg.appearances}/{len(result.windows)}",
-                    "avg_oos_profit": round(agg.avg_oos_profit, 2),
-                    "oos_win_rate": round(agg.oos_win_rate * 100, 1),
-                    "forward_profit": round(forward_profit, 2) if isinstance(forward_profit, (int, float)) else None,
-                }
-            )
-
         response_payload = {
             "status": "success",
             "summary": {
