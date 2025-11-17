@@ -826,10 +826,6 @@ def run_walkforward_optimization() -> object:
         temp_dir = Path(tempfile.mkdtemp())
 
         try:
-            # Save main WFA results CSV
-            csv_path = temp_dir / csv_filename
-            csv_path.write_text(csv_content, encoding='utf-8')
-
             # Export trades to CSVs
             trade_files = export_wfa_trades_history(
                 wf_result=result,
@@ -839,14 +835,11 @@ def run_walkforward_optimization() -> object:
                 output_dir=temp_dir
             )
 
-            # Create ZIP with all files
-            zip_filename = f"wf_results_{timestamp}.zip"
+            # Create ZIP with trade CSVs only
+            zip_filename = f"wf_trades_{timestamp}.zip"
             zip_path = temp_dir / zip_filename
 
             with zipfile.ZipFile(zip_path, 'w', zipfile.ZIP_DEFLATED) as zf:
-                # Add main CSV
-                zf.write(csv_path, csv_filename)
-
                 # Add all trade CSVs
                 for trade_file in trade_files:
                     trade_path = temp_dir / trade_file
