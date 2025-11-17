@@ -722,10 +722,12 @@ def _export_trades_to_csv(
     """
     Export trades to TradingView CSV format.
 
+    Each trade generates TWO rows: entry and exit.
+
     Format:
         Symbol,Side,Qty,Fill Price,Closing Time
-        OKX:LINKUSDT.P,Buy,10,13.9,2025-11-15 00:00:00
-        OKX:LINKUSDT.P,Sell,10,14,2025-11-15 08:00:00
+        OKX:LINKUSDT.P,Buy,10,16.30,2025-11-15 00:00:00   (entry)
+        OKX:LINKUSDT.P,Sell,10,16.50,2025-11-15 01:00:00  (exit)
 
     Args:
         trades: List of TradeRecord objects
@@ -742,17 +744,26 @@ def _export_trades_to_csv(
 
     rows = []
     for trade in trades:
-        side = "Buy" if trade.direction == "long" else "Sell"
         qty = int(trade.size)  # Convert to integer (number of contracts)
-        fill_price = trade.exit_price
-        closing_time = trade.exit_time.strftime("%Y-%m-%d %H:%M:%S")
 
+        # Entry (open position)
+        entry_side = "Buy" if trade.direction == "long" else "Sell"
         rows.append({
             "Symbol": symbol,
-            "Side": side,
+            "Side": entry_side,
             "Qty": qty,
-            "Fill Price": fill_price,
-            "Closing Time": closing_time
+            "Fill Price": trade.entry_price,
+            "Closing Time": trade.entry_time.strftime("%Y-%m-%d %H:%M:%S")
+        })
+
+        # Exit (close position)
+        exit_side = "Sell" if trade.direction == "long" else "Buy"
+        rows.append({
+            "Symbol": symbol,
+            "Side": exit_side,
+            "Qty": qty,
+            "Fill Price": trade.exit_price,
+            "Closing Time": trade.exit_time.strftime("%Y-%m-%d %H:%M:%S")
         })
 
     df = pd.DataFrame(rows)
