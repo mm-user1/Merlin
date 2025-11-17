@@ -744,7 +744,7 @@ def _export_trades_to_csv(
 
     rows = []
     for trade in trades:
-        qty = int(trade.size)  # Convert to integer (number of contracts)
+        qty = trade.size  # Preserve fractional contract sizes (e.g., 0.01, 0.5, etc.)
 
         # Entry (open position)
         entry_side = "Buy" if trade.direction == "long" else "Sell"
