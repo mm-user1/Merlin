@@ -775,6 +775,26 @@
                     <ul id="selectedFilesList" class="selected-files-list"></ul>
                   </div>
                 </div>
+
+                <div class="form-group">
+                  <div class="filter-group" id="exportTradesFilterGroup">
+                    <div class="checkbox-group">
+                      <input type="checkbox" id="wfExportTrades" />
+                      <label for="wfExportTrades">Export Trades</label>
+                    </div>
+                    <div class="filter-input-group">
+                      <label for="wfExportTopK">Top</label>
+                      <input
+                        type="number"
+                        id="wfExportTopK"
+                        min="1"
+                        max="100"
+                        step="1"
+                        value="10"
+                      />
+                    </div>
+                  </div>
+                </div>
               </div>
 
               <div class="section">
@@ -1638,16 +1658,6 @@
                   <label style="min-width: 150px;">Top-K per Window:</label>
                   <input type="number" id="wfTopK" value="20" min="5" max="50" style="width: 100px;" />
                   <span style="font-size: 12px; color: #666; margin-left: 10px;">(Best parameter sets to test on each window)</span>
-                </div>
-
-                <div class="form-group" style="margin-bottom: 12px; align-items: center;">
-                  <label style="min-width: 150px;">
-                    <input type="checkbox" id="wfExportTrades" />
-                    Export Trades History
-                  </label>
-                  <span style="margin-left: 10px; margin-right: 5px;">Top</span>
-                  <input type="number" id="wfExportTopK" value="10" min="1" max="100" style="width: 80px;" />
-                  <span style="font-size: 12px; color: #666; margin-left: 10px;">(Export detailed trade history for top-K parameter sets)</span>
                 </div>
 
                 <div style="background-color: #e8f4f8; padding: 15px; border-radius: 5px;">
