@@ -883,6 +883,7 @@ def run_walkforward_optimization() -> object:
                 },
                 "top10": top10,
                 "csv_content": csv_content,
+                "csv_filename": csv_filename,
                 "export_trades": True,
                 "zip_filename": zip_filename,
                 "zip_base64": zip_base64,
@@ -910,6 +911,7 @@ def run_walkforward_optimization() -> object:
             },
             "top10": top10,
             "csv_content": csv_content,
+            "csv_filename": csv_filename,
         }
 
         if opened_file:
