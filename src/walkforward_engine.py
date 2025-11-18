@@ -674,6 +674,31 @@ class WalkForwardEngine:
         return f"{ma_type} {ma_length}_{param_hash}"
 
 
+def _extract_file_prefix(csv_filename: str) -> str:
+    """
+    Extract file prefix (exchange, ticker, timeframe) from CSV filename.
+
+    Examples:
+        "OKX_LINKUSDT.P, 15 2025.02.01-2025.09.09.csv" -> "OKX_LINKUSDT.P, 15"
+        "BINANCE_BTCUSDT, 1h.csv" -> "BINANCE_BTCUSDT, 1h"
+
+    Returns original filename stem if date pattern not found.
+    """
+    from pathlib import Path
+    import re
+
+    name = Path(csv_filename).stem
+
+    # Remove date pattern if exists (YYYY.MM.DD-YYYY.MM.DD or YYYY-MM-DD--YYYY-MM-DD)
+    date_pattern = re.compile(r"\b\d{4}[.\-/]\d{2}[.\-/]\d{2}\b")
+    match = date_pattern.search(name)
+    if match:
+        prefix = name[:match.start()].rstrip()
+        return prefix if prefix else name
+
+    return name
+
+
 def _extract_symbol_from_csv_filename(csv_filename: str) -> str:
     """
     Extract trading symbol from CSV filename in format: EXCHANGE:TICKER
@@ -712,6 +737,49 @@ def _extract_symbol_from_csv_filename(csv_filename: str) -> str:
         ticker = remainder.split()[0] if remainder.split() else "UNKNOWN"
 
     return f"{prefix}:{ticker}"
+
+
+def generate_wfa_output_filename(
+    csv_filename: str,
+    start_date: pd.Timestamp,
+    end_date: pd.Timestamp,
+    include_trades: bool = False
+) -> str:
+    """
+    Generate filename for WFA results.
+
+    Format: EXCHANGE_TICKER TF START-END_Optuna+WFA.csv
+    Or:     EXCHANGE_TICKER TF START-END_Optuna+WFA_TRADES.zip
+
+    Args:
+        csv_filename: Input CSV filename
+        start_date: Start date of analysis period
+        end_date: End date of analysis period
+        include_trades: If True, generate ZIP filename for trades export
+
+    Returns:
+        Formatted filename string
+
+    Examples:
+        >>> generate_wfa_output_filename("OKX_LINKUSDT.P, 15.csv", pd.Timestamp("2025-05-01"), pd.Timestamp("2025-09-01"))
+        "OKX_LINKUSDT.P, 15 2025.05.01-2025.09.01_Optuna+WFA.csv"
+        >>> generate_wfa_output_filename("OKX_LINKUSDT.P, 15.csv", pd.Timestamp("2025-05-01"), pd.Timestamp("2025-09-01"), True)
+        "OKX_LINKUSDT.P, 15 2025.05.01-2025.09.01_Optuna+WFA_TRADES.zip"
+    """
+    # Extract prefix
+    prefix = _extract_file_prefix(csv_filename)
+    if not prefix:
+        prefix = "wfa"
+
+    # Format dates
+    start_str = start_date.strftime("%Y.%m.%d")
+    end_str = end_date.strftime("%Y.%m.%d")
+
+    # Build filename
+    mode = "Optuna+WFA_TRADES" if include_trades else "Optuna+WFA"
+    ext = "zip" if include_trades else "csv"
+
+    return f"{prefix} {start_str}-{end_str}_{mode}.{ext}"
 
 
 def _export_trades_to_csv(

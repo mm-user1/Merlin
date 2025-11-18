@@ -803,9 +803,24 @@ def run_walkforward_optimization() -> object:
     except (ValueError, TypeError):
         top_k = 10
 
-    # Generate timestamp and filenames
-    timestamp = int(time.time() * 1000)
-    csv_filename = f"wf_results_{timestamp}.csv"
+    # Get dates for filename generation
+    start_date = df.index[0]
+    end_date = df.index[-1]
+
+    # Get original CSV filename
+    original_csv_name = csv_file.filename if csv_file and hasattr(csv_file, 'filename') else ""
+    if not original_csv_name and csv_path_raw:
+        original_csv_name = csv_path_raw
+
+    # Generate filenames
+    from walkforward_engine import generate_wfa_output_filename, export_wfa_trades_history, _extract_symbol_from_csv_filename
+
+    csv_filename = generate_wfa_output_filename(
+        original_csv_name,
+        start_date,
+        end_date,
+        include_trades=False
+    )
 
     if export_trades:
         # Export trades history for top-K combinations
@@ -814,12 +829,8 @@ def run_walkforward_optimization() -> object:
         import shutil
         import base64
         from pathlib import Path
-        from walkforward_engine import export_wfa_trades_history, _extract_symbol_from_csv_filename
 
         # Extract symbol from CSV filename
-        original_csv_name = csv_file.filename if csv_file and hasattr(csv_file, 'filename') else ""
-        if not original_csv_name and csv_path_raw:
-            original_csv_name = csv_path_raw
         symbol = _extract_symbol_from_csv_filename(original_csv_name)
 
         # Create temporary directory for all files
@@ -836,7 +847,12 @@ def run_walkforward_optimization() -> object:
             )
 
             # Create ZIP with trade CSVs only
-            zip_filename = f"wf_trades_{timestamp}.zip"
+            zip_filename = generate_wfa_output_filename(
+                original_csv_name,
+                start_date,
+                end_date,
+                include_trades=True
+            )
             zip_path = temp_dir / zip_filename
 
             with zipfile.ZipFile(zip_path, 'w', zipfile.ZIP_DEFLATED) as zf:
@@ -1254,6 +1270,27 @@ _DATE_PREFIX_RE = re.compile(r"\b\d{4}[.\-/]\d{2}[.\-/]\d{2}\b")
 _DATE_VALUE_RE = re.compile(r"(\d{4})[.\-/]?(\d{2})[.\-/]?(\d{2})")
 
 
+def _extract_file_prefix(csv_filename: str) -> str:
+    """
+    Extract file prefix (exchange, ticker, timeframe) from CSV filename.
+
+    Examples:
+        "OKX_LINKUSDT.P, 15 2025.02.01-2025.09.09.csv" -> "OKX_LINKUSDT.P, 15"
+        "BINANCE_BTCUSDT, 1h.csv" -> "BINANCE_BTCUSDT, 1h"
+
+    Returns original filename stem if pattern not found.
+    """
+    name = Path(csv_filename).stem
+
+    # Remove date pattern if exists (YYYY.MM.DD-YYYY.MM.DD)
+    match = _DATE_PREFIX_RE.search(name)
+    if match:
+        prefix = name[:match.start()].rstrip()
+        return prefix if prefix else name
+
+    return name
+
+
 def _format_date_component(value: object) -> str:
     if value in (None, ""):
         return "0000.00.00"
@@ -1290,42 +1327,48 @@ _PARAMETER_FRONTEND_ORDER = [
 ]
 
 
-def _format_ma_segment(config: OptimizationConfig) -> str:
-    ma_types = _unique_preserve_order([ma.upper() for ma in config.ma_types_trend])
-    if not ma_types:
-        return ""
-    if len(ma_types) == 11:
-        return "_ALL"
-    is_ma_length_optimized = bool(config.enabled_params.get("maLength"))
-    if len(ma_types) == 1 and not is_ma_length_optimized:
-        ma_length_value = config.fixed_params.get("maLength")
-        if ma_length_value is not None:
-            try:
-                ma_length_int = int(round(float(ma_length_value)))
-                ma_length_str = str(ma_length_int)
-            except (TypeError, ValueError):  # pragma: no cover - defensive
-                ma_length_str = str(ma_length_value)
-            return f"_{ma_types[0]} {ma_length_str}"
-        return f"_{ma_types[0]}"
-    return "_" + "+".join(ma_types)
+def generate_output_filename(csv_filename: str, config: OptimizationConfig, mode: str = None) -> str:
+    """
+    Generate standardized output filename.
 
+    Format: EXCHANGE_TICKER TF START-END_MODE.csv
+    Example: "OKX_LINKUSDT.P, 15 2025.05.01-2025.09.01_Grid.csv"
 
-def generate_output_filename(csv_filename: str, config: OptimizationConfig) -> str:
-    original_name = Path(csv_filename or "").name
-    stem = Path(original_name).stem if original_name else ""
-    prefix = stem
-    if stem:
-        match = _DATE_PREFIX_RE.search(stem)
-        if match:
-            prefix = stem[: match.start()].rstrip()
-    prefix = prefix.strip() or "optimization"
+    Args:
+        csv_filename: Input CSV filename
+        config: Optimization configuration
+        mode: Output mode ("Grid", "Optuna", "Optuna+WFA")
 
+    Returns:
+        Formatted filename string
+    """
+    # Extract prefix (exchange, ticker, timeframe)
+    prefix = _extract_file_prefix(csv_filename or "")
+    if not prefix:
+        prefix = "optimization"
+
+    # Format dates
     start_formatted = _format_date_component(config.fixed_params.get("start"))
     end_formatted = _format_date_component(config.fixed_params.get("end"))
-    date_segment = f"{start_formatted}-{end_formatted}"
-    ma_segment = _format_ma_segment(config)
 
-    return f"{prefix} {date_segment}{ma_segment}.csv"
+    # Handle dateFilter=false: extract dates from input filename
+    if not config.fixed_params.get("dateFilter"):
+        original_name = Path(csv_filename or "").stem
+        match = _DATE_PREFIX_RE.search(original_name)
+        if match:
+            # Found dates in filename, use them
+            date_str = match.group()
+            parts = date_str.split("-")
+            if len(parts) == 2:
+                start_formatted = parts[0]
+                end_formatted = parts[1]
+
+    # Determine mode
+    if mode is None:
+        mode = "Optuna" if config.optimization_mode == "optuna" else "Grid"
+
+    # Build filename
+    return f"{prefix} {start_formatted}-{end_formatted}_{mode}.csv"
 
 
 @app.post("/api/optimize")
