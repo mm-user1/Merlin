@@ -47,6 +47,9 @@ class S03Reversal(BaseStrategy):
         self.start_date = self._parse_date(params.get("startDate"))
         self.end_date = self._parse_date(params.get("endDate"))
 
+        self.trade_start_idx: int = 0
+        self.time_in_range: Optional[np.ndarray] = None
+
         self.equity_pct = float(params.get("equityPct", 100.0))
         self.contract_size = float(params.get("contractSize", 0.0))
         self.commission_rate = float(params.get("commissionRate", 0.0005))
@@ -307,16 +310,26 @@ class S03Reversal(BaseStrategy):
         self.counter_close_long = 0
         self.counter_close_short = 0
 
-    def _is_date_allowed(self, idx: int) -> bool:
-        if not self.date_filter:
-            return True
+        if self.date_filter:
+            time_mask = np.zeros(len(df), dtype=bool)
+            start_idx = int(self.trade_start_idx) if self.trade_start_idx is not None else 0
+            if start_idx == 0 and self.start_date is not None:
+                start_idx = int(df.index.searchsorted(self.start_date))
 
-        current_date = self.df.index[idx]
-        if self.start_date and current_date < self.start_date:
-            return False
-        if self.end_date and current_date > self.end_date:
-            return False
-        return True
+            time_mask[start_idx:] = True
+
+            if self.end_date is not None:
+                end_idx = int(df.index.searchsorted(self.end_date, side="right"))
+                time_mask[end_idx:] = False
+
+            self.time_in_range = time_mask
+        else:
+            self.time_in_range = np.ones(len(df), dtype=bool)
+
+    def _is_date_allowed(self, idx: int) -> bool:
+        if self.time_in_range is None:
+            return True
+        return bool(self.time_in_range[idx])
 
     def allows_reversal(self) -> bool:
         return True
@@ -325,7 +338,7 @@ class S03Reversal(BaseStrategy):
         if idx < 1 or not self.use_backtester:
             return False
 
-        if not self._is_date_allowed(idx):
+        if self.time_in_range is not None and not self.time_in_range[idx]:
             self.counter_close_long = 0
             return False
 
@@ -345,7 +358,7 @@ class S03Reversal(BaseStrategy):
         if idx < 1 or not self.use_backtester:
             return False
 
-        if not self._is_date_allowed(idx):
+        if self.time_in_range is not None and not self.time_in_range[idx]:
             self.counter_close_short = 0
             return False
 
