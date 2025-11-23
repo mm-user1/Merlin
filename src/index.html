@@ -741,6 +741,39 @@
           </div>
           <div class="content">
             <form id="backtestForm">
+              <!-- ============================================ -->
+              <!-- STRATEGY SELECTOR -->
+              <!-- ============================================ -->
+              <div
+                class="strategy-selector-section"
+                style="margin-bottom: 30px; padding: 20px; background-color: #f0f8ff; border: 2px solid #4a90e2; border-radius: 8px;"
+              >
+                <h2 style="margin-top: 0; color: #4a90e2;">📊 Select Strategy</h2>
+
+                <div class="form-group">
+                  <label style="font-weight: bold;">Strategy:</label>
+                  <select
+                    id="strategySelect"
+                    onchange="handleStrategyChange()"
+                    style="padding: 8px; font-size: 14px; min-width: 300px;"
+                  >
+                    <option value="">Loading strategies...</option>
+                  </select>
+                </div>
+
+                <div
+                  id="strategyInfo"
+                  style="margin-top: 15px; padding: 15px; background-color: white; border-radius: 5px; display: none;"
+                >
+                  <div style="display: grid; grid-template-columns: auto 1fr; gap: 10px; font-size: 14px;">
+                    <strong>Name:</strong> <span id="strategyName"></span>
+                    <strong>Version:</strong> <span id="strategyVersion"></span>
+                    <strong>Description:</strong> <span id="strategyDescription"></span>
+                    <strong>Parameters:</strong> <span id="strategyParamCount"></span>
+                  </div>
+                </div>
+              </div>
+
               <div class="section">
                 <div class="form-group">
                   <div class="checkbox-group">
@@ -765,6 +798,24 @@
                   <input type="text" id="endDate" class="date-input" autocomplete="off" />
                   <button type="button" class="calendar-btn" tabindex="-1">📅</button>
                   <input type="text" id="endTime" class="small-input" autocomplete="off" />
+                </div>
+
+                <!-- Add after End Time input -->
+                <div class="form-group">
+                  <label>Warmup Bars:</label>
+                  <input
+                    type="number"
+                    id="warmupBars"
+                    name="warmupBars"
+                    value="1000"
+                    min="100"
+                    max="5000"
+                    step="100"
+                    style="width: 120px;"
+                  />
+                  <span style="margin-left: 10px; font-size: 12px; color: #666;">
+                    (Bars before Start Date for indicator calculation. Recommended: 1000-2000)
+                  </span>
                 </div>
 
                 <div class="form-group vertical">
@@ -793,6 +844,29 @@
                         value="10"
                       />
                     </div>
+                  </div>
+                </div>
+              </div>
+
+              <!-- ============================================ -->
+              <!-- DYNAMIC STRATEGY PARAMETERS -->
+              <!-- ============================================ -->
+              <div id="dynamicParameterForms" style="margin-top: 30px;">
+                <h2>Strategy Parameters</h2>
+
+                <!-- Backtest Parameters Container -->
+                <div id="backtestParamsContainer" class="params-section">
+                  <h3>Backtest Parameters</h3>
+                  <div id="backtestParamsContent">
+                    <!-- Generated forms will appear here -->
+                  </div>
+                </div>
+
+                <!-- Optimization Parameters Container -->
+                <div id="optimizerParamsContainer" class="params-section" style="margin-top: 30px;">
+                  <h3>Optimization Parameters</h3>
+                  <div id="optimizerParamsContent">
+                    <!-- Generated forms will appear here -->
                   </div>
                 </div>
               </div>
@@ -905,6 +979,8 @@
                 </div>
               </div>
 
+              <!-- Hide old hardcoded forms (keep for fallback) -->
+              <div id="legacyForms" style="display: none;">
               <div class="section">
                 <div class="form-group with-ma">
                   <label>T MA Type</label>
@@ -1171,6 +1247,8 @@
                   <label for="contractSize">Contract Size</label>
                   <input type="number" id="contractSize" step="0.01" min="0" />
                 </div>
+              </div>
+
               </div>
 
               <div class="section">
@@ -1741,6 +1819,291 @@
   </div>
 
   <script>
+    // ============================================
+    // STRATEGY MANAGEMENT
+    // ============================================
+
+    let currentStrategyId = null;
+    let currentStrategyConfig = null;
+
+    /**
+     * Load list of available strategies on page load
+     */
+    async function loadStrategiesList() {
+      try {
+        const response = await fetch('/api/strategies');
+        const data = await response.json();
+
+        const select = document.getElementById('strategySelect');
+        if (!select) {
+          return;
+        }
+
+        select.innerHTML = '';
+
+        if (!data.strategies || data.strategies.length === 0) {
+          select.innerHTML = '<option value="">No strategies found</option>';
+          console.error('No strategies discovered');
+          return;
+        }
+
+        data.strategies.forEach((strategy) => {
+          const option = document.createElement('option');
+          option.value = strategy.id;
+          option.textContent = `${strategy.name} ${strategy.version}`;
+          select.appendChild(option);
+        });
+
+        if (data.strategies.length > 0) {
+          currentStrategyId = data.strategies[0].id;
+          select.value = currentStrategyId;
+          await loadStrategyConfig(currentStrategyId);
+        }
+      } catch (error) {
+        console.error('Failed to load strategies:', error);
+        alert('Error loading strategies. Check console for details.');
+      }
+    }
+
+    /**
+     * Handle strategy selection change
+     */
+    async function handleStrategyChange() {
+      const select = document.getElementById('strategySelect');
+      currentStrategyId = select?.value || null;
+
+      if (!currentStrategyId) {
+        return;
+      }
+
+      await loadStrategyConfig(currentStrategyId);
+    }
+
+    /**
+     * Load strategy configuration and generate forms
+     */
+    async function loadStrategyConfig(strategyId) {
+      try {
+        const response = await fetch(`/api/strategies/${strategyId}/config`);
+        currentStrategyConfig = await response.json();
+
+        updateStrategyInfo(currentStrategyConfig);
+        generateBacktestForm(currentStrategyConfig);
+        generateOptimizerForm(currentStrategyConfig);
+
+        console.log(`Loaded strategy: ${currentStrategyConfig.name}`);
+      } catch (error) {
+        console.error('Failed to load strategy config:', error);
+        alert('Error loading strategy configuration');
+      }
+    }
+
+    /**
+     * Update strategy info panel
+     */
+    function updateStrategyInfo(config) {
+      const info = document.getElementById('strategyInfo');
+      if (!info) {
+        return;
+      }
+
+      document.getElementById('strategyName').textContent = config.name || '';
+      document.getElementById('strategyVersion').textContent = config.version || '';
+      document.getElementById('strategyDescription').textContent = config.description || 'N/A';
+      document.getElementById('strategyParamCount').textContent = Object.keys(config.parameters || {}).length;
+      info.style.display = 'block';
+    }
+
+    /**
+     * Generate backtest parameters form from config
+     */
+    function generateBacktestForm(config) {
+      const container = document.getElementById('backtestParamsContent');
+      if (!container) {
+        return;
+      }
+
+      container.innerHTML = '';
+
+      const params = config.parameters || {};
+      const groups = {};
+
+      for (const [paramName, paramDef] of Object.entries(params)) {
+        const group = paramDef.group || 'Other';
+        if (!groups[group]) {
+          groups[group] = [];
+        }
+        groups[group].push({ name: paramName, def: paramDef });
+      }
+
+      for (const [groupName, groupParams] of Object.entries(groups)) {
+        const groupDiv = document.createElement('div');
+        groupDiv.className = 'param-group';
+        groupDiv.style.marginBottom = '25px';
+
+        const groupTitle = document.createElement('h4');
+        groupTitle.textContent = groupName;
+        groupTitle.style.color = '#4a90e2';
+        groupTitle.style.marginBottom = '15px';
+        groupDiv.appendChild(groupTitle);
+
+        groupParams.forEach(({ name, def }) => {
+          const formGroup = createFormField(name, def, 'backtest');
+          groupDiv.appendChild(formGroup);
+        });
+
+        container.appendChild(groupDiv);
+      }
+    }
+
+    /**
+     * Generate optimizer parameters form from config
+     * Uses existing UI classes: .opt-section, .opt-row, .opt-label, .opt-controls
+     * Only includes parameters where optimize.enabled !== false
+     */
+    function generateOptimizerForm(config) {
+      const container = document.getElementById('optimizerParamsContent');
+      if (!container) {
+        return;
+      }
+
+      container.innerHTML = '';
+
+      const params = config.parameters || {};
+      const groups = {};
+
+      for (const [paramName, paramDef] of Object.entries(params)) {
+        const optimizeEnabled = paramDef.optimize?.enabled;
+        if (optimizeEnabled === false) {
+          continue;
+        }
+
+        const group = paramDef.group || 'Other';
+        if (!groups[group]) {
+          groups[group] = [];
+        }
+        groups[group].push({ name: paramName, def: paramDef });
+      }
+
+      for (const [groupName, groupParams] of Object.entries(groups)) {
+        const section = document.createElement('div');
+        section.className = 'opt-section';
+
+        const sectionTitle = document.createElement('div');
+        sectionTitle.className = 'opt-section-title';
+        sectionTitle.textContent = groupName.toUpperCase();
+        section.appendChild(sectionTitle);
+
+        groupParams.forEach(({ name, def }) => {
+          const optimizeEnabled = def.optimize?.enabled || false;
+          const row = document.createElement('div');
+          row.className = 'opt-row';
+
+          const checkbox = document.createElement('input');
+          checkbox.type = 'checkbox';
+          checkbox.id = `dyn-opt-${name}`;
+          checkbox.checked = optimizeEnabled;
+
+          const label = document.createElement('label');
+          label.className = 'opt-label';
+          label.htmlFor = checkbox.id;
+          label.textContent = def.label || name;
+
+          row.appendChild(checkbox);
+          row.appendChild(label);
+
+          if (def.type === 'int' || def.type === 'float') {
+            const controls = document.createElement('div');
+            controls.className = 'opt-controls';
+            controls.id = `dyn-opt-${name}-controls`;
+            controls.style.display = optimizeEnabled ? 'flex' : 'none';
+
+            const step = def.optimize?.step || def.step || (def.type === 'int' ? 1 : 0.1);
+
+            controls.innerHTML = `
+                    <label>From:</label>
+                    <input class="tiny-input" id="dyn-${name}-from" type="number"
+                           value="${def.optimize?.min ?? def.min ?? def.default ?? ''}" step="${step}" />
+                    <label>To:</label>
+                    <input class="tiny-input" id="dyn-${name}-to" type="number"
+                           value="${def.optimize?.max ?? def.max ?? def.default ?? ''}" step="${step}" />
+                    <label>Step:</label>
+                    <input class="tiny-input" id="dyn-${name}-step" type="number"
+                           value="${step}" step="${def.type === 'int' ? 1 : 0.1}" />
+                `;
+
+            row.appendChild(controls);
+
+            checkbox.addEventListener('change', function onToggle() {
+              controls.style.display = this.checked ? 'flex' : 'none';
+            });
+          }
+
+          section.appendChild(row);
+        });
+
+        container.appendChild(section);
+      }
+    }
+
+    /**
+     * Create a form field based on parameter definition
+     */
+    function createFormField(paramName, paramDef, prefix) {
+      const formGroup = document.createElement('div');
+      formGroup.className = 'form-group';
+      formGroup.style.marginBottom = '15px';
+
+      const label = document.createElement('label');
+      label.textContent = paramDef.label || paramName;
+      label.style.display = 'inline-block';
+      label.style.width = '200px';
+      formGroup.appendChild(label);
+
+      let input;
+
+      if (paramDef.type === 'select') {
+        input = document.createElement('select');
+        input.id = `${prefix}_${paramName}`;
+        input.name = paramName;
+        input.style.padding = '5px';
+        input.style.minWidth = '150px';
+
+        (paramDef.options || []).forEach((option) => {
+          const opt = document.createElement('option');
+          opt.value = option;
+          opt.textContent = option;
+          if (option === paramDef.default) {
+            opt.selected = true;
+          }
+          input.appendChild(opt);
+        });
+      } else if (paramDef.type === 'int' || paramDef.type === 'float') {
+        input = document.createElement('input');
+        input.type = 'number';
+        input.id = `${prefix}_${paramName}`;
+        input.name = paramName;
+        input.value = paramDef.default ?? 0;
+        input.min = paramDef.min !== undefined ? paramDef.min : '';
+        input.max = paramDef.max !== undefined ? paramDef.max : '';
+        input.step = paramDef.step || (paramDef.type === 'int' ? 1 : 0.1);
+        input.style.padding = '5px';
+        input.style.width = '120px';
+      } else if (paramDef.type === 'bool') {
+        input = document.createElement('input');
+        input.type = 'checkbox';
+        input.id = `${prefix}_${paramName}`;
+        input.name = paramName;
+        input.checked = paramDef.default || false;
+      }
+
+      if (input) {
+        formGroup.appendChild(input);
+      }
+
+      return formGroup;
+    }
+
     document.addEventListener('DOMContentLoaded', () => {
       const MA_TYPES = [
         'EMA',
@@ -1755,6 +2118,8 @@
         'VWMA',
         'VWAP'
       ];
+
+      loadStrategiesList();
 
       const collapsibles = document.querySelectorAll('.collapsible');
       collapsibles.forEach((collapsible) => {
