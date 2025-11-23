@@ -10,7 +10,7 @@ from typing import Any, Dict, List, Optional, Tuple
 import pandas as pd
 from flask import Flask, jsonify, request, send_file, send_from_directory
 
-from backtest_engine import StrategyParams, load_data, run_strategy, prepare_dataset_with_warmup
+from backtest_engine import load_data, prepare_dataset_with_warmup
 from optimizer_engine import (
     CSV_COLUMN_SPECS,
     OptimizationResult,
@@ -943,6 +943,19 @@ def run_walkforward_optimization() -> object:
 
 @app.post("/api/backtest")
 def run_backtest() -> object:
+    """Run single backtest with selected strategy"""
+
+    # Get strategy ID from form (default to S01)
+    strategy_id = request.form.get("strategy", "s01_trailing_ma")
+
+    # Get warmup bars
+    warmup_bars_raw = request.form.get("warmupBars", "1000")
+    try:
+        warmup_bars = int(warmup_bars_raw)
+        warmup_bars = max(100, min(5000, warmup_bars))
+    except (TypeError, ValueError):
+        warmup_bars = 1000
+
     csv_file = request.files.get("file")
     csv_path_raw = (request.form.get("csvPath") or "").strip()
     data_source = None
@@ -975,11 +988,15 @@ def run_backtest() -> object:
     except json.JSONDecodeError:
         return ("Invalid payload JSON.", HTTPStatus.BAD_REQUEST)
 
-    try:
-        params = StrategyParams.from_dict(payload)
-    except ValueError as exc:
-        return (str(exc), HTTPStatus.BAD_REQUEST)
+    # Load strategy
+    from strategies import get_strategy
 
+    try:
+        strategy_class = get_strategy(strategy_id)
+    except ValueError as e:
+        return (str(e), HTTPStatus.BAD_REQUEST)
+
+    # Load data
     try:
         df = load_data(data_source)
     except ValueError as exc:
@@ -1001,26 +1018,31 @@ def run_backtest() -> object:
                 pass
             opened_file = None
 
-    # Prepare dataset with warmup if date filtering is enabled
-    warmup_bars_raw = request.form.get("warmupBars", "1000")
-    try:
-        warmup_bars = int(warmup_bars_raw)
-        warmup_bars = max(100, min(5000, warmup_bars))
-    except (TypeError, ValueError):
-        warmup_bars = 1000
-
+    # Prepare dataset with warmup
     trade_start_idx = 0
-    if params.use_date_filter and (params.start is not None or params.end is not None):
+    use_date_filter = payload.get("dateFilter", False)
+    start = payload.get("start")
+    end = payload.get("end")
+
+    if use_date_filter and (start is not None or end is not None):
+        # Parse dates
+        if isinstance(start, str):
+            start = pd.Timestamp(start, tz="UTC")
+        if isinstance(end, str):
+            end = pd.Timestamp(end, tz="UTC")
+
+        # Apply warmup
         try:
             df, trade_start_idx = prepare_dataset_with_warmup(
-                df, params.start, params.end, warmup_bars
+                df, start, end, warmup_bars
             )
         except Exception as exc:  # pragma: no cover - defensive
             app.logger.exception("Failed to prepare dataset with warmup")
-            return ("Failed to prepare dataset for backtest.", HTTPStatus.INTERNAL_SERVER_ERROR)
+            return ("Failed to prepare dataset.", HTTPStatus.INTERNAL_SERVER_ERROR)
 
+    # Run strategy
     try:
-        result = run_strategy(df, params, trade_start_idx)
+        result = strategy_class.run(df, payload, trade_start_idx)
     except ValueError as exc:
         return (str(exc), HTTPStatus.BAD_REQUEST)
     except Exception as exc:  # pragma: no cover - defensive
@@ -1029,7 +1051,7 @@ def run_backtest() -> object:
 
     return jsonify({
         "metrics": result.to_dict(),
-        "parameters": params.to_dict(),
+        "parameters": payload,
     })
 
 
