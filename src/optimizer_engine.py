@@ -60,6 +60,7 @@ class OptimizationConfig:
     commission_rate: float = 0.0005
     atr_period: int = DEFAULT_ATR_PERIOD
     worker_processes: int = 6
+    warmup_bars: int = 1000
     filter_min_profit: bool = False
     min_profit_threshold: float = 0.0
     score_config: Optional[Dict[str, Any]] = None
@@ -844,7 +845,7 @@ def calculate_score(
 def run_grid_optimization(config: OptimizationConfig) -> List[OptimizationResult]:
     """Execute the grid search optimization."""
 
-    from backtest_engine import prepare_dataset_with_warmup, StrategyParams
+    from backtest_engine import prepare_dataset_with_warmup
 
     df = load_data(config.csv_file)
     combinations = generate_parameter_grid(config)
@@ -869,51 +870,19 @@ def run_grid_optimization(config: OptimizationConfig) -> List[OptimizationResult
     # Prepare dataset with warmup if date filtering is enabled
     trade_start_idx = 0
     if use_date_filter and (start is not None or end is not None):
-        # Find the maximum MA length across all combinations to calculate warmup
         max_ma_length = 0
         for combo in combinations:
             max_ma_length = max(
                 max_ma_length,
                 int(combo["ma_length"]),
                 int(combo["trail_ma_long_length"]),
-                int(combo["trail_ma_short_length"])
+                int(combo["trail_ma_short_length"]),
             )
 
-        # Create a dummy StrategyParams with max MA lengths for warmup calculation
-        dummy_params = StrategyParams(
-            use_backtester=True,
-            use_date_filter=use_date_filter,
-            start=start,
-            end=end,
-            ma_type="SMA",
-            ma_length=max_ma_length,
-            trail_ma_long_type="SMA",
-            trail_ma_long_length=max_ma_length,
-            trail_ma_short_type="SMA",
-            trail_ma_short_length=max_ma_length,
-            close_count_long=1,
-            close_count_short=1,
-            stop_long_atr=1.0,
-            stop_long_rr=1.0,
-            stop_long_lp=1,
-            stop_short_atr=1.0,
-            stop_short_rr=1.0,
-            stop_short_lp=1,
-            stop_long_max_pct=0.0,
-            stop_short_max_pct=0.0,
-            stop_long_max_days=0,
-            stop_short_max_days=0,
-            trail_rr_long=1.0,
-            trail_rr_short=1.0,
-            trail_ma_long_offset=0.0,
-            trail_ma_short_offset=0.0,
-            risk_per_trade_pct=config.risk_per_trade_pct,
-            contract_size=config.contract_size,
-            commission_rate=config.commission_rate,
-            atr_period=config.atr_period
-        )
+        dynamic_warmup = max(500, int(max_ma_length * 1.5))
+        warmup_bars = max(int(config.warmup_bars), dynamic_warmup)
 
-        df, trade_start_idx = prepare_dataset_with_warmup(df, start, end, dummy_params)
+        df, trade_start_idx = prepare_dataset_with_warmup(df, start, end, warmup_bars)
 
     results: List[OptimizationResult] = []
     pool_args = (

@@ -423,7 +423,7 @@ def prepare_dataset_with_warmup(
     df: pd.DataFrame,
     start: Optional[pd.Timestamp],
     end: Optional[pd.Timestamp],
-    params: StrategyParams
+    warmup_bars: int,
 ) -> tuple[pd.DataFrame, int]:
     """
     Trim dataset with warmup period for MA calculations.
@@ -432,22 +432,19 @@ def prepare_dataset_with_warmup(
         df: Full OHLCV DataFrame with datetime index
         start: Start date for trading (None = use all data)
         end: End date for trading (None = use all data)
-        params: Strategy parameters to calculate required warmup
+        warmup_bars: Number of bars to include before the start date
 
     Returns:
         Tuple of (trimmed_df, trade_start_idx)
         - trimmed_df: DataFrame with warmup + trading period
         - trade_start_idx: Index where trading should begin (warmup ends)
     """
-    # Calculate required warmup based on largest MA length
-    max_ma_length = max(
-        params.ma_length,
-        params.trail_ma_long_length,
-        params.trail_ma_short_length
-    )
+    try:
+        normalized_warmup = int(warmup_bars)
+    except (TypeError, ValueError):
+        normalized_warmup = 0
 
-    # Dynamic warmup: at least 500 bars or 1.5x the longest MA
-    required_warmup = max(500, int(max_ma_length * 1.5))
+    normalized_warmup = max(0, normalized_warmup)
 
     # If no date filtering, use entire dataset
     if start is None and end is None:
@@ -483,12 +480,12 @@ def prepare_dataset_with_warmup(
         end_idx = len(df)
 
     # Calculate warmup start (go back from start_idx)
-    warmup_start_idx = max(0, start_idx - required_warmup)
+    warmup_start_idx = max(0, start_idx - normalized_warmup)
 
     # Check if we have enough data
     actual_warmup = start_idx - warmup_start_idx
-    if actual_warmup < required_warmup:
-        print(f"Warning: Insufficient warmup data. Need {required_warmup} bars, "
+    if actual_warmup < normalized_warmup:
+        print(f"Warning: Insufficient warmup data. Need {normalized_warmup} bars, "
               f"only have {actual_warmup} bars available")
 
     # Trim the dataframe
@@ -498,6 +495,28 @@ def prepare_dataset_with_warmup(
     trade_start_idx = start_idx - warmup_start_idx
 
     return trimmed_df, trade_start_idx
+
+
+def prepare_dataset_with_warmup_legacy(
+    df: pd.DataFrame,
+    start: Optional[pd.Timestamp],
+    end: Optional[pd.Timestamp],
+    params: StrategyParams,
+) -> tuple[pd.DataFrame, int]:
+    """
+    Backward-compatible wrapper that calculates warmup from StrategyParams.
+
+    This preserves existing behaviour for callers that rely on StrategyParams
+    to determine the warmup period.
+    """
+
+    max_ma_length = max(
+        params.ma_length,
+        params.trail_ma_long_length,
+        params.trail_ma_short_length,
+    )
+    required_warmup = max(500, int(max_ma_length * 1.5))
+    return prepare_dataset_with_warmup(df, start, end, required_warmup)
 
 
 # ============================================
