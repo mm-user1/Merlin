@@ -31,28 +31,62 @@ CSVSource = Union[str, Path, IO[str], IO[bytes]]
 
 @dataclass
 class TradeRecord:
-    direction: str
-    entry_time: pd.Timestamp
-    exit_time: pd.Timestamp
-    entry_price: float
-    exit_price: float
-    size: float
-    net_pnl: float
+    direction: Optional[str] = None
+    entry_time: Optional[pd.Timestamp] = None
+    exit_time: Optional[pd.Timestamp] = None
+    entry_price: float = 0.0
+    exit_price: float = 0.0
+    size: float = 0.0
+    net_pnl: float = 0.0
+    profit_pct: Optional[float] = None
+    side: Optional[str] = None
 
 
 @dataclass
 class StrategyResult:
+    """
+    Result object returned by strategy.run()
+
+    Contains both basic metrics (always required) and advanced metrics
+    (optional, used for optimization scoring).
+    """
+
+    # Basic metrics (always required)
     net_profit_pct: float
     max_drawdown_pct: float
     total_trades: int
     trades: List[TradeRecord]
 
+    # Advanced metrics (optional, for optimization scoring)
+    # These are calculated from trades and equity curve
+    sharpe_ratio: Optional[float] = None
+    profit_factor: Optional[float] = None
+    romad: Optional[float] = None  # Return Over Maximum Drawdown
+    ulcer_index: Optional[float] = None
+    recovery_factor: Optional[float] = None
+    consistency_score: Optional[float] = None  # % of profitable months
+
     def to_dict(self) -> Dict[str, Any]:
-        return {
+        data = {
             "net_profit_pct": self.net_profit_pct,
             "max_drawdown_pct": self.max_drawdown_pct,
             "total_trades": self.total_trades,
         }
+
+        optional_metrics = {
+            "sharpe_ratio": self.sharpe_ratio,
+            "profit_factor": self.profit_factor,
+            "romad": self.romad,
+            "ulcer_index": self.ulcer_index,
+            "recovery_factor": self.recovery_factor,
+            "consistency_score": self.consistency_score,
+        }
+
+        for key, value in optional_metrics.items():
+            if value is not None:
+                data[key] = value
+
+        return data
 
 
 @dataclass
@@ -466,6 +500,212 @@ def prepare_dataset_with_warmup(
     return trimmed_df, trade_start_idx
 
 
+# ============================================
+# ADVANCED METRICS CALCULATION
+# ============================================
+
+def calculate_monthly_returns(
+    equity_curve: List[float],
+    time_index: pd.DatetimeIndex
+) -> List[float]:
+    """
+    Calculate monthly returns from equity curve.
+
+    Args:
+        equity_curve: List of equity values (one per bar)
+        time_index: Datetime index aligned with equity_curve
+
+    Returns:
+        List of monthly returns (in %)
+    """
+    if not equity_curve or len(equity_curve) != len(time_index):
+        return []
+
+    monthly_returns: List[float] = []
+    current_month = None
+    month_start_equity: Optional[float] = None
+
+    for equity, timestamp in zip(equity_curve, time_index):
+        month_key = (timestamp.year, timestamp.month)
+
+        if current_month is None:
+            current_month = month_key
+            month_start_equity = equity
+        elif month_key != current_month:
+            if month_start_equity is not None and month_start_equity > 0:
+                monthly_return = ((equity / month_start_equity) - 1.0) * 100.0
+                monthly_returns.append(monthly_return)
+
+            current_month = month_key
+            month_start_equity = equity
+
+    if month_start_equity is not None and month_start_equity > 0 and equity_curve:
+        last_equity = equity_curve[-1]
+        monthly_return = ((last_equity / month_start_equity) - 1.0) * 100.0
+        monthly_returns.append(monthly_return)
+
+    return monthly_returns
+
+
+def calculate_profit_factor(trades: List[TradeRecord]) -> Optional[float]:
+    """
+    Calculate profit factor (gross profit / gross loss).
+
+    Args:
+        trades: List of completed trades
+
+    Returns:
+        Profit factor (None if no trades or no data)
+    """
+    if not trades:
+        return None
+
+    gross_profit = sum(
+        t.profit_pct for t in trades if t.profit_pct is not None and t.profit_pct > 0
+    )
+    gross_loss = abs(
+        sum(t.profit_pct for t in trades if t.profit_pct is not None and t.profit_pct < 0)
+    )
+
+    if gross_loss > 0:
+        return gross_profit / gross_loss
+    if gross_profit > 0:
+        return 999.0
+    return 1.0
+
+
+def calculate_sharpe_ratio(monthly_returns: List[float], risk_free_rate: float = 0.02) -> Optional[float]:
+    """
+    Calculate annualized Sharpe ratio.
+
+    Args:
+        monthly_returns: List of monthly returns (in %)
+        risk_free_rate: Annual risk-free rate (default 2%)
+
+    Returns:
+        Sharpe ratio (None if insufficient data)
+    """
+    if len(monthly_returns) < 2:
+        return None
+
+    monthly_array = np.array(monthly_returns, dtype=float)
+    if monthly_array.size < 2:
+        return None
+
+    avg_return = float(np.mean(monthly_array))
+    sd_return = float(np.std(monthly_array, ddof=0))
+
+    if sd_return == 0:
+        return None
+
+    rfr_monthly = (risk_free_rate * 100.0) / 12.0
+    sharpe = (avg_return - rfr_monthly) / sd_return
+    return sharpe
+
+
+def calculate_ulcer_index(equity_curve: List[float]) -> Optional[float]:
+    """
+    Calculate Ulcer Index (measure of downside volatility).
+
+    Args:
+        equity_curve: List of equity values
+
+    Returns:
+        Ulcer Index (in %, None if no data)
+    """
+    if not equity_curve:
+        return None
+
+    equity_array = np.asarray(equity_curve, dtype=float)
+    if equity_array.size == 0:
+        return None
+
+    running_max = np.maximum.accumulate(equity_array)
+
+    with np.errstate(divide="ignore", invalid="ignore"):
+        drawdowns = np.where(running_max > 0, equity_array / running_max - 1.0, 0.0)
+
+    drawdown_squared_sum = float(np.square(drawdowns).sum())
+    ulcer = math.sqrt(drawdown_squared_sum / equity_array.size) * 100.0
+
+    return ulcer
+
+
+def calculate_consistency_score(monthly_returns: List[float]) -> Optional[float]:
+    """
+    Calculate consistency score (% of profitable months).
+
+    Args:
+        monthly_returns: List of monthly returns (in %)
+
+    Returns:
+        Consistency score (0-100%, None if insufficient data)
+    """
+    if len(monthly_returns) < 3:
+        return None
+
+    total_months = len(monthly_returns)
+    profitable_months = sum(1 for ret in monthly_returns if ret > 0)
+
+    consistency = (profitable_months / total_months) * 100.0
+    return consistency
+
+
+def calculate_advanced_metrics(
+    equity_curve: List[float],
+    time_index: pd.DatetimeIndex,
+    trades: List[TradeRecord],
+    net_profit_pct: float,
+    max_drawdown_pct: float
+) -> Dict[str, Optional[float]]:
+    """
+    Calculate all advanced metrics from equity curve and trades.
+
+    This is a convenience function that calls all individual metric functions.
+
+    Args:
+        equity_curve: List of equity values (one per bar)
+        time_index: Datetime index aligned with equity_curve
+        trades: List of completed trades
+        net_profit_pct: Net profit percentage
+        max_drawdown_pct: Maximum drawdown percentage
+
+    Returns:
+        Dictionary with all advanced metrics (keys: sharpe_ratio, profit_factor, etc.)
+    """
+    monthly_returns = calculate_monthly_returns(equity_curve, time_index)
+
+    profit_factor = calculate_profit_factor(trades)
+
+    sharpe_ratio = calculate_sharpe_ratio(monthly_returns)
+
+    ulcer_index = calculate_ulcer_index(equity_curve)
+
+    consistency_score = calculate_consistency_score(monthly_returns)
+
+    romad: Optional[float] = None
+    if net_profit_pct >= 0:
+        if abs(max_drawdown_pct) < 1e-9:
+            romad = net_profit_pct * 100.0
+        elif max_drawdown_pct != 0:
+            romad = net_profit_pct / abs(max_drawdown_pct)
+        else:
+            romad = 0.0
+    else:
+        romad = 0.0
+
+    recovery_factor = romad
+
+    return {
+        "sharpe_ratio": sharpe_ratio,
+        "profit_factor": profit_factor,
+        "romad": romad,
+        "ulcer_index": ulcer_index,
+        "recovery_factor": recovery_factor,
+        "consistency_score": consistency_score,
+    }
+
+
 def run_strategy(df: pd.DataFrame, params: StrategyParams, trade_start_idx: int = 0) -> StrategyResult:
     if params.use_backtester is False:
         raise ValueError("Backtester is disabled in the provided parameters")
@@ -579,16 +819,21 @@ def run_strategy(df: pd.DataFrame, params: StrategyParams, trade_start_idx: int 
             if exit_price is not None:
                 gross_pnl = (exit_price - entry_price) * position_size
                 exit_commission = exit_price * position_size * params.commission_rate
+                net_pnl = gross_pnl - exit_commission - entry_commission
                 realized_equity += gross_pnl - exit_commission
+                entry_value = entry_price * position_size
+                profit_pct = (net_pnl / entry_value * 100.0) if entry_value else None
                 trades.append(
                     TradeRecord(
                         direction="long",
+                        side="LONG",
                         entry_time=entry_time_long,
                         exit_time=time,
                         entry_price=entry_price,
                         exit_price=exit_price,
                         size=position_size,
-                        net_pnl=gross_pnl - exit_commission - entry_commission,
+                        net_pnl=net_pnl,
+                        profit_pct=profit_pct,
                     )
                 )
                 position = 0
@@ -630,16 +875,21 @@ def run_strategy(df: pd.DataFrame, params: StrategyParams, trade_start_idx: int 
             if exit_price is not None:
                 gross_pnl = (entry_price - exit_price) * position_size
                 exit_commission = exit_price * position_size * params.commission_rate
+                net_pnl = gross_pnl - exit_commission - entry_commission
                 realized_equity += gross_pnl - exit_commission
+                entry_value = entry_price * position_size
+                profit_pct = (net_pnl / entry_value * 100.0) if entry_value else None
                 trades.append(
                     TradeRecord(
                         direction="short",
+                        side="SHORT",
                         entry_time=entry_time_short,
                         exit_time=time,
                         entry_price=entry_price,
                         exit_price=exit_price,
                         size=position_size,
-                        net_pnl=gross_pnl - exit_commission - entry_commission,
+                        net_pnl=net_pnl,
+                        profit_pct=profit_pct,
                     )
                 )
                 position = 0
