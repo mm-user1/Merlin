@@ -3455,6 +3455,34 @@
         return `${date}T${normalizedTime}`;
       }
 
+      function collectDynamicBacktestParams() {
+        const params = {};
+        const container = document.getElementById('backtestParamsContent');
+
+        if (!container || !currentStrategyConfig || !currentStrategyConfig.parameters) {
+          return params;
+        }
+
+        Object.entries(currentStrategyConfig.parameters).forEach(([name, def]) => {
+          const input = document.getElementById(`backtest_${name}`);
+          if (!input) {
+            return;
+          }
+
+          if (input.type === 'checkbox') {
+            params[name] = Boolean(input.checked);
+          } else if (input.type === 'number') {
+            const value = parseFloat(input.value);
+            const fallback = Object.prototype.hasOwnProperty.call(def, 'default') ? def.default : 0;
+            params[name] = Number.isFinite(value) ? value : fallback;
+          } else {
+            params[name] = input.value;
+          }
+        });
+
+        return params;
+      }
+
       function gatherFormState() {
         const start = composeDateTime(
           document.getElementById('startDate').value,
@@ -3465,10 +3493,50 @@
           document.getElementById('endTime').value
         );
 
-        const trendTypes = collectSelectedTypes('trend');
-        const trailLongTypes = collectSelectedTypes('trailLong');
-        const trailShortTypes = collectSelectedTypes('trailShort');
+        const dynamicParams = collectDynamicBacktestParams();
+        const trendTypes = dynamicParams.maType
+          ? [String(dynamicParams.maType)]
+          : collectSelectedTypes('trend');
+        const trailLongTypes = dynamicParams.trailLongType
+          ? [String(dynamicParams.trailLongType)]
+          : collectSelectedTypes('trailLong');
+        const trailShortTypes = dynamicParams.trailShortType
+          ? [String(dynamicParams.trailShortType)]
+          : collectSelectedTypes('trailShort');
         const lockTrailTypes = Boolean(document.getElementById('trailLock')?.checked);
+
+        const legacyParams = {
+          maLength: Number(document.getElementById('maLength').value),
+          closeCountLong: Number(document.getElementById('closeCountLong').value),
+          closeCountShort: Number(document.getElementById('closeCountShort').value),
+          stopLongX: Number(document.getElementById('stopLongX').value),
+          stopLongRR: Number(document.getElementById('stopLongRR').value),
+          stopLongLP: Number(document.getElementById('stopLongLP').value),
+          stopShortX: Number(document.getElementById('stopShortX').value),
+          stopShortRR: Number(document.getElementById('stopShortRR').value),
+          stopShortLP: Number(document.getElementById('stopShortLP').value),
+          stopLongMaxPct: Number(document.getElementById('stopLongMaxPct').value),
+          stopShortMaxPct: Number(document.getElementById('stopShortMaxPct').value),
+          stopLongMaxDays: Number(document.getElementById('stopLongMaxDays').value),
+          stopShortMaxDays: Number(document.getElementById('stopShortMaxDays').value),
+          trailRRLong: Number(document.getElementById('trailRRLong').value),
+          trailRRShort: Number(document.getElementById('trailRRShort').value),
+          trailLongLength: Number(document.getElementById('trailLongLength').value),
+          trailLongOffset: Number(document.getElementById('trailLongOffset').value),
+          trailShortLength: Number(document.getElementById('trailShortLength').value),
+          trailShortOffset: Number(document.getElementById('trailShortOffset').value),
+          riskPerTrade: Number(document.getElementById('riskPerTrade').value),
+          contractSize: Number(document.getElementById('contractSize').value)
+        };
+
+        const payload = {
+          ...legacyParams,
+          ...dynamicParams,
+          dateFilter: document.getElementById('dateFilter').checked,
+          backtester: document.getElementById('backtester').checked,
+          start,
+          end
+        };
 
         return {
           start,
@@ -3477,33 +3545,7 @@
           trailLongTypes,
           trailShortTypes,
           lockTrailTypes,
-          payload: {
-            dateFilter: document.getElementById('dateFilter').checked,
-            backtester: document.getElementById('backtester').checked,
-            start,
-            end,
-            maLength: Number(document.getElementById('maLength').value),
-            closeCountLong: Number(document.getElementById('closeCountLong').value),
-            closeCountShort: Number(document.getElementById('closeCountShort').value),
-            stopLongX: Number(document.getElementById('stopLongX').value),
-            stopLongRR: Number(document.getElementById('stopLongRR').value),
-            stopLongLP: Number(document.getElementById('stopLongLP').value),
-            stopShortX: Number(document.getElementById('stopShortX').value),
-            stopShortRR: Number(document.getElementById('stopShortRR').value),
-            stopShortLP: Number(document.getElementById('stopShortLP').value),
-            stopLongMaxPct: Number(document.getElementById('stopLongMaxPct').value),
-            stopShortMaxPct: Number(document.getElementById('stopShortMaxPct').value),
-            stopLongMaxDays: Number(document.getElementById('stopLongMaxDays').value),
-            stopShortMaxDays: Number(document.getElementById('stopShortMaxDays').value),
-            trailRRLong: Number(document.getElementById('trailRRLong').value),
-            trailRRShort: Number(document.getElementById('trailRRShort').value),
-            trailLongLength: Number(document.getElementById('trailLongLength').value),
-            trailLongOffset: Number(document.getElementById('trailLongOffset').value),
-            trailShortLength: Number(document.getElementById('trailShortLength').value),
-            trailShortOffset: Number(document.getElementById('trailShortOffset').value),
-            riskPerTrade: Number(document.getElementById('riskPerTrade').value),
-            contractSize: Number(document.getElementById('contractSize').value)
-          }
+          payload
         };
       }
 
@@ -4015,6 +4057,9 @@
           updateStatus(index, `${fileLabel} — running Walk-Forward…`);
 
           const formData = new FormData();
+          formData.append('strategy', currentStrategyId || 's01_trailing_ma');
+          const warmupValue = document.getElementById('warmupBars')?.value || '1000';
+          formData.append('warmupBars', warmupValue);
           if (isFileObject) {
             formData.append('file', source, source.name);
           } else if (source && source.path) {
@@ -4305,6 +4350,9 @@
           }
 
           const formData = new FormData();
+          formData.append('strategy', currentStrategyId || 's01_trailing_ma');
+          const warmupValue = document.getElementById('warmupBars')?.value || '1000';
+          formData.append('warmupBars', warmupValue);
           if (isFileObject) {
             formData.append('file', source, source.name);
           } else if (source && source.path) {
@@ -4524,7 +4572,7 @@
         updateScoreFormulaPreview();
       }
 
-      async function submitForm(event) {
+      async function runBacktest(event) {
         event.preventDefault();
         const resultsEl = document.getElementById('results');
         const errorEl = document.getElementById('error');
@@ -4615,6 +4663,9 @@
           };
 
           const formData = new FormData();
+          formData.append('strategy', currentStrategyId || 's01_trailing_ma');
+          const warmupInput = document.getElementById('warmupBars');
+          formData.append('warmupBars', warmupInput ? warmupInput.value : '1000');
           if (primaryFile) {
             formData.append('file', primaryFile, primaryFile.name);
           }
@@ -4727,7 +4778,7 @@
         applyDefaults({ clearResults: true });
       });
 
-      document.getElementById('backtestForm').addEventListener('submit', submitForm);
+      document.getElementById('backtestForm').addEventListener('submit', runBacktest);
 
       if (optimizerForm) {
         optimizerForm.addEventListener('submit', submitOptimization);
