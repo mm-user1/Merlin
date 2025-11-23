@@ -1000,9 +1000,28 @@ def run_strategy(df: pd.DataFrame, params: StrategyParams, trade_start_idx: int 
     max_drawdown_pct = compute_max_drawdown(equity_series)
     total_trades = len(trades)
 
+    # Calculate advanced metrics for optimization scoring
+    # These metrics are used by Grid/Optuna optimizers to compute composite scores
+    advanced_metrics = calculate_advanced_metrics(
+        equity_curve=realized_curve,
+        time_index=df.index[:len(realized_curve)],
+        trades=trades,
+        net_profit_pct=net_profit_pct,
+        max_drawdown_pct=max_drawdown_pct
+    )
+
     return StrategyResult(
         net_profit_pct=net_profit_pct,
         max_drawdown_pct=max_drawdown_pct,
         total_trades=total_trades,
         trades=trades,
+
+        # Advanced metrics (optional, for optimization scoring)
+        # Will be None if insufficient data (e.g., <2 monthly periods for Sharpe)
+        sharpe_ratio=advanced_metrics['sharpe_ratio'],
+        profit_factor=advanced_metrics['profit_factor'],
+        romad=advanced_metrics['romad'],
+        ulcer_index=advanced_metrics['ulcer_index'],
+        recovery_factor=advanced_metrics['recovery_factor'],
+        consistency_score=advanced_metrics['consistency_score'],
     )
