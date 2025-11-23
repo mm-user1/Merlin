@@ -13,7 +13,7 @@ import json
 import numpy as np
 import pandas as pd
 
-from backtest_engine import StrategyParams, run_strategy, TradeRecord
+from backtest_engine import TradeRecord, prepare_dataset_with_warmup
 from optimizer_engine import OptimizationConfig
 from optuna_engine import OptunaConfig, run_optuna_optimization
 
@@ -72,6 +72,7 @@ class WFConfig:
     is_pct: float = 70.0
     oos_pct: float = 30.0
     warmup_bars: int = 1000
+    strategy_id: str = "s01_trailing_ma"
 
 
 @dataclass
@@ -128,6 +129,8 @@ class WFResult:
     wf_zone_end: int  # End bar of WF zone
     forward_start: int  # Start bar of Forward Reserve
     forward_end: int  # End bar of Forward Reserve
+    strategy_id: str = "s01_trailing_ma"
+    warmup_bars: int = 1000
 
 
 class WalkForwardEngine:
@@ -137,6 +140,13 @@ class WalkForwardEngine:
         self.config = config
         self.base_config_template = deepcopy(base_config_template)
         self.optuna_settings = deepcopy(optuna_settings)
+
+        from strategies import get_strategy
+
+        try:
+            self.strategy_class = get_strategy(config.strategy_id)
+        except ValueError as e:  # noqa: BLE001
+            raise ValueError(f"Failed to load strategy '{config.strategy_id}': {e}")
 
     def split_data(self, df: pd.DataFrame) -> Tuple[List[WindowSplit], int, int]:
         """
@@ -288,7 +298,7 @@ class WalkForwardEngine:
 
             # IMPORTANT: Run Optuna optimization on IS window
             # The optimization engine will:
-            # 1. Call prepare_dataset_with_warmup_legacy(df, is_start_time, is_end_time, params)
+            # 1. Call prepare_dataset_with_warmup(df, is_start_time, is_end_time, params)
             # 2. Get trimmed df with warmup + IS period and trade_start_idx
             # 3. Use trade_start_idx to ensure trades open only in IS period (not in warmup)
             # This ensures IS-only optimization: warmup for MAs, but trades/metrics only from IS
@@ -307,21 +317,18 @@ class WalkForwardEngine:
             is_profits: List[float] = []
 
             for params in top_params:
-                from backtest_engine import prepare_dataset_with_warmup_legacy
-
-                # Create params object for warmup calculation
-                strategy_params = StrategyParams.from_dict(params)
-
-                # Prepare dataset with warmup for IS period
-                # This ensures MAs are properly warmed up before IS trading begins
-                is_df_prepared, trade_start_idx = prepare_dataset_with_warmup_legacy(
-                    df, is_start_time, is_end_time, strategy_params
+                is_df_prepared, trade_start_idx = prepare_dataset_with_warmup(
+                    df, is_start_time, is_end_time, self.config.warmup_bars
                 )
 
-                # Run strategy with trade_start_idx
-                # All trades will be opened from trade_start_idx onwards (IS period only)
-                strategy_params.use_date_filter = True
-                result = run_strategy(is_df_prepared, strategy_params, trade_start_idx)
+                params_copy = params.copy()
+                params_copy["dateFilter"] = True
+                params_copy["start"] = is_start_time
+                params_copy["end"] = is_end_time
+
+                result = self.strategy_class.run(
+                    is_df_prepared, params_copy, trade_start_idx
+                )
 
                 # Filter trades by entry time to ensure only IS period trades are counted
                 is_period_trades = [
@@ -349,22 +356,18 @@ class WalkForwardEngine:
             oos_trades: List[int] = []
 
             for params in top_params:
-                from backtest_engine import prepare_dataset_with_warmup_legacy
-
-                # Create params object for warmup calculation
-                strategy_params = StrategyParams.from_dict(params)
-
-                # IMPORTANT: For OOS validation, we use prepare_dataset_with_warmup_legacy to:
-                # 1. Add warmup period before oos_start for proper MA calculation
-                # 2. Set trade_start_idx to oos_start, ensuring trades open only in OOS
-                oos_df_prepared, trade_start_idx = prepare_dataset_with_warmup_legacy(
-                    df, oos_start_time, oos_end_time, strategy_params
+                oos_df_prepared, trade_start_idx = prepare_dataset_with_warmup(
+                    df, oos_start_time, oos_end_time, self.config.warmup_bars
                 )
 
-                # Run strategy with trade_start_idx
-                # All trades will be opened from trade_start_idx onwards (OOS period only)
-                strategy_params.use_date_filter = True
-                result = run_strategy(oos_df_prepared, strategy_params, trade_start_idx)
+                params_copy = params.copy()
+                params_copy["dateFilter"] = True
+                params_copy["start"] = oos_start_time
+                params_copy["end"] = oos_end_time
+
+                result = self.strategy_class.run(
+                    oos_df_prepared, params_copy, trade_start_idx
+                )
 
                 # Filter trades by entry time to ensure only OOS period trades are counted
                 # (trades opened in [oos_start, oos_end] even if they close later)
@@ -405,8 +408,6 @@ class WalkForwardEngine:
 
         # Step 4: Forward Test
         print("\n--- Forward Test ---")
-        from backtest_engine import prepare_dataset_with_warmup_legacy
-
         forward_start_time = df.index[fwd_start]
         forward_end_time = df.index[fwd_end - 1]
         print(f"Forward test period: {forward_start_time.date()} to {forward_end_time.date()}")
@@ -416,21 +417,19 @@ class WalkForwardEngine:
         forward_params: List[Dict[str, Any]] = []
 
         for agg in top10:
-            # Create params object for warmup calculation
-            strategy_params = StrategyParams.from_dict(agg.params)
-
-            # CRITICAL: Prepare dataset with warmup for forward test
-            # This adds warmup period before forward_start to properly warm up MAs
-            # trade_start_idx will point to the beginning of forward period
-            forward_df_prepared, trade_start_idx = prepare_dataset_with_warmup_legacy(
-                df, forward_start_time, forward_end_time, strategy_params
+            forward_df_prepared, trade_start_idx = prepare_dataset_with_warmup(
+                df, forward_start_time, forward_end_time, self.config.warmup_bars
             )
 
             if not forward_df_prepared.empty:
-                # Run strategy with trade_start_idx
-                # All trades will be opened from trade_start_idx onwards (forward period only)
-                strategy_params.use_date_filter = True
-                result = run_strategy(forward_df_prepared, strategy_params, trade_start_idx)
+                params_copy = agg.params.copy()
+                params_copy["dateFilter"] = True
+                params_copy["start"] = forward_start_time
+                params_copy["end"] = forward_end_time
+
+                result = self.strategy_class.run(
+                    forward_df_prepared, params_copy, trade_start_idx
+                )
 
                 # Filter trades by entry time to ensure only Forward period trades are counted
                 # This is the same approach as OOS for consistency
@@ -469,6 +468,8 @@ class WalkForwardEngine:
             wf_zone_end=wf_zone_end,
             forward_start=fwd_start,
             forward_end=fwd_end,
+            strategy_id=self.config.strategy_id,
+            warmup_bars=self.config.warmup_bars,
         )
 
         return wf_result
@@ -479,7 +480,7 @@ class WalkForwardEngine:
 
         This method passes the full dataframe along with start/end dates to Optuna.
         The Optuna engine will internally:
-        1. Call prepare_dataset_with_warmup_legacy() to add warmup period before start_time
+        1. Call prepare_dataset_with_warmup() to add warmup period before start_time
         2. Calculate trade_start_idx pointing to start_time in the trimmed dataframe
         3. Pass trade_start_idx to worker processes
         4. Workers use trade_start_idx to ensure trades open only from start_time onwards
@@ -501,7 +502,7 @@ class WalkForwardEngine:
         csv_buffer = self._dataframe_to_csv_buffer(df)
 
         # Update fixed params with date filter and start/end dates
-        # These will be used by prepare_dataset_with_warmup_legacy() in the optimization engine
+        # These will be used by prepare_dataset_with_warmup() in the optimization engine
         fixed_params = deepcopy(self.base_config_template["fixed_params"])
         fixed_params["dateFilter"] = True
         fixed_params["start"] = start_time.isoformat()
@@ -525,6 +526,8 @@ class WalkForwardEngine:
             min_profit_threshold=float(self.base_config_template["min_profit_threshold"]),
             score_config=deepcopy(self.base_config_template["score_config"]),
             optimization_mode="optuna",
+            strategy_id=self.config.strategy_id,
+            warmup_bars=self.config.warmup_bars,
         )
 
         optuna_cfg = OptunaConfig(
@@ -873,18 +876,21 @@ def export_wfa_trades_history(
         List of generated CSV filenames
     """
     from pathlib import Path
-    from backtest_engine import (
-        StrategyParams,
-        prepare_dataset_with_warmup_legacy_legacy,
-        run_strategy,
-    )
+    from backtest_engine import prepare_dataset_with_warmup
+    from strategies import get_strategy
+
+    strategy_id = getattr(wf_result, 'strategy_id', 's01_trailing_ma')
+    try:
+        strategy_class = get_strategy(strategy_id)
+    except ValueError as e:  # noqa: BLE001
+        raise ValueError(f"Failed to load strategy '{strategy_id}': {e}")
+
+    warmup_bars = getattr(wf_result, 'warmup_bars', 1000)
 
     trade_files = []
     actual_top_k = min(top_k, len(wf_result.aggregated))
 
     for rank, agg in enumerate(wf_result.aggregated[:actual_top_k], 1):
-        # Convert aggregated params to StrategyParams
-        params = StrategyParams.from_dict(agg.params)
         all_trades = []
 
         # ============================================================
@@ -897,13 +903,18 @@ def export_wfa_trades_history(
             is_start_time = df.index[window.is_start]
             is_end_time = df.index[window.is_end - 1]
 
-            # Exact WFA replication: prepare_dataset_with_warmup_legacy + run_strategy
-            is_df_prepared, trade_start_idx = prepare_dataset_with_warmup_legacy_legacy(
-                df, is_start_time, is_end_time, params
+            is_df_prepared, trade_start_idx = prepare_dataset_with_warmup(
+                df, is_start_time, is_end_time, warmup_bars
             )
 
-            params.use_date_filter = True
-            is_result = run_strategy(is_df_prepared, params, trade_start_idx)
+            params_dict = agg.params.copy()
+            params_dict['dateFilter'] = True
+            params_dict['start'] = is_start_time
+            params_dict['end'] = is_end_time
+
+            is_result = strategy_class.run(
+                is_df_prepared, params_dict, trade_start_idx
+            )
 
             # Filter trades by IS period (same as in WFA)
             is_trades = [
@@ -916,12 +927,18 @@ def export_wfa_trades_history(
             oos_start_time = df.index[window.oos_start]
             oos_end_time = df.index[window.oos_end - 1]
 
-            oos_df_prepared, trade_start_idx = prepare_dataset_with_warmup_legacy_legacy(
-                df, oos_start_time, oos_end_time, params
+            oos_df_prepared, trade_start_idx = prepare_dataset_with_warmup(
+                df, oos_start_time, oos_end_time, warmup_bars
             )
 
-            params.use_date_filter = True
-            oos_result = run_strategy(oos_df_prepared, params, trade_start_idx)
+            params_dict = agg.params.copy()
+            params_dict['dateFilter'] = True
+            params_dict['start'] = oos_start_time
+            params_dict['end'] = oos_end_time
+
+            oos_result = strategy_class.run(
+                oos_df_prepared, params_dict, trade_start_idx
+            )
 
             # Filter trades by OOS period
             oos_trades = [
@@ -936,12 +953,18 @@ def export_wfa_trades_history(
         forward_start_time = df.index[wf_result.forward_start]
         forward_end_time = df.index[wf_result.forward_end - 1]
 
-        fwd_df_prepared, trade_start_idx = prepare_dataset_with_warmup_legacy_legacy(
-            df, forward_start_time, forward_end_time, params
+        fwd_df_prepared, trade_start_idx = prepare_dataset_with_warmup(
+            df, forward_start_time, forward_end_time, warmup_bars
         )
 
-        params.use_date_filter = True
-        fwd_result = run_strategy(fwd_df_prepared, params, trade_start_idx)
+        params_dict = agg.params.copy()
+        params_dict['dateFilter'] = True
+        params_dict['start'] = forward_start_time
+        params_dict['end'] = forward_end_time
+
+        fwd_result = strategy_class.run(
+            fwd_df_prepared, params_dict, trade_start_idx
+        )
 
         # Filter trades by Forward period
         fwd_trades = [

@@ -594,6 +594,8 @@ def run_walkforward_optimization() -> object:
             opened_file.close()
         return jsonify({"error": "Invalid optimization config JSON."}), HTTPStatus.BAD_REQUEST
 
+    strategy_id = request.form.get("strategy", "s01_trailing_ma")
+
     warmup_bars_raw = data.get("warmupBars", "1000")
     try:
         warmup_bars = int(warmup_bars_raw)
@@ -603,7 +605,10 @@ def run_walkforward_optimization() -> object:
 
     try:
         optimization_config = _build_optimization_config(
-            data_source, config_payload, warmup_bars=warmup_bars
+            data_source,
+            config_payload,
+            warmup_bars=warmup_bars,
+            strategy_id=strategy_id,
         )
     except ValueError as exc:
         if opened_file:
@@ -732,6 +737,8 @@ def run_walkforward_optimization() -> object:
                 opened_file.close()
             return jsonify({"error": f"Failed to apply date filter: {str(e)}"}), HTTPStatus.BAD_REQUEST
 
+    optimization_config.warmup_bars = warmup_bars
+
     base_template = {
         "enabled_params": json.loads(json.dumps(optimization_config.enabled_params)),
         "param_ranges": json.loads(json.dumps(optimization_config.param_ranges)),
@@ -748,6 +755,8 @@ def run_walkforward_optimization() -> object:
         "filter_min_profit": bool(optimization_config.filter_min_profit),
         "min_profit_threshold": float(optimization_config.min_profit_threshold),
         "score_config": json.loads(json.dumps(optimization_config.score_config or {})),
+        "strategy_id": optimization_config.strategy_id,
+        "warmup_bars": optimization_config.warmup_bars,
     }
 
     optuna_settings = {
@@ -783,6 +792,7 @@ def run_walkforward_optimization() -> object:
         gap_bars=gap_bars,
         topk_per_window=topk,
         warmup_bars=warmup_bars,
+        strategy_id=strategy_id,
     )
     engine = WalkForwardEngine(wf_config, base_template, optuna_settings)
 
