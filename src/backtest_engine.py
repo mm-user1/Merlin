@@ -65,6 +65,8 @@ class StrategyResult:
     ulcer_index: Optional[float] = None
     recovery_factor: Optional[float] = None
     consistency_score: Optional[float] = None  # % of profitable months
+    equity_curve: Optional[List[float]] = None
+    equity_timestamps: Optional[List[pd.Timestamp]] = None
 
     def to_dict(self) -> Dict[str, Any]:
         data = {
@@ -85,6 +87,15 @@ class StrategyResult:
         for key, value in optional_metrics.items():
             if value is not None:
                 data[key] = value
+
+        if self.equity_curve is not None:
+            data["equity_curve"] = self.equity_curve
+
+        if self.equity_timestamps is not None:
+            data["equity_timestamps"] = [
+                ts.isoformat() if isinstance(ts, pd.Timestamp) else str(ts)
+                for ts in self.equity_timestamps
+            ]
 
         return data
 
@@ -1024,4 +1035,6 @@ def run_strategy(df: pd.DataFrame, params: StrategyParams, trade_start_idx: int 
         ulcer_index=advanced_metrics['ulcer_index'],
         recovery_factor=advanced_metrics['recovery_factor'],
         consistency_score=advanced_metrics['consistency_score'],
+        equity_curve=realized_curve,
+        equity_timestamps=list(df.index[: len(realized_curve)]),
     )

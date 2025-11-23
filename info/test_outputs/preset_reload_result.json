@@ -1,0 +1,6 @@
+{
+  "from_preset": "info/test_outputs/baseline_preset.json",
+  "net_profit_pct": 230.75299101633334,
+  "max_drawdown_pct": 20.02549897473176,
+  "total_trades": 93
+}

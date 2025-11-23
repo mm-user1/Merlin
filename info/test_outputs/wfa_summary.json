@@ -1,0 +1,23 @@
+{
+  "num_windows": 3,
+  "forward_range": [
+    16071,
+    19009
+  ],
+  "aggregated": [
+    {
+      "param_id": "SMA 320_9b301bdd",
+      "appearances": "3,3/3",
+      "avg_oos_profit": 1.90825394914472,
+      "avg_is_profit": 9.49398372236509,
+      "oos_win_rate": 1.0
+    },
+    {
+      "param_id": "SMA 300_85272a06",
+      "appearances": "1,1/3",
+      "avg_oos_profit": 1.3421404981050742,
+      "avg_is_profit": 54.15895066232175,
+      "oos_win_rate": 1.0
+    }
+  ]
+}
