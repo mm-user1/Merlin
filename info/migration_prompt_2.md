@@ -397,6 +397,337 @@ else:
     print("Warning: No strategies discovered")
 ```
 
+### Task 2.3: Extend StrategyResult with Optional Metrics
+
+**CRITICAL for Stage 6:** The optimizer engines (Grid/Optuna) need additional risk metrics for scoring. These metrics are currently calculated inside `optimizer_engine.py`, but on Stage 6 we'll replace that logic with `strategy.run()`. Therefore, strategies must return these metrics.
+
+**File:** `src/backtest_engine.py`
+
+**Find the `StrategyResult` dataclass (around line 72):**
+```python
+@dataclass
+class StrategyResult:
+    net_profit_pct: float
+    max_drawdown_pct: float
+    total_trades: int
+    trades: List[TradeRecord]
+```
+
+**Replace with extended version:**
+```python
+@dataclass
+class StrategyResult:
+    """
+    Result object returned by strategy.run()
+
+    Contains both basic metrics (always required) and advanced metrics
+    (optional, used for optimization scoring).
+    """
+
+    # Basic metrics (always required)
+    net_profit_pct: float
+    max_drawdown_pct: float
+    total_trades: int
+    trades: List[TradeRecord]
+
+    # Advanced metrics (optional, for optimization scoring)
+    # These are calculated from trades and equity curve
+    sharpe_ratio: Optional[float] = None
+    profit_factor: Optional[float] = None
+    romad: Optional[float] = None  # Return Over Maximum Drawdown
+    ulcer_index: Optional[float] = None
+    recovery_factor: Optional[float] = None
+    consistency_score: Optional[float] = None  # % of profitable months
+```
+
+**Why Optional?**
+- Simple backtests may not need these metrics
+- Metrics require sufficient data (e.g., Sharpe needs ≥2 monthly periods)
+- Failed backtests (no trades) return None for optional metrics
+
+### Task 2.4: Add Metric Calculation Functions to backtest_engine.py
+
+Add helper functions to calculate advanced metrics. These functions will be used by strategies to compute optional metrics.
+
+**File:** `src/backtest_engine.py`
+
+**Add these functions at the end of the file, before `run_strategy()`:**
+
+```python
+# ============================================
+# ADVANCED METRICS CALCULATION
+# ============================================
+
+def calculate_monthly_returns(
+    equity_curve: List[float],
+    time_index: pd.DatetimeIndex
+) -> List[float]:
+    """
+    Calculate monthly returns from equity curve.
+
+    Args:
+        equity_curve: List of equity values (one per bar)
+        time_index: Datetime index aligned with equity_curve
+
+    Returns:
+        List of monthly returns (in %)
+    """
+    if not equity_curve or len(equity_curve) != len(time_index):
+        return []
+
+    monthly_returns = []
+    current_month = None
+    month_start_equity = None
+
+    for i, (equity, timestamp) in enumerate(zip(equity_curve, time_index)):
+        month_key = (timestamp.year, timestamp.month)
+
+        if current_month is None:
+            # First month
+            current_month = month_key
+            month_start_equity = equity
+        elif month_key != current_month:
+            # Month changed - record return
+            if month_start_equity is not None and month_start_equity > 0:
+                monthly_return = ((equity / month_start_equity) - 1.0) * 100.0
+                monthly_returns.append(monthly_return)
+
+            # Start new month
+            current_month = month_key
+            month_start_equity = equity
+
+    # Record last month if data exists
+    if month_start_equity is not None and month_start_equity > 0 and equity_curve:
+        last_equity = equity_curve[-1]
+        monthly_return = ((last_equity / month_start_equity) - 1.0) * 100.0
+        monthly_returns.append(monthly_return)
+
+    return monthly_returns
+
+
+def calculate_profit_factor(trades: List[TradeRecord]) -> Optional[float]:
+    """
+    Calculate profit factor (gross profit / gross loss).
+
+    Args:
+        trades: List of completed trades
+
+    Returns:
+        Profit factor (None if no trades or no data)
+    """
+    if not trades:
+        return None
+
+    gross_profit = sum(t.profit_pct for t in trades if t.profit_pct > 0)
+    gross_loss = abs(sum(t.profit_pct for t in trades if t.profit_pct < 0))
+
+    if gross_loss > 0:
+        return gross_profit / gross_loss
+    elif gross_profit > 0:
+        return 999.0  # Infinite profit factor (no losses)
+    else:
+        return 1.0  # No profit, no loss
+
+
+def calculate_sharpe_ratio(monthly_returns: List[float], risk_free_rate: float = 0.02) -> Optional[float]:
+    """
+    Calculate annualized Sharpe ratio.
+
+    Args:
+        monthly_returns: List of monthly returns (in %)
+        risk_free_rate: Annual risk-free rate (default 2%)
+
+    Returns:
+        Sharpe ratio (None if insufficient data)
+    """
+    if len(monthly_returns) < 2:
+        return None
+
+    monthly_array = np.array(monthly_returns, dtype=float)
+    if monthly_array.size < 2:
+        return None
+
+    avg_return = float(np.mean(monthly_array))
+    sd_return = float(np.std(monthly_array, ddof=0))
+
+    if sd_return == 0:
+        return None
+
+    # Risk-free rate per month
+    rfr_monthly = (risk_free_rate * 100.0) / 12.0
+
+    sharpe = (avg_return - rfr_monthly) / sd_return
+    return sharpe
+
+
+def calculate_ulcer_index(equity_curve: List[float]) -> Optional[float]:
+    """
+    Calculate Ulcer Index (measure of downside volatility).
+
+    Args:
+        equity_curve: List of equity values
+
+    Returns:
+        Ulcer Index (in %, None if no data)
+    """
+    if not equity_curve:
+        return None
+
+    equity_array = np.asarray(equity_curve, dtype=float)
+    if equity_array.size == 0:
+        return None
+
+    # Calculate running maximum
+    running_max = np.maximum.accumulate(equity_array)
+
+    # Calculate drawdowns as percentage from peak
+    with np.errstate(divide='ignore', invalid='ignore'):
+        drawdowns = np.where(running_max > 0, equity_array / running_max - 1.0, 0.0)
+
+    # Ulcer Index = sqrt(sum of squared drawdowns / N)
+    drawdown_squared_sum = float(np.square(drawdowns).sum())
+    ulcer = math.sqrt(drawdown_squared_sum / equity_array.size) * 100.0
+
+    return ulcer
+
+
+def calculate_consistency_score(monthly_returns: List[float]) -> Optional[float]:
+    """
+    Calculate consistency score (% of profitable months).
+
+    Args:
+        monthly_returns: List of monthly returns (in %)
+
+    Returns:
+        Consistency score (0-100%, None if insufficient data)
+    """
+    if len(monthly_returns) < 3:
+        return None
+
+    total_months = len(monthly_returns)
+    profitable_months = sum(1 for ret in monthly_returns if ret > 0)
+
+    consistency = (profitable_months / total_months) * 100.0
+    return consistency
+
+
+def calculate_advanced_metrics(
+    equity_curve: List[float],
+    time_index: pd.DatetimeIndex,
+    trades: List[TradeRecord],
+    net_profit_pct: float,
+    max_drawdown_pct: float
+) -> dict:
+    """
+    Calculate all advanced metrics from equity curve and trades.
+
+    This is a convenience function that calls all individual metric functions.
+
+    Args:
+        equity_curve: List of equity values (one per bar)
+        time_index: Datetime index aligned with equity_curve
+        trades: List of completed trades
+        net_profit_pct: Net profit percentage
+        max_drawdown_pct: Maximum drawdown percentage
+
+    Returns:
+        Dictionary with all advanced metrics (keys: sharpe_ratio, profit_factor, etc.)
+    """
+    # Calculate monthly returns
+    monthly_returns = calculate_monthly_returns(equity_curve, time_index)
+
+    # Profit factor
+    profit_factor = calculate_profit_factor(trades)
+
+    # Sharpe ratio
+    sharpe_ratio = calculate_sharpe_ratio(monthly_returns)
+
+    # Ulcer Index
+    ulcer_index = calculate_ulcer_index(equity_curve)
+
+    # Consistency score
+    consistency_score = calculate_consistency_score(monthly_returns)
+
+    # RoMaD (Return Over Maximum Drawdown)
+    romad: Optional[float] = None
+    if net_profit_pct >= 0:
+        if abs(max_drawdown_pct) < 1e-9:
+            romad = net_profit_pct * 100.0  # No drawdown
+        elif max_drawdown_pct != 0:
+            romad = net_profit_pct / abs(max_drawdown_pct)
+        else:
+            romad = 0.0
+    else:
+        romad = 0.0  # Negative profit
+
+    # Recovery Factor (same as RoMaD in this implementation)
+    recovery_factor = romad
+
+    return {
+        'sharpe_ratio': sharpe_ratio,
+        'profit_factor': profit_factor,
+        'romad': romad,
+        'ulcer_index': ulcer_index,
+        'recovery_factor': recovery_factor,
+        'consistency_score': consistency_score,
+    }
+```
+
+**Note:** These functions are extracted from the current `optimizer_engine.py:667-707`. They will be removed from `optimizer_engine.py` on Stage 6.
+
+### Task 2.5: Update S01 Strategy to Calculate and Return Metrics
+
+Now update the S01 strategy's `run()` method to calculate and return advanced metrics.
+
+**File:** `src/strategies/s01_trailing_ma/strategy.py`
+
+**Find the return statement at the end of `run()` method (around line 220):**
+```python
+        return StrategyResult(
+            net_profit_pct=net_profit_pct,
+            max_drawdown_pct=max_drawdown_pct,
+            total_trades=total_trades,
+            trades=trades
+        )
+```
+
+**Replace with extended version that calculates metrics:**
+```python
+        # Calculate advanced metrics for optimization scoring
+        # These are optional - if calculation fails, metrics will be None
+        from backtest_engine import calculate_advanced_metrics
+
+        advanced_metrics = calculate_advanced_metrics(
+            equity_curve=realized_curve,
+            time_index=df.index[:len(realized_curve)],
+            trades=trades,
+            net_profit_pct=net_profit_pct,
+            max_drawdown_pct=max_drawdown_pct
+        )
+
+        return StrategyResult(
+            net_profit_pct=net_profit_pct,
+            max_drawdown_pct=max_drawdown_pct,
+            total_trades=total_trades,
+            trades=trades,
+
+            # Advanced metrics (optional)
+            sharpe_ratio=advanced_metrics['sharpe_ratio'],
+            profit_factor=advanced_metrics['profit_factor'],
+            romad=advanced_metrics['romad'],
+            ulcer_index=advanced_metrics['ulcer_index'],
+            recovery_factor=advanced_metrics['recovery_factor'],
+            consistency_score=advanced_metrics['consistency_score'],
+        )
+```
+
+**IMPORTANT:** Make sure `realized_curve` (equity curve) is accumulated during the trading loop. This should already exist in the code copied from `run_strategy()`.
+
+**Why this matters:**
+- On Stage 6, we'll replace `optimizer_engine._simulate_combination()` with `strategy.run()`
+- The optimizer expects all these metrics to calculate composite scores
+- By adding metrics now, Stage 6 will work seamlessly
+
 ## Testing
 
 ### Test 2.1: Strategy Module Import
@@ -435,7 +766,7 @@ assert 'parameters' in config
 print("✓ Registry working correctly")
 ```
 
-### Test 2.3: Strategy Execution (Simple Test)
+### Test 2.3: Strategy Execution with Metrics
 ```python
 import pandas as pd
 from strategies import get_strategy
@@ -461,25 +792,88 @@ params = {
 
 result = S01.run(df, params, trade_start_idx=0)
 
-# Verify result structure
+# Verify basic metrics
 assert hasattr(result, 'net_profit_pct')
 assert hasattr(result, 'max_drawdown_pct')
 assert hasattr(result, 'total_trades')
 
+# Verify advanced metrics exist (may be None if insufficient data)
+assert hasattr(result, 'sharpe_ratio')
+assert hasattr(result, 'profit_factor')
+assert hasattr(result, 'romad')
+assert hasattr(result, 'ulcer_index')
+assert hasattr(result, 'recovery_factor')
+assert hasattr(result, 'consistency_score')
+
 print(f"Net Profit: {result.net_profit_pct:.2f}%")
 print(f"Max DD: {result.max_drawdown_pct:.2f}%")
 print(f"Trades: {result.total_trades}")
-print("✓ Strategy execution successful")
+print(f"Sharpe: {result.sharpe_ratio if result.sharpe_ratio else 'N/A'}")
+print(f"Profit Factor: {result.profit_factor if result.profit_factor else 'N/A'}")
+print(f"RoMaD: {result.romad if result.romad else 'N/A'}")
+print("✓ Strategy execution successful with all metrics")
+```
+
+### Test 2.4: Verify Metric Calculation Functions
+```python
+from backtest_engine import (
+    calculate_monthly_returns,
+    calculate_profit_factor,
+    calculate_sharpe_ratio,
+    calculate_ulcer_index,
+    calculate_consistency_score,
+    calculate_advanced_metrics,
+    TradeRecord
+)
+import pandas as pd
+import numpy as np
+
+# Test monthly returns calculation
+equity_curve = [100, 102, 105, 103, 108]
+time_index = pd.date_range('2025-01-01', periods=5, freq='D')
+monthly_returns = calculate_monthly_returns(equity_curve, time_index)
+assert isinstance(monthly_returns, list)
+print(f"✓ Monthly returns: {monthly_returns}")
+
+# Test profit factor
+trades = [
+    TradeRecord(entry_time=pd.Timestamp('2025-01-01'), exit_time=pd.Timestamp('2025-01-02'),
+                side='LONG', entry_price=100, exit_price=105, profit_pct=5.0),
+    TradeRecord(entry_time=pd.Timestamp('2025-01-03'), exit_time=pd.Timestamp('2025-01-04'),
+                side='SHORT', entry_price=105, exit_price=103, profit_pct=2.0),
+    TradeRecord(entry_time=pd.Timestamp('2025-01-05'), exit_time=pd.Timestamp('2025-01-06'),
+                side='LONG', entry_price=103, exit_price=100, profit_pct=-3.0),
+]
+pf = calculate_profit_factor(trades)
+assert pf is not None and pf > 0
+print(f"✓ Profit factor: {pf:.2f}")
+
+# Test advanced metrics function
+metrics = calculate_advanced_metrics(
+    equity_curve=[100, 105, 103, 108, 110],
+    time_index=pd.date_range('2025-01-01', periods=5, freq='D'),
+    trades=trades,
+    net_profit_pct=10.0,
+    max_drawdown_pct=5.0
+)
+assert 'sharpe_ratio' in metrics
+assert 'profit_factor' in metrics
+assert 'romad' in metrics
+print(f"✓ Advanced metrics calculated: {list(metrics.keys())}")
+print("✓ All metric calculation functions working")
 ```
 
 ## Completion Checklist
 
 - [ ] `strategy.py` created with S01 logic
 - [ ] Trading logic copied exactly from `backtest_engine.py`
+- [ ] **`StrategyResult` extended with Optional metrics**
+- [ ] **Metric calculation functions added to `backtest_engine.py`**
+- [ ] **S01 strategy updated to calculate and return all metrics**
 - [ ] `__init__.py` created with registry
 - [ ] Auto-discovery working
-- [ ] All tests pass
-- [ ] Git commit: "Migration Stage 2: Extract S01 strategy and create registry"
+- [ ] All tests pass (including metric tests)
+- [ ] Git commit: "Migration Stage 2: Extract S01 strategy, add metrics, and create registry"
 
 ## Next Stage
 
