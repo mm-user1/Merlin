@@ -162,6 +162,17 @@ PARAMETER_MAP: Dict[str, Tuple[str, bool]] = {
     "trailShortOffset": ("trail_ma_short_offset", False),
 }
 
+INTERNAL_TO_FRONTEND_MAP: Dict[str, str] = {
+    internal: frontend for frontend, (internal, _) in PARAMETER_MAP.items()
+}
+INTERNAL_TO_FRONTEND_MAP.update(
+    {
+        "ma_type": "maType",
+        "trail_ma_long_type": "trailLongType",
+        "trail_ma_short_type": "trailShortType",
+    }
+)
+
 
 def generate_parameter_grid(config: OptimizationConfig) -> List[Dict[str, Any]]:
     """Generate the cartesian product of all parameter combinations."""
@@ -307,7 +318,12 @@ def _run_single_combination(args: Tuple[Dict[str, Any], pd.DataFrame, int, Any])
         )
 
     try:
-        result = strategy_class.run(df, params_dict, trade_start_idx)
+        strategy_payload = {
+            INTERNAL_TO_FRONTEND_MAP.get(key, key): value
+            for key, value in params_dict.items()
+        }
+
+        result = strategy_class.run(df, strategy_payload, trade_start_idx)
         opt_result = _base_result()
         opt_result.net_profit_pct = result.net_profit_pct
         opt_result.max_drawdown_pct = result.max_drawdown_pct
