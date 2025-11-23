@@ -3014,6 +3014,9 @@
         };
         applyScoreSettings(scoreSettings);
 
+        // Apply dynamic strategy parameters to the generated forms
+        applyDynamicBacktestParams(values);
+
         if (clearResults) {
           if (csvFileInputEl) {
             csvFileInputEl.value = '';
@@ -3070,6 +3073,9 @@
         const csvPathValue = typeof selectedCsvPath === 'string' ? selectedCsvPath.trim() : '';
         const scoreState = readScoreUIState();
 
+        // Collect dynamic strategy parameters
+        const dynamicParams = collectDynamicBacktestParams();
+
         return {
           dateFilter: document.getElementById('dateFilter').checked,
           backtester: document.getElementById('backtester').checked,
@@ -3080,29 +3086,8 @@
           endTime: document.getElementById('endTime').value.trim(),
           csvPath: csvPathValue,
           trendMATypes: trendTypes,
-          maLength: parseNumber(document.getElementById('maLength').value, defaults.maLength),
-          closeCountLong: parseNumber(document.getElementById('closeCountLong').value, defaults.closeCountLong),
-          closeCountShort: parseNumber(document.getElementById('closeCountShort').value, defaults.closeCountShort),
-          stopLongX: parseNumber(document.getElementById('stopLongX').value, defaults.stopLongX),
-          stopLongRR: parseNumber(document.getElementById('stopLongRR').value, defaults.stopLongRR),
-          stopLongLP: parseNumber(document.getElementById('stopLongLP').value, defaults.stopLongLP),
-          stopShortX: parseNumber(document.getElementById('stopShortX').value, defaults.stopShortX),
-          stopShortRR: parseNumber(document.getElementById('stopShortRR').value, defaults.stopShortRR),
-          stopShortLP: parseNumber(document.getElementById('stopShortLP').value, defaults.stopShortLP),
-          stopLongMaxPct: parseNumber(document.getElementById('stopLongMaxPct').value, defaults.stopLongMaxPct),
-          stopShortMaxPct: parseNumber(document.getElementById('stopShortMaxPct').value, defaults.stopShortMaxPct),
-          stopLongMaxDays: parseNumber(document.getElementById('stopLongMaxDays').value, defaults.stopLongMaxDays),
-          stopShortMaxDays: parseNumber(document.getElementById('stopShortMaxDays').value, defaults.stopShortMaxDays),
-          trailRRLong: parseNumber(document.getElementById('trailRRLong').value, defaults.trailRRLong),
-          trailRRShort: parseNumber(document.getElementById('trailRRShort').value, defaults.trailRRShort),
           trailLongTypes,
-          trailLongLength: parseNumber(document.getElementById('trailLongLength').value, defaults.trailLongLength),
-          trailLongOffset: parseNumber(document.getElementById('trailLongOffset').value, defaults.trailLongOffset),
           trailShortTypes,
-          trailShortLength: parseNumber(document.getElementById('trailShortLength').value, defaults.trailShortLength),
-          trailShortOffset: parseNumber(document.getElementById('trailShortOffset').value, defaults.trailShortOffset),
-          riskPerTrade: parseNumber(document.getElementById('riskPerTrade').value, defaults.riskPerTrade),
-          contractSize: parseNumber(document.getElementById('contractSize').value, defaults.contractSize),
           workerProcesses: workerInput
             ? parseNumber(workerInput.value, defaults.workerProcesses)
             : defaults.workerProcesses,
@@ -3115,6 +3100,8 @@
           scoreWeights: { ...scoreState.scoreWeights },
           scoreEnabledMetrics: { ...scoreState.scoreEnabledMetrics },
           scoreInvertMetrics: { ...scoreState.scoreInvertMetrics },
+          // Include all dynamic strategy parameters
+          ...dynamicParams,
         };
       }
 
@@ -3483,6 +3470,39 @@
         });
 
         return params;
+      }
+
+      function applyDynamicBacktestParams(params) {
+        if (!params || typeof params !== 'object') {
+          return;
+        }
+
+        if (!currentStrategyConfig || !currentStrategyConfig.parameters) {
+          return;
+        }
+
+        Object.entries(currentStrategyConfig.parameters).forEach(([name, def]) => {
+          if (!Object.prototype.hasOwnProperty.call(params, name)) {
+            return;
+          }
+
+          const input = document.getElementById(`backtest_${name}`);
+          if (!input) {
+            return;
+          }
+
+          const value = params[name];
+
+          if (input.type === 'checkbox') {
+            input.checked = Boolean(value);
+          } else if (input.type === 'number') {
+            input.value = value;
+          } else if (input.tagName === 'SELECT') {
+            input.value = value;
+          } else {
+            input.value = value;
+          }
+        });
       }
 
       function gatherFormState() {
