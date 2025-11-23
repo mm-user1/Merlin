@@ -1056,7 +1056,11 @@ def run_backtest() -> object:
 
 
 def _build_optimization_config(
-    csv_file, payload: dict, worker_processes=None, warmup_bars: Optional[int] = None
+    csv_file,
+    payload: dict,
+    worker_processes=None,
+    strategy_id=None,
+    warmup_bars: Optional[int] = None,
 ) -> OptimizationConfig:
     if not isinstance(payload, dict):
         raise ValueError("Invalid optimization config payload.")
@@ -1141,6 +1145,9 @@ def _build_optimization_config(
             normalized["normalization_method"] = normalization_value.strip().lower()
 
         return normalized
+
+    if strategy_id is None:
+        strategy_id = "s01_trailing_ma"
 
     if warmup_bars is None:
         warmup_bars_raw = payload.get("warmup_bars")
@@ -1312,23 +1319,24 @@ def _build_optimization_config(
 
     config = OptimizationConfig(
         csv_file=csv_file,
+        worker_processes=worker_processes_value,
+        contract_size=float(contract_size),
+        commission_rate=float(commission_rate),
+        risk_per_trade_pct=float(risk_per_trade),
+        atr_period=int(atr_period),
         enabled_params=enabled_params,
         param_ranges=param_ranges,
         fixed_params=fixed_params,
         ma_types_trend=[str(ma).upper() for ma in ma_types_trend],
         ma_types_trail_long=[str(ma).upper() for ma in ma_types_trail_long],
         ma_types_trail_short=[str(ma).upper() for ma in ma_types_trail_short],
-        risk_per_trade_pct=float(risk_per_trade),
-        contract_size=float(contract_size),
-        commission_rate=float(commission_rate),
-        atr_period=int(atr_period),
-        worker_processes=worker_processes_value,
-        warmup_bars=int(warmup_bars),
         filter_min_profit=filter_min_profit,
         min_profit_threshold=min_profit_threshold,
         score_config=score_config,
         lock_trail_types=lock_trail_types,
         optimization_mode=optimization_mode,
+        strategy_id=str(strategy_id),
+        warmup_bars=int(warmup_bars),
     )
 
     if optimization_mode == "optuna":
@@ -1481,6 +1489,8 @@ def run_optimization_endpoint() -> object:
     except json.JSONDecodeError:
         return ("Invalid optimization config JSON.", HTTPStatus.BAD_REQUEST)
 
+    strategy_id = request.form.get("strategy", "s01_trailing_ma")
+
     warmup_bars_raw = request.form.get("warmupBars", "1000")
     try:
         warmup_bars = int(warmup_bars_raw)
@@ -1505,7 +1515,11 @@ def run_optimization_endpoint() -> object:
                 worker_processes = 32
 
         optimization_config = _build_optimization_config(
-            data_source, config_payload, worker_processes, warmup_bars
+            data_source,
+            config_payload,
+            worker_processes,
+            strategy_id,
+            warmup_bars,
         )
     except ValueError as exc:
         if opened_file:

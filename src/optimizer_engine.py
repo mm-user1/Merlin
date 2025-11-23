@@ -3,23 +3,15 @@ from __future__ import annotations
 
 import bisect
 import itertools
-import math
 import multiprocessing as mp
 from dataclasses import dataclass
 from decimal import Decimal
 from typing import IO, Any, Dict, Iterable, List, Mapping, Optional, Tuple, Union
 
-import numpy as np
 import pandas as pd
 from tqdm import tqdm
 
-from backtest_engine import (
-    DEFAULT_ATR_PERIOD,
-    atr,
-    compute_max_drawdown,
-    get_ma,
-    load_data,
-)
+from backtest_engine import DEFAULT_ATR_PERIOD, load_data
 
 # Constants
 CHUNK_SIZE = 2000
@@ -48,22 +40,24 @@ class OptimizationConfig:
     """Configuration received from the optimizer form."""
 
     csv_file: IO[Any]
+    worker_processes: int
+    contract_size: float
+    commission_rate: float
+    risk_per_trade_pct: float
+    atr_period: int
     enabled_params: Dict[str, bool]
     param_ranges: Dict[str, Tuple[float, float, float]]
-    fixed_params: Dict[str, Any]
     ma_types_trend: List[str]
     ma_types_trail_long: List[str]
     ma_types_trail_short: List[str]
-    lock_trail_types: bool = False
-    risk_per_trade_pct: float = 2.0
-    contract_size: float = 0.01
-    commission_rate: float = 0.0005
-    atr_period: int = DEFAULT_ATR_PERIOD
-    worker_processes: int = 6
+    lock_trail_types: bool
+    fixed_params: Dict[str, Any]
+    score_config: Optional[Dict[str, Any]] = None
+
+    strategy_id: str = "s01_trailing_ma"
     warmup_bars: int = 1000
     filter_min_profit: bool = False
     min_profit_threshold: float = 0.0
-    score_config: Optional[Dict[str, Any]] = None
     optimization_mode: str = "grid"
 
 
@@ -103,23 +97,6 @@ class OptimizationResult:
     recovery_factor: Optional[float] = None
     consistency_score: Optional[float] = None
     score: float = 0.0
-
-
-# Globals populated inside worker processes
-_data_close: np.ndarray
-_data_high: np.ndarray
-_data_low: np.ndarray
-_times: np.ndarray
-_time_index: pd.DatetimeIndex
-_ma_cache: Dict[Tuple[str, int], np.ndarray]
-_lowest_cache: Dict[int, np.ndarray]
-_highest_cache: Dict[int, np.ndarray]
-_atr_values: np.ndarray
-_time_in_range: np.ndarray
-_month_arr: np.ndarray
-_risk_per_trade_pct: float
-_contract_size: float
-_commission_rate: float
 
 
 def _generate_numeric_sequence(
@@ -267,479 +244,83 @@ def _parse_timestamp(value: Any) -> Optional[pd.Timestamp]:
     return ts
 
 
-def _init_worker(
-    df: pd.DataFrame,
-    risk_per_trade_pct: float,
-    contract_size: float,
-    commission_rate: float,
-    atr_period: int,
-    ma_specs: Iterable[Tuple[str, int]],
-    long_lp_values: Iterable[int],
-    short_lp_values: Iterable[int],
-    use_date_filter: bool,
-    trade_start_idx: int,
-) -> None:
-    """Initialise worker globals."""
 
-    global _data_close, _data_high, _data_low, _times, _time_index
-    global _ma_cache, _lowest_cache, _highest_cache, _atr_values, _time_in_range
-    global _month_arr
-    global _risk_per_trade_pct, _contract_size, _commission_rate
 
-    close_series = df["Close"].astype(float)
-    high_series = df["High"].astype(float)
-    low_series = df["Low"].astype(float)
+def _run_single_combination(args: Tuple[Dict[str, Any], pd.DataFrame, int, Any]) -> OptimizationResult:
+    """
+    Worker function to run a single parameter combination using strategy.run().
 
-    _data_close = close_series.to_numpy()
-    _data_high = high_series.to_numpy()
-    _data_low = low_series.to_numpy()
-    _time_index = df.index
-    _times = df.index.to_numpy()
+    Args:
+        args: Tuple of (params_dict, df, trade_start_idx, strategy_class)
+
+    Returns:
+        OptimizationResult with metrics for this combination
+    """
+
+    params_dict, df, trade_start_idx, strategy_class = args
+
+    def _as_int(key: str, default: int = 0) -> int:
+        try:
+            return int(float(params_dict.get(key, default)))
+        except (TypeError, ValueError):
+            return int(default)
+
+    def _as_float(key: str, default: float = 0.0) -> float:
+        try:
+            return float(params_dict.get(key, default))
+        except (TypeError, ValueError):
+            return float(default)
+
+    def _base_result() -> OptimizationResult:
+        return OptimizationResult(
+            ma_type=str(params_dict.get("ma_type", "")),
+            ma_length=_as_int("ma_length"),
+            close_count_long=_as_int("close_count_long"),
+            close_count_short=_as_int("close_count_short"),
+            stop_long_atr=_as_float("stop_long_atr"),
+            stop_long_rr=_as_float("stop_long_rr"),
+            stop_long_lp=max(1, _as_int("stop_long_lp", 1)),
+            stop_short_atr=_as_float("stop_short_atr"),
+            stop_short_rr=_as_float("stop_short_rr"),
+            stop_short_lp=max(1, _as_int("stop_short_lp", 1)),
+            stop_long_max_pct=_as_float("stop_long_max_pct"),
+            stop_short_max_pct=_as_float("stop_short_max_pct"),
+            stop_long_max_days=_as_int("stop_long_max_days"),
+            stop_short_max_days=_as_int("stop_short_max_days"),
+            trail_rr_long=_as_float("trail_rr_long"),
+            trail_rr_short=_as_float("trail_rr_short"),
+            trail_ma_long_type=str(params_dict.get("trail_ma_long_type", "")),
+            trail_ma_long_length=_as_int("trail_ma_long_length"),
+            trail_ma_long_offset=_as_float("trail_ma_long_offset"),
+            trail_ma_short_type=str(params_dict.get("trail_ma_short_type", "")),
+            trail_ma_short_length=_as_int("trail_ma_short_length"),
+            trail_ma_short_offset=_as_float("trail_ma_short_offset"),
+            net_profit_pct=0.0,
+            max_drawdown_pct=0.0,
+            total_trades=0,
+            sharpe_ratio=None,
+            profit_factor=None,
+            romad=None,
+            ulcer_index=None,
+            recovery_factor=None,
+            consistency_score=None,
+        )
+
     try:
-        _month_arr = _time_index.month.to_numpy(dtype=np.int16)
-    except AttributeError:  # pragma: no cover - defensive
-        _month_arr = pd.to_datetime(_time_index).month.to_numpy(dtype=np.int16)
-
-    _ma_cache = {}
-    for ma_type, length in ma_specs:
-        if length <= 0:
-            _ma_cache[(ma_type, length)] = np.full_like(_data_close, np.nan)
-            continue
-        series = get_ma(close_series, ma_type, length, df["Volume"], high_series, low_series)
-        _ma_cache[(ma_type, length)] = series.to_numpy(dtype=float)
-
-    _atr_values = atr(high_series, low_series, close_series, atr_period).to_numpy(dtype=float)
-
-    lp_values_long = set(long_lp_values) or {1}
-    _lowest_cache = {}
-    for length in lp_values_long:
-        if length <= 0:
-            _lowest_cache[length] = np.full_like(_data_low, np.nan)
-        else:
-            rolled = low_series.rolling(length, min_periods=1).min().to_numpy(dtype=float)
-            _lowest_cache[length] = rolled
-
-    lp_values_short = set(short_lp_values) or {1}
-    _highest_cache = {}
-    for length in lp_values_short:
-        if length <= 0:
-            _highest_cache[length] = np.full_like(_data_high, np.nan)
-        else:
-            rolled = high_series.rolling(length, min_periods=1).max().to_numpy(dtype=float)
-            _highest_cache[length] = rolled
-
-    # Use trade_start_idx to define trading zone
-    if use_date_filter:
-        _time_in_range = np.zeros(len(df), dtype=bool)
-        _time_in_range[trade_start_idx:] = True
-    else:
-        _time_in_range = np.ones(len(df), dtype=bool)
-
-    _risk_per_trade_pct = float(risk_per_trade_pct)
-    _contract_size = float(contract_size)
-    _commission_rate = float(commission_rate)
-
-
-def _simulate_combination(params_dict: Dict[str, Any]) -> OptimizationResult:
-    """Run a single simulation using pre-computed caches."""
-
-    ma_type = params_dict["ma_type"]
-    ma_length = int(params_dict["ma_length"])
-    close_count_long = int(params_dict["close_count_long"])
-    close_count_short = int(params_dict["close_count_short"])
-    stop_long_atr = float(params_dict["stop_long_atr"])
-    stop_long_rr = float(params_dict["stop_long_rr"])
-    stop_long_lp = max(1, int(params_dict["stop_long_lp"]))
-    stop_short_atr = float(params_dict["stop_short_atr"])
-    stop_short_rr = float(params_dict["stop_short_rr"])
-    stop_short_lp = max(1, int(params_dict["stop_short_lp"]))
-    stop_long_max_pct = float(params_dict["stop_long_max_pct"])
-    stop_short_max_pct = float(params_dict["stop_short_max_pct"])
-    stop_long_max_days = int(params_dict["stop_long_max_days"])
-    stop_short_max_days = int(params_dict["stop_short_max_days"])
-    trail_rr_long = float(params_dict["trail_rr_long"])
-    trail_rr_short = float(params_dict["trail_rr_short"])
-    trail_ma_long_type = params_dict["trail_ma_long_type"]
-    trail_ma_long_length = int(params_dict["trail_ma_long_length"])
-    trail_ma_long_offset = float(params_dict["trail_ma_long_offset"])
-    trail_ma_short_type = params_dict["trail_ma_short_type"]
-    trail_ma_short_length = int(params_dict["trail_ma_short_length"])
-    trail_ma_short_offset = float(params_dict["trail_ma_short_offset"])
-
-    ma_series = _ma_cache.get((ma_type, ma_length))
-    if ma_series is None:
-        ma_series = np.full_like(_data_close, np.nan)
-    trail_ma_long = _ma_cache.get((trail_ma_long_type, trail_ma_long_length))
-    if trail_ma_long is None:
-        trail_ma_long = np.full_like(_data_close, np.nan)
-    trail_ma_short = _ma_cache.get((trail_ma_short_type, trail_ma_short_length))
-    if trail_ma_short is None:
-        trail_ma_short = np.full_like(_data_close, np.nan)
-
-    lowest_long = _lowest_cache.get(stop_long_lp)
-    if lowest_long is None:
-        lowest_long = _lowest_cache[next(iter(_lowest_cache))]
-    highest_short = _highest_cache.get(stop_short_lp)
-    if highest_short is None:
-        highest_short = _highest_cache[next(iter(_highest_cache))]
-
-    equity = 100.0
-    realized_equity = equity
-    position = 0
-    prev_position = 0
-    position_size = 0.0
-    entry_price = math.nan
-    stop_price = math.nan
-    target_price = math.nan
-    trail_price_long = math.nan
-    trail_price_short = math.nan
-    trail_activated_long = False
-    trail_activated_short = False
-    entry_time_long: Optional[pd.Timestamp] = None
-    entry_time_short: Optional[pd.Timestamp] = None
-    entry_commission = 0.0
-
-    counter_close_trend_long = 0
-    counter_close_trend_short = 0
-    counter_trade_long = 0
-    counter_trade_short = 0
-
-    trades_count = 0
-    realized_curve: List[float] = []
-    equity_curve: List[float] = []
-    monthly_returns: List[float] = []
-    month_start_equity: Optional[float] = None
-    current_month: Optional[int] = None
-    last_equity = realized_equity
-    in_range_previous = False
-    gross_profit = 0.0
-    gross_loss = 0.0
-    has_month_data = len(_month_arr) == len(_data_close)
-    has_time_filter = len(_time_in_range) == len(_data_close)
-
-    for i in range(len(_data_close)):
-        c = float(_data_close[i])
-        h = float(_data_high[i])
-        l = float(_data_low[i])
-        ma_value = float(ma_series[i]) if i < len(ma_series) else math.nan
-        atr_value = float(_atr_values[i]) if i < len(_atr_values) else math.nan
-        lowest_value = float(lowest_long[i]) if i < len(lowest_long) else math.nan
-        highest_value = float(highest_short[i]) if i < len(highest_short) else math.nan
-        trail_long_value = float(trail_ma_long[i]) if i < len(trail_ma_long) else math.nan
-        trail_short_value = float(trail_ma_short[i]) if i < len(trail_ma_short) else math.nan
-
-        if trail_ma_long_length > 0 and not math.isnan(trail_long_value):
-            trail_long_value *= 1 + trail_ma_long_offset / 100.0
-        if trail_ma_short_length > 0 and not math.isnan(trail_short_value):
-            trail_short_value *= 1 + trail_ma_short_offset / 100.0
-
-        if not math.isnan(ma_value):
-            if c > ma_value:
-                counter_close_trend_long += 1
-                counter_close_trend_short = 0
-            elif c < ma_value:
-                counter_close_trend_short += 1
-                counter_close_trend_long = 0
-            else:
-                counter_close_trend_long = 0
-                counter_close_trend_short = 0
-
-        if position > 0:
-            counter_trade_long = 1
-            counter_trade_short = 0
-        elif position < 0:
-            counter_trade_long = 0
-            counter_trade_short = 1
-
-        exit_price: Optional[float] = None
-        current_time = _time_index[i]
-
-        in_range = bool(_time_in_range[i]) if has_time_filter else True
-
-        if has_month_data:
-            month_value = int(_month_arr[i])
-            if in_range:
-                if not in_range_previous:
-                    month_start_equity = last_equity
-                    current_month = month_value
-                elif current_month is not None and month_value != current_month:
-                    if month_start_equity is not None and month_start_equity > 0:
-                        monthly_returns.append((last_equity / month_start_equity - 1.0) * 100.0)
-                    month_start_equity = last_equity
-                    current_month = month_value
-            elif in_range_previous and month_start_equity is not None and month_start_equity > 0:
-                monthly_returns.append((last_equity / month_start_equity - 1.0) * 100.0)
-                month_start_equity = None
-                current_month = None
-
-        if position > 0:
-            if (
-                not trail_activated_long
-                and not math.isnan(entry_price)
-                and not math.isnan(stop_price)
-            ):
-                activation_price = entry_price + (entry_price - stop_price) * trail_rr_long
-                if h >= activation_price:
-                    trail_activated_long = True
-                    if math.isnan(trail_price_long):
-                        trail_price_long = stop_price
-            if not math.isnan(trail_price_long) and not math.isnan(trail_long_value):
-                if math.isnan(trail_price_long) or trail_long_value > trail_price_long:
-                    trail_price_long = trail_long_value
-            if trail_activated_long:
-                if not math.isnan(trail_price_long) and l <= trail_price_long:
-                    exit_price = h if trail_price_long > h else trail_price_long
-            else:
-                if l <= stop_price:
-                    exit_price = stop_price
-                elif h >= target_price:
-                    exit_price = target_price
-            if exit_price is None and entry_time_long is not None and stop_long_max_days > 0:
-                delta_days = int(((current_time - entry_time_long).total_seconds()) // 86400)
-                if delta_days >= stop_long_max_days:
-                    exit_price = c
-            if exit_price is not None:
-                gross_pnl = (exit_price - entry_price) * position_size
-                exit_commission = exit_price * position_size * _commission_rate
-                trade_pnl = gross_pnl - entry_commission - exit_commission
-                if trade_pnl > 0:
-                    gross_profit += trade_pnl
-                elif trade_pnl < 0:
-                    gross_loss += abs(trade_pnl)
-                realized_equity += gross_pnl - exit_commission
-                entry_commission = 0.0
-                position = 0
-                position_size = 0.0
-                entry_price = math.nan
-                stop_price = math.nan
-                target_price = math.nan
-                trail_price_long = math.nan
-                trail_activated_long = False
-                entry_time_long = None
-                trades_count += 1
-
-        elif position < 0:
-            if (
-                not trail_activated_short
-                and not math.isnan(entry_price)
-                and not math.isnan(stop_price)
-            ):
-                activation_price = entry_price - (stop_price - entry_price) * trail_rr_short
-                if l <= activation_price:
-                    trail_activated_short = True
-                    if math.isnan(trail_price_short):
-                        trail_price_short = stop_price
-            if not math.isnan(trail_price_short) and not math.isnan(trail_short_value):
-                if math.isnan(trail_price_short) or trail_short_value < trail_price_short:
-                    trail_price_short = trail_short_value
-            if trail_activated_short:
-                if not math.isnan(trail_price_short) and h >= trail_price_short:
-                    exit_price = l if trail_price_short < l else trail_price_short
-            else:
-                if h >= stop_price:
-                    exit_price = stop_price
-                elif l <= target_price:
-                    exit_price = target_price
-            if exit_price is None and entry_time_short is not None and stop_short_max_days > 0:
-                delta_days = int(((current_time - entry_time_short).total_seconds()) // 86400)
-                if delta_days >= stop_short_max_days:
-                    exit_price = c
-            if exit_price is not None:
-                gross_pnl = (entry_price - exit_price) * position_size
-                exit_commission = exit_price * position_size * _commission_rate
-                trade_pnl = gross_pnl - entry_commission - exit_commission
-                if trade_pnl > 0:
-                    gross_profit += trade_pnl
-                elif trade_pnl < 0:
-                    gross_loss += abs(trade_pnl)
-                realized_equity += gross_pnl - exit_commission
-                entry_commission = 0.0
-                position = 0
-                position_size = 0.0
-                entry_price = math.nan
-                stop_price = math.nan
-                target_price = math.nan
-                trail_price_short = math.nan
-                trail_activated_short = False
-                entry_time_short = None
-                trades_count += 1
-
-        up_trend = counter_close_trend_long >= close_count_long and counter_trade_long == 0
-        down_trend = counter_close_trend_short >= close_count_short and counter_trade_short == 0
-
-        can_open_long = (
-            up_trend
-            and position == 0
-            and prev_position == 0
-            and _time_in_range[i]
-            and not math.isnan(atr_value)
-            and not math.isnan(lowest_value)
-        )
-        can_open_short = (
-            down_trend
-            and position == 0
-            and prev_position == 0
-            and _time_in_range[i]
-            and not math.isnan(atr_value)
-            and not math.isnan(highest_value)
-        )
-
-        if can_open_long:
-            stop_size = atr_value * stop_long_atr
-            long_stop_price = lowest_value - stop_size
-            long_stop_distance = c - long_stop_price
-            if long_stop_distance > 0:
-                long_stop_pct = (long_stop_distance / c) * 100
-                if long_stop_pct <= stop_long_max_pct or stop_long_max_pct <= 0:
-                    risk_cash = realized_equity * (_risk_per_trade_pct / 100)
-                    qty = risk_cash / long_stop_distance if long_stop_distance != 0 else 0.0
-                    if _contract_size > 0:
-                        qty = math.floor(qty / _contract_size) * _contract_size
-                    if qty > 0:
-                        position = 1
-                        position_size = qty
-                        entry_price = c
-                        stop_price = long_stop_price
-                        target_price = c + long_stop_distance * stop_long_rr
-                        trail_price_long = long_stop_price
-                        trail_activated_long = False
-                        entry_time_long = current_time
-                        entry_commission = entry_price * position_size * _commission_rate
-                        realized_equity -= entry_commission
-
-        if can_open_short and position == 0:
-            stop_size = atr_value * stop_short_atr
-            short_stop_price = highest_value + stop_size
-            short_stop_distance = short_stop_price - c
-            if short_stop_distance > 0:
-                short_stop_pct = (short_stop_distance / c) * 100
-                if short_stop_pct <= stop_short_max_pct or stop_short_max_pct <= 0:
-                    risk_cash = realized_equity * (_risk_per_trade_pct / 100)
-                    qty = risk_cash / short_stop_distance if short_stop_distance != 0 else 0.0
-                    if _contract_size > 0:
-                        qty = math.floor(qty / _contract_size) * _contract_size
-                    if qty > 0:
-                        position = -1
-                        position_size = qty
-                        entry_price = c
-                        stop_price = short_stop_price
-                        target_price = c - short_stop_distance * stop_short_rr
-                        trail_price_short = short_stop_price
-                        trail_activated_short = False
-                        entry_time_short = current_time
-                        entry_commission = entry_price * position_size * _commission_rate
-                        realized_equity -= entry_commission
-
-        realized_curve.append(realized_equity)
-        current_equity = realized_equity
-        if position > 0 and not math.isnan(entry_price):
-            current_equity += (c - entry_price) * position_size
-        elif position < 0 and not math.isnan(entry_price):
-            current_equity += (entry_price - c) * position_size
-        equity_curve.append(current_equity)
-        last_equity = current_equity
-        prev_position = position
-        in_range_previous = in_range
-
-    equity_series = pd.Series(realized_curve, index=_time_index[: len(realized_curve)])
-    net_profit_pct = ((realized_equity - equity) / equity) * 100
-    max_drawdown_pct = compute_max_drawdown(equity_series)
-
-    if (
-        has_month_data
-        and month_start_equity is not None
-        and month_start_equity > 0
-        and in_range_previous
-    ):
-        monthly_returns.append((last_equity / month_start_equity - 1.0) * 100.0)
-
-    profit_factor: Optional[float]
-    if gross_loss > 0:
-        profit_factor = gross_profit / gross_loss if gross_loss != 0 else None
-    else:
-        if gross_profit > 0:
-            profit_factor = 999.0
-        else:
-            profit_factor = 1.0 if trades_count > 0 else None
-
-    if profit_factor is None:
-        profit_factor = 1.0
-
-    romad: Optional[float]
-    recovery_factor: Optional[float]
-    if net_profit_pct < 0:
-        romad = 0.0
-        recovery_factor = 0.0
-    else:
-        if abs(max_drawdown_pct) < 1e-9:
-            romad = net_profit_pct * 100.0
-            recovery_factor = net_profit_pct * 100.0
-        elif max_drawdown_pct != 0:
-            romad = net_profit_pct / abs(max_drawdown_pct)
-            recovery_factor = net_profit_pct / abs(max_drawdown_pct)
-        else:
-            romad = 0.0
-            recovery_factor = 0.0
-
-    sharpe_ratio: Optional[float] = None
-    if len(monthly_returns) >= 2:
-        monthly_array = np.array(monthly_returns, dtype=float)
-        if monthly_array.size >= 2:
-            avg_return = float(np.mean(monthly_array))
-            sd_return = float(np.std(monthly_array, ddof=0))
-            if sd_return != 0:
-                rfr = (0.02 * 100.0) / 12.0
-                sharpe_ratio = (avg_return - rfr) / sd_return
-
-    ulcer_index: Optional[float] = None
-    if equity_curve:
-        equity_array = np.asarray(equity_curve, dtype=float)
-        if equity_array.size:
-            running_max = np.maximum.accumulate(equity_array)
-            with np.errstate(divide="ignore", invalid="ignore"):
-                drawdowns = np.where(running_max > 0, equity_array / running_max - 1.0, 0.0)
-            drawdown_squared_sum = float(np.square(drawdowns).sum())
-            ulcer_index = math.sqrt(drawdown_squared_sum / equity_array.size) * 100.0
-
-    consistency_score: Optional[float] = None
-    if len(monthly_returns) >= 3:
-        total_months = len(monthly_returns)
-        profitable_months = sum(1 for value in monthly_returns if value is not None and value > 0)
-        consistency_score = (profitable_months / total_months) * 100.0 if total_months > 0 else None
-
-    return OptimizationResult(
-        ma_type=ma_type,
-        ma_length=ma_length,
-        close_count_long=close_count_long,
-        close_count_short=close_count_short,
-        stop_long_atr=stop_long_atr,
-        stop_long_rr=stop_long_rr,
-        stop_long_lp=stop_long_lp,
-        stop_short_atr=stop_short_atr,
-        stop_short_rr=stop_short_rr,
-        stop_short_lp=stop_short_lp,
-        stop_long_max_pct=stop_long_max_pct,
-        stop_short_max_pct=stop_short_max_pct,
-        stop_long_max_days=stop_long_max_days,
-        stop_short_max_days=stop_short_max_days,
-        trail_rr_long=trail_rr_long,
-        trail_rr_short=trail_rr_short,
-        trail_ma_long_type=trail_ma_long_type,
-        trail_ma_long_length=trail_ma_long_length,
-        trail_ma_long_offset=trail_ma_long_offset,
-        trail_ma_short_type=trail_ma_short_type,
-        trail_ma_short_length=trail_ma_short_length,
-        trail_ma_short_offset=trail_ma_short_offset,
-        net_profit_pct=net_profit_pct,
-        max_drawdown_pct=max_drawdown_pct,
-        total_trades=trades_count,
-        romad=romad,
-        sharpe_ratio=sharpe_ratio,
-        profit_factor=profit_factor,
-        ulcer_index=ulcer_index,
-        recovery_factor=recovery_factor,
-        consistency_score=consistency_score,
-    )
+        result = strategy_class.run(df, params_dict, trade_start_idx)
+        opt_result = _base_result()
+        opt_result.net_profit_pct = result.net_profit_pct
+        opt_result.max_drawdown_pct = result.max_drawdown_pct
+        opt_result.total_trades = result.total_trades
+        opt_result.sharpe_ratio = result.sharpe_ratio
+        opt_result.profit_factor = result.profit_factor
+        opt_result.romad = result.romad
+        opt_result.ulcer_index = result.ulcer_index
+        opt_result.recovery_factor = result.recovery_factor
+        opt_result.consistency_score = result.consistency_score
+        return opt_result
+    except Exception:
+        return _base_result()
 
 
 def calculate_score(
@@ -842,10 +423,17 @@ def calculate_score(
     return results
 
 
-def run_grid_optimization(config: OptimizationConfig) -> List[OptimizationResult]:
-    """Execute the grid search optimization."""
 
-    from backtest_engine import prepare_dataset_with_warmup
+
+def run_grid_optimization(config: OptimizationConfig) -> List[OptimizationResult]:
+    """Execute the grid search optimization using modular strategy system."""
+
+    from strategies import get_strategy
+
+    try:
+        strategy_class = get_strategy(config.strategy_id)
+    except ValueError as e:
+        raise ValueError(f"Failed to load strategy '{config.strategy_id}': {e}")
 
     df = load_data(config.csv_file)
     combinations = generate_parameter_grid(config)
@@ -853,75 +441,45 @@ def run_grid_optimization(config: OptimizationConfig) -> List[OptimizationResult
     if total == 0:
         raise ValueError("No parameter combinations generated for optimization.")
 
-    ma_specs = set()
-    long_lp_values = set()
-    short_lp_values = set()
-    for combo in combinations:
-        ma_specs.add((combo["ma_type"], int(combo["ma_length"])))
-        ma_specs.add((combo["trail_ma_long_type"], int(combo["trail_ma_long_length"])))
-        ma_specs.add((combo["trail_ma_short_type"], int(combo["trail_ma_short_length"])))
-        long_lp_values.add(max(1, int(combo["stop_long_lp"])))
-        short_lp_values.add(max(1, int(combo["stop_short_lp"])))
-
     use_date_filter = bool(config.fixed_params.get("dateFilter", False))
-    start = _parse_timestamp(config.fixed_params.get("start"))
-    end = _parse_timestamp(config.fixed_params.get("end"))
+    start_ts = _parse_timestamp(config.fixed_params.get("start"))
+    end_ts = _parse_timestamp(config.fixed_params.get("end"))
 
-    # Prepare dataset with warmup if date filtering is enabled
     trade_start_idx = 0
-    if use_date_filter and (start is not None or end is not None):
-        max_ma_length = 0
-        for combo in combinations:
-            max_ma_length = max(
-                max_ma_length,
-                int(combo["ma_length"]),
-                int(combo["trail_ma_long_length"]),
-                int(combo["trail_ma_short_length"]),
+    if use_date_filter and (start_ts is not None or end_ts is not None):
+        from backtest_engine import prepare_dataset_with_warmup
+
+        try:
+            df, trade_start_idx = prepare_dataset_with_warmup(
+                df, start_ts, end_ts, config.warmup_bars
             )
+        except Exception as exc:
+            raise ValueError(f"Failed to prepare dataset with warmup: {exc}")
 
-        dynamic_warmup = max(500, int(max_ma_length * 1.5))
-        warmup_bars = max(int(config.warmup_bars), dynamic_warmup)
-
-        df, trade_start_idx = prepare_dataset_with_warmup(df, start, end, warmup_bars)
+    worker_args = [
+        (combo, df, trade_start_idx, strategy_class)
+        for combo in combinations
+    ]
 
     results: List[OptimizationResult] = []
-    pool_args = (
-        df,
-        config.risk_per_trade_pct,
-        config.contract_size,
-        config.commission_rate,
-        int(config.atr_period),
-        list(ma_specs),
-        list(long_lp_values),
-        list(short_lp_values),
-        use_date_filter,
-        trade_start_idx,
-    )
     processes = min(32, max(1, int(config.worker_processes)))
-    with mp.Pool(processes=processes, initializer=_init_worker, initargs=pool_args) as pool:
+
+    with mp.Pool(processes=processes) as pool:
         progress_iter = tqdm(
-            range(0, total, CHUNK_SIZE),
+            pool.imap_unordered(_run_single_combination, worker_args, chunksize=CHUNK_SIZE),
             desc="Optimizing",
             total=total,
             unit="combo",
         )
-        for start_idx in progress_iter:
-            batch = combinations[start_idx : start_idx + CHUNK_SIZE]
-            batch_results = pool.map(_simulate_combination, batch)
-            results.extend(batch_results)
-            progress_iter.update(len(batch) - 1)
+        for result in progress_iter:
+            results.append(result)
 
-    if config.score_config is None:
-        score_config = DEFAULT_SCORE_CONFIG
-    else:
-        score_config = config.score_config
+    score_config = config.score_config or DEFAULT_SCORE_CONFIG
     results = calculate_score(results, score_config)
 
     if config.filter_min_profit:
         threshold = float(config.min_profit_threshold)
-        results = [
-            item for item in results if float(item.net_profit_pct) >= threshold
-        ]
+        results = [item for item in results if float(item.net_profit_pct) >= threshold]
 
     results.sort(key=lambda item: item.net_profit_pct, reverse=True)
     return results
