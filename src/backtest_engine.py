@@ -579,12 +579,10 @@ def calculate_profit_factor(trades: List[TradeRecord]) -> Optional[float]:
     if not trades:
         return None
 
-    gross_profit = sum(
-        t.profit_pct for t in trades if t.profit_pct is not None and t.profit_pct > 0
-    )
-    gross_loss = abs(
-        sum(t.profit_pct for t in trades if t.profit_pct is not None and t.profit_pct < 0)
-    )
+    # Calculate profit factor in absolute dollar terms (not percentage)
+    # to match pre-migration behavior
+    gross_profit = sum(t.net_pnl for t in trades if t.net_pnl > 0)
+    gross_loss = abs(sum(t.net_pnl for t in trades if t.net_pnl < 0))
 
     if gross_loss > 0:
         return gross_profit / gross_loss
@@ -777,6 +775,7 @@ def run_strategy(df: pd.DataFrame, params: StrategyParams, trade_start_idx: int 
 
     trades: List[TradeRecord] = []
     realized_curve: List[float] = []
+    mtm_curve: List[float] = []  # Mark-to-market equity (includes unrealized PnL)
 
     for i in range(len(df)):
         time = times[i]
@@ -993,6 +992,7 @@ def run_strategy(df: pd.DataFrame, params: StrategyParams, trade_start_idx: int 
         elif position < 0 and not math.isnan(entry_price):
             mark_to_market += (entry_price - c) * position_size
         realized_curve.append(realized_equity)
+        mtm_curve.append(mark_to_market)  # Save MTM equity for Ulcer Index calculation
         prev_position = position
 
     equity_series = pd.Series(realized_curve, index=df.index[: len(realized_curve)])
@@ -1002,9 +1002,11 @@ def run_strategy(df: pd.DataFrame, params: StrategyParams, trade_start_idx: int 
 
     # Calculate advanced metrics for optimization scoring
     # These metrics are used by Grid/Optuna optimizers to compute composite scores
+    # Use mark-to-market equity curve (includes unrealized PnL) for Ulcer Index
+    # to match pre-migration behavior
     advanced_metrics = calculate_advanced_metrics(
-        equity_curve=realized_curve,
-        time_index=df.index[:len(realized_curve)],
+        equity_curve=mtm_curve,
+        time_index=df.index[:len(mtm_curve)],
         trades=trades,
         net_profit_pct=net_profit_pct,
         max_drawdown_pct=max_drawdown_pct
