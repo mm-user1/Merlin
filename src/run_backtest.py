@@ -1,7 +1,12 @@
 import argparse
 import pandas as pd
 
-from backtest_engine import StrategyParams, load_data, run_strategy, prepare_dataset_with_warmup
+from backtest_engine import (
+    StrategyParams,
+    load_data,
+    prepare_dataset_with_warmup_legacy,
+    run_strategy,
+)
 
 DEFAULT_CSV_PATH = "OKX_LINKUSDT.P, 15 2025.02.01-2025.09.09.csv"
 
@@ -57,7 +62,7 @@ def main() -> None:
     # Apply unified warmup architecture
     # If date filtering is enabled, prepare dataset with warmup
     if params.use_date_filter and (params.start is not None or params.end is not None):
-        df_prepared, trade_start_idx = prepare_dataset_with_warmup(
+        df_prepared, trade_start_idx = prepare_dataset_with_warmup_legacy(
             df, params.start, params.end, params
         )
     else:

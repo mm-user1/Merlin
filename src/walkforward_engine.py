@@ -288,7 +288,7 @@ class WalkForwardEngine:
 
             # IMPORTANT: Run Optuna optimization on IS window
             # The optimization engine will:
-            # 1. Call prepare_dataset_with_warmup(df, is_start_time, is_end_time, params)
+            # 1. Call prepare_dataset_with_warmup_legacy(df, is_start_time, is_end_time, params)
             # 2. Get trimmed df with warmup + IS period and trade_start_idx
             # 3. Use trade_start_idx to ensure trades open only in IS period (not in warmup)
             # This ensures IS-only optimization: warmup for MAs, but trades/metrics only from IS
@@ -307,14 +307,14 @@ class WalkForwardEngine:
             is_profits: List[float] = []
 
             for params in top_params:
-                from backtest_engine import prepare_dataset_with_warmup
+                from backtest_engine import prepare_dataset_with_warmup_legacy
 
                 # Create params object for warmup calculation
                 strategy_params = StrategyParams.from_dict(params)
 
                 # Prepare dataset with warmup for IS period
                 # This ensures MAs are properly warmed up before IS trading begins
-                is_df_prepared, trade_start_idx = prepare_dataset_with_warmup(
+                is_df_prepared, trade_start_idx = prepare_dataset_with_warmup_legacy(
                     df, is_start_time, is_end_time, strategy_params
                 )
 
@@ -349,15 +349,15 @@ class WalkForwardEngine:
             oos_trades: List[int] = []
 
             for params in top_params:
-                from backtest_engine import prepare_dataset_with_warmup
+                from backtest_engine import prepare_dataset_with_warmup_legacy
 
                 # Create params object for warmup calculation
                 strategy_params = StrategyParams.from_dict(params)
 
-                # IMPORTANT: For OOS validation, we use prepare_dataset_with_warmup to:
+                # IMPORTANT: For OOS validation, we use prepare_dataset_with_warmup_legacy to:
                 # 1. Add warmup period before oos_start for proper MA calculation
                 # 2. Set trade_start_idx to oos_start, ensuring trades open only in OOS
-                oos_df_prepared, trade_start_idx = prepare_dataset_with_warmup(
+                oos_df_prepared, trade_start_idx = prepare_dataset_with_warmup_legacy(
                     df, oos_start_time, oos_end_time, strategy_params
                 )
 
@@ -405,7 +405,7 @@ class WalkForwardEngine:
 
         # Step 4: Forward Test
         print("\n--- Forward Test ---")
-        from backtest_engine import prepare_dataset_with_warmup
+        from backtest_engine import prepare_dataset_with_warmup_legacy
 
         forward_start_time = df.index[fwd_start]
         forward_end_time = df.index[fwd_end - 1]
@@ -422,7 +422,7 @@ class WalkForwardEngine:
             # CRITICAL: Prepare dataset with warmup for forward test
             # This adds warmup period before forward_start to properly warm up MAs
             # trade_start_idx will point to the beginning of forward period
-            forward_df_prepared, trade_start_idx = prepare_dataset_with_warmup(
+            forward_df_prepared, trade_start_idx = prepare_dataset_with_warmup_legacy(
                 df, forward_start_time, forward_end_time, strategy_params
             )
 
@@ -479,7 +479,7 @@ class WalkForwardEngine:
 
         This method passes the full dataframe along with start/end dates to Optuna.
         The Optuna engine will internally:
-        1. Call prepare_dataset_with_warmup() to add warmup period before start_time
+        1. Call prepare_dataset_with_warmup_legacy() to add warmup period before start_time
         2. Calculate trade_start_idx pointing to start_time in the trimmed dataframe
         3. Pass trade_start_idx to worker processes
         4. Workers use trade_start_idx to ensure trades open only from start_time onwards
@@ -501,7 +501,7 @@ class WalkForwardEngine:
         csv_buffer = self._dataframe_to_csv_buffer(df)
 
         # Update fixed params with date filter and start/end dates
-        # These will be used by prepare_dataset_with_warmup() in the optimization engine
+        # These will be used by prepare_dataset_with_warmup_legacy() in the optimization engine
         fixed_params = deepcopy(self.base_config_template["fixed_params"])
         fixed_params["dateFilter"] = True
         fixed_params["start"] = start_time.isoformat()
@@ -873,7 +873,11 @@ def export_wfa_trades_history(
         List of generated CSV filenames
     """
     from pathlib import Path
-    from backtest_engine import StrategyParams, run_strategy, prepare_dataset_with_warmup
+    from backtest_engine import (
+        StrategyParams,
+        prepare_dataset_with_warmup_legacy_legacy,
+        run_strategy,
+    )
 
     trade_files = []
     actual_top_k = min(top_k, len(wf_result.aggregated))
@@ -893,8 +897,8 @@ def export_wfa_trades_history(
             is_start_time = df.index[window.is_start]
             is_end_time = df.index[window.is_end - 1]
 
-            # Exact WFA replication: prepare_dataset_with_warmup + run_strategy
-            is_df_prepared, trade_start_idx = prepare_dataset_with_warmup(
+            # Exact WFA replication: prepare_dataset_with_warmup_legacy + run_strategy
+            is_df_prepared, trade_start_idx = prepare_dataset_with_warmup_legacy_legacy(
                 df, is_start_time, is_end_time, params
             )
 
@@ -912,7 +916,7 @@ def export_wfa_trades_history(
             oos_start_time = df.index[window.oos_start]
             oos_end_time = df.index[window.oos_end - 1]
 
-            oos_df_prepared, trade_start_idx = prepare_dataset_with_warmup(
+            oos_df_prepared, trade_start_idx = prepare_dataset_with_warmup_legacy_legacy(
                 df, oos_start_time, oos_end_time, params
             )
 
@@ -932,7 +936,7 @@ def export_wfa_trades_history(
         forward_start_time = df.index[wf_result.forward_start]
         forward_end_time = df.index[wf_result.forward_end - 1]
 
-        fwd_df_prepared, trade_start_idx = prepare_dataset_with_warmup(
+        fwd_df_prepared, trade_start_idx = prepare_dataset_with_warmup_legacy_legacy(
             df, forward_start_time, forward_end_time, params
         )
 
