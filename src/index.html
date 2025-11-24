@@ -861,14 +861,6 @@
                     <!-- Generated forms will appear here -->
                   </div>
                 </div>
-
-                <!-- Optimization Parameters Container -->
-                <div id="optimizerParamsContainer" class="params-section" style="margin-top: 30px;">
-                  <h3>Optimization Parameters</h3>
-                  <div id="optimizerParamsContent">
-                    <!-- Generated forms will appear here -->
-                  </div>
-                </div>
               </div>
 
               <div class="section">
@@ -1889,7 +1881,6 @@
 
         updateStrategyInfo(currentStrategyConfig);
         generateBacktestForm(currentStrategyConfig);
-        generateOptimizerForm(currentStrategyConfig);
 
         console.log(`Loaded strategy: ${currentStrategyConfig.name}`);
       } catch (error) {
@@ -1955,96 +1946,6 @@
         });
 
         container.appendChild(groupDiv);
-      }
-    }
-
-    /**
-     * Generate optimizer parameters form from config
-     * Uses existing UI classes: .opt-section, .opt-row, .opt-label, .opt-controls
-     * Only includes parameters where optimize.enabled !== false
-     */
-    function generateOptimizerForm(config) {
-      const container = document.getElementById('optimizerParamsContent');
-      if (!container) {
-        return;
-      }
-
-      container.innerHTML = '';
-
-      const params = config.parameters || {};
-      const groups = {};
-
-      for (const [paramName, paramDef] of Object.entries(params)) {
-        const optimizeEnabled = paramDef.optimize?.enabled;
-        if (optimizeEnabled === false) {
-          continue;
-        }
-
-        const group = paramDef.group || 'Other';
-        if (!groups[group]) {
-          groups[group] = [];
-        }
-        groups[group].push({ name: paramName, def: paramDef });
-      }
-
-      for (const [groupName, groupParams] of Object.entries(groups)) {
-        const section = document.createElement('div');
-        section.className = 'opt-section';
-
-        const sectionTitle = document.createElement('div');
-        sectionTitle.className = 'opt-section-title';
-        sectionTitle.textContent = groupName.toUpperCase();
-        section.appendChild(sectionTitle);
-
-        groupParams.forEach(({ name, def }) => {
-          const optimizeEnabled = def.optimize?.enabled || false;
-          const row = document.createElement('div');
-          row.className = 'opt-row';
-
-          const checkbox = document.createElement('input');
-          checkbox.type = 'checkbox';
-          checkbox.id = `dyn-opt-${name}`;
-          checkbox.checked = optimizeEnabled;
-
-          const label = document.createElement('label');
-          label.className = 'opt-label';
-          label.htmlFor = checkbox.id;
-          label.textContent = def.label || name;
-
-          row.appendChild(checkbox);
-          row.appendChild(label);
-
-          if (def.type === 'int' || def.type === 'float') {
-            const controls = document.createElement('div');
-            controls.className = 'opt-controls';
-            controls.id = `dyn-opt-${name}-controls`;
-            controls.style.display = optimizeEnabled ? 'flex' : 'none';
-
-            const step = def.optimize?.step || def.step || (def.type === 'int' ? 1 : 0.1);
-
-            controls.innerHTML = `
-                    <label>From:</label>
-                    <input class="tiny-input" id="dyn-${name}-from" type="number"
-                           value="${def.optimize?.min ?? def.min ?? def.default ?? ''}" step="${step}" />
-                    <label>To:</label>
-                    <input class="tiny-input" id="dyn-${name}-to" type="number"
-                           value="${def.optimize?.max ?? def.max ?? def.default ?? ''}" step="${step}" />
-                    <label>Step:</label>
-                    <input class="tiny-input" id="dyn-${name}-step" type="number"
-                           value="${step}" step="${def.type === 'int' ? 1 : 0.1}" />
-                `;
-
-            row.appendChild(controls);
-
-            checkbox.addEventListener('change', function onToggle() {
-              controls.style.display = this.checked ? 'flex' : 'none';
-            });
-          }
-
-          section.appendChild(row);
-        });
-
-        container.appendChild(section);
       }
     }
 
