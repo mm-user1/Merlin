@@ -66,6 +66,9 @@ def _discover_strategies():
                 print(f"Warning: No valid strategy class found in {module_name}")
                 continue
 
+            # Attach configuration to the strategy class for downstream use
+            setattr(strategy_class, "CONFIG", config)
+
             _REGISTRY[strategy_id] = {
                 "class": strategy_class,
                 "config": config,

@@ -17,8 +17,9 @@ from backtest_engine import load_data
 from optimizer_engine import (
     DEFAULT_SCORE_CONFIG,
     OptimizationResult,
-    PARAMETER_MAP,
+    _build_parameter_maps,
     _generate_numeric_sequence,
+    _load_strategy_resources,
     _parse_timestamp,
     _run_single_combination,
     calculate_score,
@@ -58,6 +59,14 @@ class OptunaOptimizer:
         self.pruned_trials: int = 0
         self.study: Optional[optuna.Study] = None
         self.pruner: Optional[optuna.pruners.BasePruner] = None
+        self.parameter_map: Dict[str, Tuple[str, bool]] = (
+            getattr(base_config, "parameter_map", {}) or {}
+        )
+        self.internal_to_frontend_map: Dict[str, str] = (
+            getattr(base_config, "internal_to_frontend_map", {}) or {}
+        )
+        self.strategy_class = getattr(base_config, "strategy_class", None)
+        self.strategy_config = getattr(base_config, "strategy_config", None)
 
     # ------------------------------------------------------------------
     # Search space handling
@@ -67,7 +76,16 @@ class OptunaOptimizer:
 
         space: Dict[str, Dict[str, Any]] = {}
 
-        for frontend_name, (internal_name, is_int) in PARAMETER_MAP.items():
+        if not self.parameter_map:
+            if self.strategy_class is None or self.strategy_config is None:
+                self.strategy_class, self.strategy_config = _load_strategy_resources(
+                    self.base_config.strategy_id
+                )
+            self.parameter_map, self.internal_to_frontend_map = _build_parameter_maps(
+                self.strategy_class, self.strategy_config, self.base_config
+            )
+
+        for frontend_name, (internal_name, is_int) in self.parameter_map.items():
             if not self.base_config.enabled_params.get(frontend_name):
                 continue
 
@@ -177,13 +195,22 @@ class OptunaOptimizer:
     def _setup_worker_pool(self) -> None:
         """Initialize the worker pool for Optuna optimization."""
 
-        from strategies import get_strategy
+        strategy_class = self.strategy_class
+        strategy_config = self.strategy_config
 
-        try:
-            strategy_class = get_strategy(self.base_config.strategy_id)
-        except ValueError as e:
-            raise ValueError(
-                f"Failed to load strategy '{self.base_config.strategy_id}': {e}"
+        if strategy_class is None or strategy_config is None:
+            try:
+                strategy_class, strategy_config = _load_strategy_resources(
+                    self.base_config.strategy_id
+                )
+            except ValueError as e:
+                raise ValueError(
+                    f"Failed to load strategy '{self.base_config.strategy_id}': {e}"
+                )
+
+        if not self.parameter_map:
+            self.parameter_map, self.internal_to_frontend_map = _build_parameter_maps(
+                strategy_class, strategy_config, self.base_config
             )
 
         from backtest_engine import prepare_dataset_with_warmup
@@ -206,6 +233,7 @@ class OptunaOptimizer:
         self.df = df
         self.trade_start_idx = trade_start_idx
         self.strategy_class = strategy_class
+        self.strategy_config = strategy_config
 
         processes = min(32, max(1, int(self.base_config.worker_processes)))
         self.pool = mp.Pool(processes=processes)
@@ -217,7 +245,16 @@ class OptunaOptimizer:
         if self.pool is None:
             raise RuntimeError("Worker pool is not initialised.")
 
-        args = (params_dict, self.df, self.trade_start_idx, self.strategy_class)
+        mapping = self.internal_to_frontend_map or getattr(
+            self.base_config, "internal_to_frontend_map", {}
+        )
+        args = (
+            params_dict,
+            self.df,
+            self.trade_start_idx,
+            self.strategy_class,
+            mapping,
+        )
         return self.pool.apply(_run_single_combination, (args,))
 
     def _prepare_trial_parameters(self, trial: optuna.Trial, search_space: Dict[str, Dict[str, Any]]) -> Dict[str, Any]:
@@ -263,7 +300,7 @@ class OptunaOptimizer:
             if trail_type is not None:
                 params_dict["trail_ma_short_type"] = trail_type
 
-        for frontend_name, (internal_name, is_int) in PARAMETER_MAP.items():
+        for frontend_name, (internal_name, is_int) in self.parameter_map.items():
             if self.base_config.enabled_params.get(frontend_name):
                 continue
             value = self.base_config.fixed_params.get(frontend_name)
@@ -480,6 +517,18 @@ class OptunaOptimizer:
 
 def run_optuna_optimization(base_config, optuna_config: OptunaConfig) -> List[OptimizationResult]:
     """Execute Optuna optimisation using the provided configuration."""
+
+    if not getattr(base_config, "parameter_map", None):
+        strategy_class, strategy_config = _load_strategy_resources(
+            base_config.strategy_id
+        )
+        parameter_map, internal_to_frontend_map = _build_parameter_maps(
+            strategy_class, strategy_config, base_config
+        )
+        base_config.parameter_map = parameter_map
+        base_config.internal_to_frontend_map = internal_to_frontend_map
+        base_config.strategy_class = strategy_class
+        base_config.strategy_config = strategy_config
 
     optimizer = OptunaOptimizer(base_config, optuna_config)
     return optimizer.optimize()

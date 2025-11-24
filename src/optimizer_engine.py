@@ -4,7 +4,7 @@ from __future__ import annotations
 import bisect
 import itertools
 import multiprocessing as mp
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from decimal import Decimal
 from typing import IO, Any, Dict, Iterable, List, Mapping, Optional, Tuple, Union
 
@@ -34,6 +34,13 @@ DEFAULT_SCORE_CONFIG: Dict[str, Any] = {
     "min_score_threshold": 0.0,
 }
 
+GLOBAL_CONFIG_PARAMS: Dict[str, str] = {
+    "risk_per_trade_pct": "riskPerTrade",
+    "contract_size": "contractSize",
+    "commission_rate": "commissionRate",
+    "atr_period": "atrPeriod",
+}
+
 
 @dataclass
 class OptimizationConfig:
@@ -59,6 +66,10 @@ class OptimizationConfig:
     filter_min_profit: bool = False
     min_profit_threshold: float = 0.0
     optimization_mode: str = "grid"
+    parameter_map: Dict[str, Tuple[str, bool]] = field(default_factory=dict)
+    internal_to_frontend_map: Dict[str, str] = field(default_factory=dict)
+    strategy_class: Optional[Any] = None
+    strategy_config: Optional[Dict[str, Any]] = None
 
 
 @dataclass
@@ -140,55 +151,48 @@ def _generate_numeric_sequence(
     return values
 
 
-PARAMETER_MAP: Dict[str, Tuple[str, bool]] = {
-    "maLength": ("ma_length", True),
-    "closeCountLong": ("close_count_long", True),
-    "closeCountShort": ("close_count_short", True),
-    "stopLongX": ("stop_long_atr", False),
-    "stopLongRR": ("stop_long_rr", False),
-    "stopLongLP": ("stop_long_lp", True),
-    "stopShortX": ("stop_short_atr", False),
-    "stopShortRR": ("stop_short_rr", False),
-    "stopShortLP": ("stop_short_lp", True),
-    "stopLongMaxPct": ("stop_long_max_pct", False),
-    "stopShortMaxPct": ("stop_short_max_pct", False),
-    "stopLongMaxDays": ("stop_long_max_days", True),
-    "stopShortMaxDays": ("stop_short_max_days", True),
-    "trailRRLong": ("trail_rr_long", False),
-    "trailRRShort": ("trail_rr_short", False),
-    "trailLongLength": ("trail_ma_long_length", True),
-    "trailLongOffset": ("trail_ma_long_offset", False),
-    "trailShortLength": ("trail_ma_short_length", True),
-    "trailShortOffset": ("trail_ma_short_offset", False),
-}
+def _load_strategy_resources(strategy_id: str) -> Tuple[Any, Dict[str, Any]]:
+    from strategies import get_strategy, get_strategy_config
 
-# Reverse mapping: internal_name -> frontend_name
-# Used to convert optimizer's internal parameter names to strategy's expected frontend names
-INTERNAL_TO_FRONTEND_MAP: Dict[str, str] = {
-    internal: frontend for frontend, (internal, _) in PARAMETER_MAP.items()
-}
-# Add MA type parameters and global config parameters
-INTERNAL_TO_FRONTEND_MAP.update(
-    {
-        "ma_type": "maType",
-        "trail_ma_long_type": "trailLongType",
-        "trail_ma_short_type": "trailShortType",
-        "risk_per_trade_pct": "riskPerTrade",
-        "contract_size": "contractSize",
-        "commission_rate": "commissionRate",
-        "atr_period": "atrPeriod",
-    }
-)
+    strategy_class = get_strategy(strategy_id)
+    strategy_config = get_strategy_config(strategy_id)
+    return strategy_class, strategy_config
 
 
-def generate_parameter_grid(config: OptimizationConfig) -> List[Dict[str, Any]]:
+def _build_parameter_maps(
+    strategy_class: Any, strategy_config: Dict[str, Any], config: OptimizationConfig
+) -> Tuple[Dict[str, Tuple[str, bool]], Dict[str, str]]:
+    parameters = strategy_config.get("parameters", {}) if isinstance(strategy_config, dict) else {}
+
+    enabled_keys = set(config.enabled_params.keys()) | set(config.fixed_params.keys())
+    if not enabled_keys:
+        enabled_keys = set(parameters.keys())
+
+    parameter_map: Dict[str, Tuple[str, bool]] = {}
+    for frontend_name in enabled_keys:
+        if frontend_name not in parameters:
+            continue
+        param_meta = parameters.get(frontend_name, {})
+        param_type = str(param_meta.get("type", "float")).lower()
+        internal_name = strategy_class.camelcase_to_snake_case(frontend_name)
+        parameter_map[frontend_name] = (internal_name, param_type == "int")
+
+    internal_to_frontend = strategy_class.get_parameter_mapping(strategy_config)
+    internal_to_frontend.update(GLOBAL_CONFIG_PARAMS)
+
+    return parameter_map, internal_to_frontend
+
+
+def generate_parameter_grid(
+    config: OptimizationConfig, parameter_map: Dict[str, Tuple[str, bool]]
+) -> List[Dict[str, Any]]:
     """Generate the cartesian product of all parameter combinations."""
 
     if not config.ma_types_trend or not config.ma_types_trail_long or not config.ma_types_trail_short:
         raise ValueError("At least one MA type must be selected in each group.")
 
     param_values: Dict[str, List[Any]] = {}
-    for frontend_name, (internal_name, is_int) in PARAMETER_MAP.items():
+    for frontend_name, (internal_name, is_int) in parameter_map.items():
         enabled = bool(config.enabled_params.get(frontend_name, False))
         if enabled:
             if frontend_name not in config.param_ranges:
@@ -264,7 +268,9 @@ def _parse_timestamp(value: Any) -> Optional[pd.Timestamp]:
 
 
 
-def _run_single_combination(args: Tuple[Dict[str, Any], pd.DataFrame, int, Any]) -> OptimizationResult:
+def _run_single_combination(
+    args: Tuple[Dict[str, Any], pd.DataFrame, int, Any, Mapping[str, str]]
+) -> OptimizationResult:
     """
     Worker function to run a single parameter combination using strategy.run().
 
@@ -275,7 +281,7 @@ def _run_single_combination(args: Tuple[Dict[str, Any], pd.DataFrame, int, Any])
         OptimizationResult with metrics for this combination
     """
 
-    params_dict, df, trade_start_idx, strategy_class = args
+    params_dict, df, trade_start_idx, strategy_class, param_mapping = args
 
     def _as_int(key: str, default: int = 0) -> int:
         try:
@@ -328,8 +334,7 @@ def _run_single_combination(args: Tuple[Dict[str, Any], pd.DataFrame, int, Any])
         # Convert internal parameter names (snake_case) to frontend names (camelCase)
         # that StrategyParams.from_dict() expects
         strategy_payload = {
-            INTERNAL_TO_FRONTEND_MAP.get(key, key): value
-            for key, value in params_dict.items()
+            param_mapping.get(key, key): value for key, value in params_dict.items()
         }
 
         result = strategy_class.run(df, strategy_payload, trade_start_idx)
@@ -453,15 +458,26 @@ def calculate_score(
 def run_grid_optimization(config: OptimizationConfig) -> List[OptimizationResult]:
     """Execute the grid search optimization using modular strategy system."""
 
-    from strategies import get_strategy
+    strategy_class = config.strategy_class
+    strategy_config = config.strategy_config
 
-    try:
-        strategy_class = get_strategy(config.strategy_id)
-    except ValueError as e:
-        raise ValueError(f"Failed to load strategy '{config.strategy_id}': {e}")
+    if strategy_class is None or strategy_config is None:
+        try:
+            strategy_class, strategy_config = _load_strategy_resources(config.strategy_id)
+        except ValueError as e:
+            raise ValueError(f"Failed to load strategy '{config.strategy_id}': {e}")
+
+    parameter_map, internal_to_frontend_map = _build_parameter_maps(
+        strategy_class, strategy_config, config
+    )
+
+    config.strategy_class = strategy_class
+    config.strategy_config = strategy_config
+    config.parameter_map = parameter_map
+    config.internal_to_frontend_map = internal_to_frontend_map
 
     df = load_data(config.csv_file)
-    combinations = generate_parameter_grid(config)
+    combinations = generate_parameter_grid(config, parameter_map)
     total = len(combinations)
     if total == 0:
         raise ValueError("No parameter combinations generated for optimization.")
@@ -491,7 +507,13 @@ def run_grid_optimization(config: OptimizationConfig) -> List[OptimizationResult
     }
 
     worker_args = [
-        ({**combo, **global_params}, df, trade_start_idx, strategy_class)
+        (
+            {**combo, **global_params},
+            df,
+            trade_start_idx,
+            strategy_class,
+            internal_to_frontend_map,
+        )
         for combo in combinations
     ]
 
@@ -521,6 +543,20 @@ def run_grid_optimization(config: OptimizationConfig) -> List[OptimizationResult
 
 def run_optimization(config: OptimizationConfig) -> List[OptimizationResult]:
     """Router that delegates to grid or Optuna optimization engines."""
+
+    try:
+        strategy_class, strategy_config = _load_strategy_resources(config.strategy_id)
+    except ValueError as e:
+        raise ValueError(f"Failed to load strategy '{config.strategy_id}': {e}")
+
+    parameter_map, internal_to_frontend_map = _build_parameter_maps(
+        strategy_class, strategy_config, config
+    )
+
+    config.strategy_class = strategy_class
+    config.strategy_config = strategy_config
+    config.parameter_map = parameter_map
+    config.internal_to_frontend_map = internal_to_frontend_map
 
     mode = getattr(config, "optimization_mode", "grid")
     if mode == "optuna":

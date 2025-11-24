@@ -29,6 +29,55 @@ class BaseStrategy:
     STRATEGY_VERSION = "v0"
 
     @staticmethod
+    def camelcase_to_snake_case(name: str) -> str:
+        """
+        Convert camelCase parameter names (UI/config.json) to snake_case.
+
+        This helper keeps the optimizer engines strategy-agnostic by
+        automatically deriving internal parameter names from a strategy's
+        configuration file.
+
+        Examples:
+            maType -> ma_type
+            closeCountLong -> close_count_long
+            trailLongType -> trail_long_type
+
+        Args:
+            name: Parameter name in camelCase format.
+
+        Returns:
+            Parameter name converted to snake_case.
+        """
+
+        import re
+
+        step_one = re.sub(r"(.)([A-Z][a-z]+)", r"\1_\2", name)
+        with_acronyms = re.sub(r"([a-z0-9])([A-Z])", r"\1_\2", step_one)
+        return with_acronyms.lower()
+
+    @classmethod
+    def get_parameter_mapping(cls, config: Dict[str, Any]) -> Dict[str, str]:
+        """
+        Build a snake_case → camelCase mapping for strategy parameters.
+
+        Args:
+            config: Strategy configuration loaded from ``config.json``.
+
+        Returns:
+            Dictionary mapping optimizer/internal parameter names (snake_case)
+            to the frontend names expected by ``StrategyParams`` (camelCase).
+        """
+
+        parameters = config.get("parameters", {}) if isinstance(config, dict) else {}
+        mapping: Dict[str, str] = {}
+
+        for frontend_name in parameters.keys():
+            internal_name = cls.camelcase_to_snake_case(frontend_name)
+            mapping[internal_name] = frontend_name
+
+        return mapping
+
+    @staticmethod
     def calculate_indicators(df: pd.DataFrame, params: Dict[str, Any]) -> Dict[str, pd.Series]:
         """
         Calculate technical indicators for the strategy.
