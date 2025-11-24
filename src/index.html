@@ -3583,15 +3583,18 @@
         );
 
         const dynamicParams = collectDynamicBacktestParams();
-        const trendTypes = dynamicParams.maType
-          ? [String(dynamicParams.maType)]
-          : collectSelectedTypes('trend');
-        const trailLongTypes = dynamicParams.trailLongType
-          ? [String(dynamicParams.trailLongType)]
-          : collectSelectedTypes('trailLong');
-        const trailShortTypes = dynamicParams.trailShortType
-          ? [String(dynamicParams.trailShortType)]
-          : collectSelectedTypes('trailShort');
+        const selectedTrendTypes = collectSelectedTypes('trend');
+        const trendTypes = selectedTrendTypes.length > 0
+          ? selectedTrendTypes
+          : (dynamicParams.maType ? [String(dynamicParams.maType)] : []);
+        const selectedTrailLongTypes = collectSelectedTypes('trailLong');
+        const trailLongTypes = selectedTrailLongTypes.length > 0
+          ? selectedTrailLongTypes
+          : (dynamicParams.trailLongType ? [String(dynamicParams.trailLongType)] : []);
+        const selectedTrailShortTypes = collectSelectedTypes('trailShort');
+        const trailShortTypes = selectedTrailShortTypes.length > 0
+          ? selectedTrailShortTypes
+          : (dynamicParams.trailShortType ? [String(dynamicParams.trailShortType)] : []);
         const lockTrailTypes = Boolean(document.getElementById('trailLock')?.checked);
 
         const legacyParams = {
