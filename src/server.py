@@ -15,10 +15,11 @@ from optimizer_engine import (
     CSV_COLUMN_SPECS,
     OptimizationResult,
     OptimizationConfig,
-    PARAMETER_MAP,
+    camel_to_snake,
     export_to_csv,
     run_optimization,
 )
+from strategies import get_strategy_config
 
 app = Flask(__name__)
 
@@ -743,9 +744,19 @@ def run_walkforward_optimization() -> object:
         "enabled_params": json.loads(json.dumps(optimization_config.enabled_params)),
         "param_ranges": json.loads(json.dumps(optimization_config.param_ranges)),
         "fixed_params": json.loads(json.dumps(optimization_config.fixed_params)),
-        "ma_types_trend": list(optimization_config.ma_types_trend),
-        "ma_types_trail_long": list(optimization_config.ma_types_trail_long),
-        "ma_types_trail_short": list(optimization_config.ma_types_trail_short),
+        "select_param_options": json.loads(
+            json.dumps(optimization_config.select_param_options)
+        ),
+        "ma_types_trend": list(optimization_config.select_param_options.get("maType", [])),
+        "ma_types_trail_long": list(
+            optimization_config.select_param_options.get("trailLongType", [])
+        ),
+        "ma_types_trail_short": list(
+            optimization_config.select_param_options.get("trailShortType", [])
+        ),
+        "strategy_parameters": json.loads(
+            json.dumps(optimization_config.strategy_parameters)
+        ),
         "lock_trail_types": bool(optimization_config.lock_trail_types),
         "risk_per_trade_pct": float(optimization_config.risk_per_trade_pct),
         "contract_size": float(optimization_config.contract_size),
@@ -1174,13 +1185,19 @@ def _build_optimization_config(
         except (TypeError, ValueError):
             warmup_bars = 1000
 
+    strategy_config = get_strategy_config(strategy_id)
+    strategy_parameters = strategy_config.get("parameters", {})
+
     enabled_params = payload.get("enabled_params")
     if not isinstance(enabled_params, dict):
-        raise ValueError("enabled_params must be a dictionary.")
+        enabled_params = {
+            name: bool((definition.get("optimize") or {}).get("enabled", False))
+            for name, definition in strategy_parameters.items()
+        }
 
     param_ranges_raw = payload.get("param_ranges", {})
     if not isinstance(param_ranges_raw, dict):
-        raise ValueError("param_ranges must be a dictionary.")
+        param_ranges_raw = {}
     param_ranges = {}
     for name, values in param_ranges_raw.items():
         if not isinstance(values, (list, tuple)) or len(values) != 3:
@@ -1188,9 +1205,13 @@ def _build_optimization_config(
         start, stop, step = values
         param_ranges[name] = (float(start), float(stop), float(step))
 
-    fixed_params = payload.get("fixed_params", {})
-    if not isinstance(fixed_params, dict):
+    fixed_params = {
+        name: definition.get("default") for name, definition in strategy_parameters.items()
+    }
+    fixed_overrides = payload.get("fixed_params", {})
+    if not isinstance(fixed_overrides, dict):
         raise ValueError("fixed_params must be a dictionary.")
+    fixed_params.update(fixed_overrides)
 
     ma_types_trend = payload.get("ma_types_trend") or payload.get("maTypesTrend") or []
     ma_types_trail_long = (
@@ -1203,6 +1224,18 @@ def _build_optimization_config(
         or payload.get("maTypesTrailShort")
         or []
     )
+
+    select_param_options: Dict[str, List[Any]] = {}
+    if ma_types_trend:
+        select_param_options["maType"] = [str(ma).upper() for ma in ma_types_trend]
+    if ma_types_trail_long:
+        select_param_options["trailLongType"] = [
+            str(ma).upper() for ma in ma_types_trail_long
+        ]
+    if ma_types_trail_short:
+        select_param_options["trailShortType"] = [
+            str(ma).upper() for ma in ma_types_trail_short
+        ]
 
     lock_trail_types_raw = (
         payload.get("lock_trail_types")
@@ -1337,9 +1370,6 @@ def _build_optimization_config(
         enabled_params=enabled_params,
         param_ranges=param_ranges,
         fixed_params=fixed_params,
-        ma_types_trend=[str(ma).upper() for ma in ma_types_trend],
-        ma_types_trail_long=[str(ma).upper() for ma in ma_types_trail_long],
-        ma_types_trail_short=[str(ma).upper() for ma in ma_types_trail_short],
         filter_min_profit=filter_min_profit,
         min_profit_threshold=min_profit_threshold,
         score_config=score_config,
@@ -1347,6 +1377,8 @@ def _build_optimization_config(
         optimization_mode=optimization_mode,
         strategy_id=str(strategy_id),
         warmup_bars=int(warmup_bars),
+        strategy_parameters=strategy_parameters,
+        select_param_options=select_param_options,
     )
 
     if optimization_mode == "optuna":
@@ -1626,33 +1658,21 @@ def run_optimization_endpoint() -> object:
             opened_file = None
 
     fixed_parameters = []
-    trend_types = _unique_preserve_order(optimization_config.ma_types_trend)
-    trail_long_types = _unique_preserve_order(optimization_config.ma_types_trail_long)
-    trail_short_types = _unique_preserve_order(optimization_config.ma_types_trail_short)
 
     for name in _PARAMETER_FRONTEND_ORDER:
-        if name == "maType":
-            if len(trend_types) == 1:
-                fixed_parameters.append((name, trend_types[0]))
-            continue
-        if name == "trailLongType":
-            if len(trail_long_types) == 1:
-                fixed_parameters.append((name, trail_long_types[0]))
-            continue
-        if name == "trailShortType":
-            if len(trail_short_types) == 1:
-                fixed_parameters.append((name, trail_short_types[0]))
+        override_options = optimization_config.select_param_options.get(name, [])
+        if len(override_options) == 1:
+            fixed_parameters.append((name, override_options[0]))
             continue
 
         if bool(optimization_config.enabled_params.get(name, False)):
             continue
 
         value = optimization_config.fixed_params.get(name)
-        if value is None:
-            param_info = PARAMETER_MAP.get(name)
-            if param_info and results:
-                attr_name = param_info[0]
-                value = getattr(results[0], attr_name, None)
+        if value is None and results:
+            attr_name = camel_to_snake(name)
+            if hasattr(results[0], attr_name):
+                value = getattr(results[0], attr_name)
         fixed_parameters.append((name, value))
 
     csv_content = export_to_csv(

@@ -513,9 +513,6 @@ class WalkForwardEngine:
             enabled_params=deepcopy(self.base_config_template["enabled_params"]),
             param_ranges=deepcopy(self.base_config_template["param_ranges"]),
             fixed_params=fixed_params,
-            ma_types_trend=list(self.base_config_template["ma_types_trend"]),
-            ma_types_trail_long=list(self.base_config_template["ma_types_trail_long"]),
-            ma_types_trail_short=list(self.base_config_template["ma_types_trail_short"]),
             lock_trail_types=bool(self.base_config_template["lock_trail_types"]),
             risk_per_trade_pct=float(self.base_config_template["risk_per_trade_pct"]),
             contract_size=float(self.base_config_template["contract_size"]),
@@ -528,6 +525,12 @@ class WalkForwardEngine:
             optimization_mode="optuna",
             strategy_id=self.config.strategy_id,
             warmup_bars=self.config.warmup_bars,
+            select_param_options=deepcopy(
+                self.base_config_template.get("select_param_options", {})
+            ),
+            strategy_parameters=deepcopy(
+                self.base_config_template.get("strategy_parameters", {})
+            ),
         )
 
         optuna_cfg = OptunaConfig(

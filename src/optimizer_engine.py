@@ -4,7 +4,7 @@ from __future__ import annotations
 import bisect
 import itertools
 import multiprocessing as mp
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from decimal import Decimal
 from typing import IO, Any, Dict, Iterable, List, Mapping, Optional, Tuple, Union
 
@@ -12,6 +12,7 @@ import pandas as pd
 from tqdm import tqdm
 
 from backtest_engine import DEFAULT_ATR_PERIOD, load_data
+from strategies import get_strategy_config
 
 # Constants
 CHUNK_SIZE = 2000
@@ -47,9 +48,6 @@ class OptimizationConfig:
     atr_period: int
     enabled_params: Dict[str, bool]
     param_ranges: Dict[str, Tuple[float, float, float]]
-    ma_types_trend: List[str]
-    ma_types_trail_long: List[str]
-    ma_types_trail_short: List[str]
     lock_trail_types: bool
     fixed_params: Dict[str, Any]
     score_config: Optional[Dict[str, Any]] = None
@@ -59,6 +57,8 @@ class OptimizationConfig:
     filter_min_profit: bool = False
     min_profit_threshold: float = 0.0
     optimization_mode: str = "grid"
+    strategy_parameters: Dict[str, Any] = field(default_factory=dict)
+    select_param_options: Dict[str, List[Any]] = field(default_factory=dict)
 
 
 @dataclass
@@ -140,111 +140,150 @@ def _generate_numeric_sequence(
     return values
 
 
-PARAMETER_MAP: Dict[str, Tuple[str, bool]] = {
-    "maLength": ("ma_length", True),
-    "closeCountLong": ("close_count_long", True),
-    "closeCountShort": ("close_count_short", True),
-    "stopLongX": ("stop_long_atr", False),
-    "stopLongRR": ("stop_long_rr", False),
-    "stopLongLP": ("stop_long_lp", True),
-    "stopShortX": ("stop_short_atr", False),
-    "stopShortRR": ("stop_short_rr", False),
-    "stopShortLP": ("stop_short_lp", True),
-    "stopLongMaxPct": ("stop_long_max_pct", False),
-    "stopShortMaxPct": ("stop_short_max_pct", False),
-    "stopLongMaxDays": ("stop_long_max_days", True),
-    "stopShortMaxDays": ("stop_short_max_days", True),
-    "trailRRLong": ("trail_rr_long", False),
-    "trailRRShort": ("trail_rr_short", False),
-    "trailLongLength": ("trail_ma_long_length", True),
-    "trailLongOffset": ("trail_ma_long_offset", False),
-    "trailShortLength": ("trail_ma_short_length", True),
-    "trailShortOffset": ("trail_ma_short_offset", False),
-}
+def camel_to_snake(name: str) -> str:
+    """Convert camelCase or PascalCase to snake_case."""
 
-# Reverse mapping: internal_name -> frontend_name
-# Used to convert optimizer's internal parameter names to strategy's expected frontend names
-INTERNAL_TO_FRONTEND_MAP: Dict[str, str] = {
-    internal: frontend for frontend, (internal, _) in PARAMETER_MAP.items()
-}
-# Add MA type parameters and global config parameters
-INTERNAL_TO_FRONTEND_MAP.update(
-    {
-        "ma_type": "maType",
-        "trail_ma_long_type": "trailLongType",
-        "trail_ma_short_type": "trailShortType",
-        "risk_per_trade_pct": "riskPerTrade",
-        "contract_size": "contractSize",
-        "commission_rate": "commissionRate",
-        "atr_period": "atrPeriod",
-    }
-)
+    snake = ""
+    for idx, char in enumerate(name):
+        if char.isupper() and idx > 0 and (not name[idx - 1].isupper()):
+            snake += "_"
+        snake += char.lower()
+    return snake
+
+
+@dataclass
+class ParameterSpec:
+    """Represents a single strategy parameter derived from config.json."""
+
+    name: str
+    param_type: str
+    default: Any
+    optimize_enabled: bool
+    optimize_min: Optional[float] = None
+    optimize_max: Optional[float] = None
+    optimize_step: Optional[float] = None
+    options: Optional[List[Any]] = None
+    override_range: Optional[Tuple[float, float, float]] = None
+    override_fixed_value: Optional[Any] = None
+
+    def values(self) -> List[Any]:
+        """Compute the effective value list for grid search."""
+
+        if self.optimize_enabled:
+            if self.param_type == "select":
+                choices = list(self.options or [])
+                if not choices:
+                    raise ValueError(
+                        f"Parameter '{self.name}' is enabled for optimization but has no choices."
+                    )
+                return [self._normalize_choice(choice) for choice in choices]
+
+            range_source = self.override_range or (
+                self.optimize_min,
+                self.optimize_max,
+                self.optimize_step,
+            )
+
+            if any(value is None for value in range_source):
+                raise ValueError(
+                    f"Missing optimization range for parameter '{self.name}'."
+                )
+
+            start, stop, step = range_source
+            return _generate_numeric_sequence(
+                float(start), float(stop), float(step), self.param_type == "int"
+            )
+
+        fixed_value = (
+            self.override_fixed_value
+            if self.override_fixed_value is not None
+            else self.default
+        )
+        if fixed_value is None:
+            raise ValueError(f"Missing fixed value for parameter '{self.name}'.")
+        return [self._normalize_choice(fixed_value)]
+
+    def _normalize_choice(self, value: Any) -> Any:
+        if isinstance(value, str) and self.param_type == "select":
+            return value.upper()
+        return value
+
+
+def _build_parameter_specs(config: OptimizationConfig) -> Dict[str, ParameterSpec]:
+    strategy_params = config.strategy_parameters or {}
+    specs: Dict[str, ParameterSpec] = {}
+
+    for name, definition in strategy_params.items():
+        optimize_cfg = definition.get("optimize") or {}
+        default_enabled = bool(optimize_cfg.get("enabled", False))
+        optimize_enabled = bool(config.enabled_params.get(name, default_enabled))
+
+        param_type_raw = definition.get("type", "float")
+        param_type = str(param_type_raw).lower()
+
+        options_override = config.select_param_options.get(name)
+        spec = ParameterSpec(
+            name=name,
+            param_type=param_type,
+            default=definition.get("default"),
+            optimize_enabled=optimize_enabled,
+            optimize_min=optimize_cfg.get("min"),
+            optimize_max=optimize_cfg.get("max"),
+            optimize_step=optimize_cfg.get("step"),
+            options=options_override or definition.get("options"),
+            override_range=config.param_ranges.get(name),
+            override_fixed_value=config.fixed_params.get(name),
+        )
+        specs[name] = spec
+
+    return specs
+
+
+def _normalize_trail_types(
+    specs: Dict[str, ParameterSpec],
+    values: Dict[str, List[Any]],
+    lock_trail_types: bool,
+) -> Dict[str, List[Any]]:
+    if not lock_trail_types:
+        return values
+
+    if "trailLongType" not in values or "trailShortType" not in values:
+        return values
+
+    long_types = [str(val).upper() for val in values["trailLongType"]]
+    short_types = [str(val).upper() for val in values["trailShortType"]]
+    intersect = [val for val in long_types if val in set(short_types)]
+    if not intersect:
+        raise ValueError(
+            "No overlapping trail MA types available when lock_trail_types is enabled."
+        )
+
+    normalized = dict(values)
+    normalized["trailLongType"] = intersect
+    normalized["trailShortType"] = intersect
+    return normalized
 
 
 def generate_parameter_grid(config: OptimizationConfig) -> List[Dict[str, Any]]:
     """Generate the cartesian product of all parameter combinations."""
 
-    if not config.ma_types_trend or not config.ma_types_trail_long or not config.ma_types_trail_short:
-        raise ValueError("At least one MA type must be selected in each group.")
+    if not config.strategy_parameters:
+        config.strategy_parameters = (
+            get_strategy_config(config.strategy_id).get("parameters", {})
+        )
 
-    param_values: Dict[str, List[Any]] = {}
-    for frontend_name, (internal_name, is_int) in PARAMETER_MAP.items():
-        enabled = bool(config.enabled_params.get(frontend_name, False))
-        if enabled:
-            if frontend_name not in config.param_ranges:
-                raise ValueError(f"Missing range for parameter '{frontend_name}'.")
-            start, stop, step = config.param_ranges[frontend_name]
-            values = _generate_numeric_sequence(start, stop, step, is_int)
-        else:
-            if frontend_name not in config.fixed_params:
-                raise ValueError(f"Missing fixed value for parameter '{frontend_name}'.")
-            value = config.fixed_params[frontend_name]
-            values = [int(value) if is_int else float(value)]
-        param_values[internal_name] = values
-
-    trend_types = [ma.upper() for ma in config.ma_types_trend]
-    trail_long_types = [ma.upper() for ma in config.ma_types_trail_long]
-    trail_short_types = [ma.upper() for ma in config.ma_types_trail_short]
+    specs = _build_parameter_specs(config)
+    param_values: Dict[str, List[Any]] = {name: spec.values() for name, spec in specs.items()}
+    param_values = _normalize_trail_types(specs, param_values, config.lock_trail_types)
 
     param_names = list(param_values.keys())
     param_lists = [param_values[name] for name in param_names]
 
     combinations: List[Dict[str, Any]] = []
+    for values in itertools.product(*param_lists):
+        combo = dict(zip(param_names, values))
+        combinations.append(combo)
 
-    if config.lock_trail_types:
-        trail_short_set = set(trail_short_types)
-        paired_trail_types = [trail for trail in trail_long_types if trail in trail_short_set]
-        if not paired_trail_types:
-            raise ValueError(
-                "No overlapping trail MA types available when lock_trail_types is enabled."
-            )
-
-        for ma_type in trend_types:
-            for paired_type in paired_trail_types:
-                for values in itertools.product(*param_lists):
-                    combo = dict(zip(param_names, values))
-                    combo.update(
-                        {
-                            "ma_type": ma_type,
-                            "trail_ma_long_type": paired_type,
-                            "trail_ma_short_type": paired_type,
-                        }
-                    )
-                    combinations.append(combo)
-    else:
-        for ma_type, trail_long_type, trail_short_type in itertools.product(
-            trend_types, trail_long_types, trail_short_types
-        ):
-            for values in itertools.product(*param_lists):
-                combo = dict(zip(param_names, values))
-                combo.update(
-                    {
-                        "ma_type": ma_type,
-                        "trail_ma_long_type": trail_long_type,
-                        "trail_ma_short_type": trail_short_type,
-                    }
-                )
-                combinations.append(combo)
     return combinations
 
 
@@ -277,42 +316,57 @@ def _run_single_combination(args: Tuple[Dict[str, Any], pd.DataFrame, int, Any])
 
     params_dict, df, trade_start_idx, strategy_class = args
 
+    def _snake_to_camel(name: str) -> str:
+        if "_" not in name:
+            return name
+        parts = name.split("_")
+        return parts[0] + "".join(part.title() for part in parts[1:])
+
+    def _get_param(key: str, default: Any = None) -> Any:
+        if key in params_dict:
+            return params_dict.get(key, default)
+        camel_key = _snake_to_camel(key)
+        if camel_key in params_dict:
+            return params_dict.get(camel_key, default)
+        snake_key = camel_to_snake(key)
+        return params_dict.get(snake_key, default)
+
     def _as_int(key: str, default: int = 0) -> int:
         try:
-            return int(float(params_dict.get(key, default)))
+            return int(float(_get_param(key, default)))
         except (TypeError, ValueError):
             return int(default)
 
     def _as_float(key: str, default: float = 0.0) -> float:
         try:
-            return float(params_dict.get(key, default))
+            return float(_get_param(key, default))
         except (TypeError, ValueError):
             return float(default)
 
     def _base_result() -> OptimizationResult:
         return OptimizationResult(
-            ma_type=str(params_dict.get("ma_type", "")),
-            ma_length=_as_int("ma_length"),
-            close_count_long=_as_int("close_count_long"),
-            close_count_short=_as_int("close_count_short"),
-            stop_long_atr=_as_float("stop_long_atr"),
-            stop_long_rr=_as_float("stop_long_rr"),
-            stop_long_lp=max(1, _as_int("stop_long_lp", 1)),
-            stop_short_atr=_as_float("stop_short_atr"),
-            stop_short_rr=_as_float("stop_short_rr"),
-            stop_short_lp=max(1, _as_int("stop_short_lp", 1)),
-            stop_long_max_pct=_as_float("stop_long_max_pct"),
-            stop_short_max_pct=_as_float("stop_short_max_pct"),
-            stop_long_max_days=_as_int("stop_long_max_days"),
-            stop_short_max_days=_as_int("stop_short_max_days"),
-            trail_rr_long=_as_float("trail_rr_long"),
-            trail_rr_short=_as_float("trail_rr_short"),
-            trail_ma_long_type=str(params_dict.get("trail_ma_long_type", "")),
-            trail_ma_long_length=_as_int("trail_ma_long_length"),
-            trail_ma_long_offset=_as_float("trail_ma_long_offset"),
-            trail_ma_short_type=str(params_dict.get("trail_ma_short_type", "")),
-            trail_ma_short_length=_as_int("trail_ma_short_length"),
-            trail_ma_short_offset=_as_float("trail_ma_short_offset"),
+            ma_type=str(_get_param("maType", "")).upper(),
+            ma_length=_as_int("maLength"),
+            close_count_long=_as_int("closeCountLong"),
+            close_count_short=_as_int("closeCountShort"),
+            stop_long_atr=_as_float("stopLongX"),
+            stop_long_rr=_as_float("stopLongRR"),
+            stop_long_lp=max(1, _as_int("stopLongLP", 1)),
+            stop_short_atr=_as_float("stopShortX"),
+            stop_short_rr=_as_float("stopShortRR"),
+            stop_short_lp=max(1, _as_int("stopShortLP", 1)),
+            stop_long_max_pct=_as_float("stopLongMaxPct"),
+            stop_short_max_pct=_as_float("stopShortMaxPct"),
+            stop_long_max_days=_as_int("stopLongMaxDays"),
+            stop_short_max_days=_as_int("stopShortMaxDays"),
+            trail_rr_long=_as_float("trailRRLong"),
+            trail_rr_short=_as_float("trailRRShort"),
+            trail_ma_long_type=str(_get_param("trailLongType", "")).upper(),
+            trail_ma_long_length=_as_int("trailLongLength"),
+            trail_ma_long_offset=_as_float("trailLongOffset"),
+            trail_ma_short_type=str(_get_param("trailShortType", "")).upper(),
+            trail_ma_short_length=_as_int("trailShortLength"),
+            trail_ma_short_offset=_as_float("trailShortOffset"),
             net_profit_pct=0.0,
             max_drawdown_pct=0.0,
             total_trades=0,
@@ -325,12 +379,12 @@ def _run_single_combination(args: Tuple[Dict[str, Any], pd.DataFrame, int, Any])
         )
 
     try:
-        # Convert internal parameter names (snake_case) to frontend names (camelCase)
-        # that StrategyParams.from_dict() expects
-        strategy_payload = {
-            INTERNAL_TO_FRONTEND_MAP.get(key, key): value
-            for key, value in params_dict.items()
-        }
+        strategy_payload = {}
+        for key, value in params_dict.items():
+            if "_" in key:
+                strategy_payload[_snake_to_camel(key)] = value
+            else:
+                strategy_payload[key] = value
 
         result = strategy_class.run(df, strategy_payload, trade_start_idx)
         opt_result = _base_result()
@@ -481,18 +535,8 @@ def run_grid_optimization(config: OptimizationConfig) -> List[OptimizationResult
         except Exception as exc:
             raise ValueError(f"Failed to prepare dataset with warmup: {exc}")
 
-    # Add global configuration parameters to each combination
-    # These are not varied during optimization but must be passed to the strategy
-    global_params = {
-        "risk_per_trade_pct": config.risk_per_trade_pct,
-        "contract_size": config.contract_size,
-        "commission_rate": config.commission_rate,
-        "atr_period": config.atr_period,
-    }
-
     worker_args = [
-        ({**combo, **global_params}, df, trade_start_idx, strategy_class)
-        for combo in combinations
+        (combo, df, trade_start_idx, strategy_class) for combo in combinations
     ]
 
     results: List[OptimizationResult] = []

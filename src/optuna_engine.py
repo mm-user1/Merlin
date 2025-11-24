@@ -17,12 +17,12 @@ from backtest_engine import load_data
 from optimizer_engine import (
     DEFAULT_SCORE_CONFIG,
     OptimizationResult,
-    PARAMETER_MAP,
-    _generate_numeric_sequence,
+    _build_parameter_specs,
     _parse_timestamp,
     _run_single_combination,
     calculate_score,
 )
+from strategies import get_strategy_config
 
 logger = logging.getLogger(__name__)
 
@@ -58,6 +58,7 @@ class OptunaOptimizer:
         self.pruned_trials: int = 0
         self.study: Optional[optuna.Study] = None
         self.pruner: Optional[optuna.pruners.BasePruner] = None
+        self.parameter_specs: Dict[str, Any] = {}
 
     # ------------------------------------------------------------------
     # Search space handling
@@ -65,69 +66,76 @@ class OptunaOptimizer:
     def _build_search_space(self) -> Dict[str, Dict[str, Any]]:
         """Construct the Optuna search space from the optimiser configuration."""
 
-        space: Dict[str, Dict[str, Any]] = {}
+        if not self.base_config.strategy_parameters:
+            self.base_config.strategy_parameters = (
+                get_strategy_config(self.base_config.strategy_id).get("parameters", {})
+            )
 
-        for frontend_name, (internal_name, is_int) in PARAMETER_MAP.items():
-            if not self.base_config.enabled_params.get(frontend_name):
-                continue
-
-            if frontend_name not in self.base_config.param_ranges:
-                raise ValueError(f"Missing range for parameter '{frontend_name}'.")
-
-            start, stop, step = self.base_config.param_ranges[frontend_name]
-            low = min(float(start), float(stop))
-            high = max(float(start), float(stop))
-            step_value = abs(float(step)) if step else 0.0
-
-            if is_int:
-                if low == high:
-                    low = high = round(low)
-                spec: Dict[str, Any] = {
-                    "type": "int",
-                    "low": int(round(low)),
-                    "high": int(round(high)),
-                }
-                int_step = max(1, int(round(step_value))) if step_value else 1
-                spec["step"] = int_step
-            else:
-                spec = {
-                    "type": "float",
-                    "low": float(low),
-                    "high": float(high),
-                }
-                if step_value:
-                    spec["step"] = float(step_value)
-                if low > 0 and high / max(low, 1e-9) > 100:
-                    spec["log"] = True
-
-            space[internal_name] = spec
-
-        trend_types = [ma.upper() for ma in self.base_config.ma_types_trend]
-        trail_long_types = [ma.upper() for ma in self.base_config.ma_types_trail_long]
-        trail_short_types = [ma.upper() for ma in self.base_config.ma_types_trail_short]
-
-        if not trend_types or not trail_long_types or not trail_short_types:
-            raise ValueError("At least one MA type must be selected in each group.")
-
-        space["ma_type"] = {"type": "categorical", "choices": trend_types}
+        specs = _build_parameter_specs(self.base_config)
+        self.parameter_specs = specs
 
         if self.base_config.lock_trail_types:
-            short_set = {ma.upper() for ma in trail_short_types}
-            paired = [ma for ma in trail_long_types if ma in short_set]
-            if not paired:
-                raise ValueError(
-                    "No overlapping trail MA types available when lock_trail_types is enabled."
-                )
-            space["trail_ma_long_type"] = {"type": "categorical", "choices": paired}
-        else:
-            space["trail_ma_long_type"] = {
-                "type": "categorical",
-                "choices": trail_long_types,
-            }
-            space["trail_ma_short_type"] = {
-                "type": "categorical",
-                "choices": trail_short_types,
-            }
+            long_spec = specs.get("trailLongType")
+            short_spec = specs.get("trailShortType")
+            if long_spec and short_spec:
+                long_opts = [str(opt).upper() for opt in (long_spec.options or [])]
+                short_opts = {str(opt).upper() for opt in (short_spec.options or [])}
+                paired = [opt for opt in long_opts if opt in short_opts]
+                if not paired:
+                    raise ValueError(
+                        "No overlapping trail MA types available when lock_trail_types is enabled."
+                    )
+                long_spec.options = paired
+                short_spec.options = paired
+
+        space: Dict[str, Dict[str, Any]] = {}
+
+        for name, spec in specs.items():
+            if not spec.optimize_enabled:
+                continue
+
+            if spec.param_type == "select":
+                choices = [str(choice).upper() if isinstance(choice, str) else choice for choice in (spec.options or [])]
+                if not choices:
+                    raise ValueError(
+                        f"Parameter '{name}' is enabled for optimization but has no choices."
+                    )
+                space[name] = {"type": "categorical", "choices": choices}
+                continue
+
+            range_source = spec.override_range or (
+                spec.optimize_min,
+                spec.optimize_max,
+                spec.optimize_step,
+            )
+            if any(value is None for value in range_source):
+                raise ValueError(f"Missing optimization range for parameter '{name}'.")
+
+            low, high, step = range_source
+            low_val = min(float(low), float(high))
+            high_val = max(float(low), float(high))
+            step_val = abs(float(step)) if step else 0.0
+
+            if spec.param_type == "int":
+                if low_val == high_val:
+                    low_val = high_val = round(low_val)
+                space[name] = {
+                    "type": "int",
+                    "low": int(round(low_val)),
+                    "high": int(round(high_val)),
+                    "step": max(1, int(round(step_val))) if step_val else 1,
+                }
+            else:
+                float_space: Dict[str, Any] = {
+                    "type": "float",
+                    "low": float(low_val),
+                    "high": float(high_val),
+                }
+                if step_val:
+                    float_space["step"] = float(step_val)
+                if low_val > 0 and high_val / max(low_val, 1e-9) > 100:
+                    float_space["log"] = True
+                space[name] = float_space
 
         return space
 
@@ -161,18 +169,6 @@ class OptunaOptimizer:
         return MedianPruner(
             n_startup_trials=max(0, int(self.optuna_config.warmup_trials))
         )
-
-    # ------------------------------------------------------------------
-    # Worker pool initialisation
-    # ------------------------------------------------------------------
-    def _collect_lengths(self, frontend_key: str) -> Iterable[int]:
-        if self.base_config.enabled_params.get(frontend_key):
-            start, stop, step = self.base_config.param_ranges[frontend_key]
-            sequence = _generate_numeric_sequence(start, stop, step, True)
-        else:
-            value = self.base_config.fixed_params.get(frontend_key, 0)
-            sequence = [value]
-        return [int(round(val)) for val in sequence]
 
     def _setup_worker_pool(self) -> None:
         """Initialize the worker pool for Optuna optimization."""
@@ -223,6 +219,10 @@ class OptunaOptimizer:
     def _prepare_trial_parameters(self, trial: optuna.Trial, search_space: Dict[str, Dict[str, Any]]) -> Dict[str, Any]:
         params_dict: Dict[str, Any] = {}
 
+        for name, spec in self.parameter_specs.items():
+            if not spec.optimize_enabled:
+                params_dict[name] = spec.values()[0]
+
         for key, spec in search_space.items():
             p_type = spec["type"]
             if p_type == "int":
@@ -259,26 +259,9 @@ class OptunaOptimizer:
                 params_dict[key] = trial.suggest_categorical(key, list(spec["choices"]))
 
         if self.base_config.lock_trail_types:
-            trail_type = params_dict.get("trail_ma_long_type")
+            trail_type = params_dict.get("trailLongType")
             if trail_type is not None:
-                params_dict["trail_ma_short_type"] = trail_type
-
-        for frontend_name, (internal_name, is_int) in PARAMETER_MAP.items():
-            if self.base_config.enabled_params.get(frontend_name):
-                continue
-            value = self.base_config.fixed_params.get(frontend_name)
-            if value is None:
-                continue
-            params_dict[internal_name] = int(round(float(value))) if is_int else float(value)
-
-        # Add global configuration parameters that are not in PARAMETER_MAP
-        # These are always fixed and must be passed to the strategy
-        params_dict.update({
-            "risk_per_trade_pct": self.base_config.risk_per_trade_pct,
-            "contract_size": self.base_config.contract_size,
-            "commission_rate": self.base_config.commission_rate,
-            "atr_period": self.base_config.atr_period,
-        })
+                params_dict["trailShortType"] = trail_type
 
         return params_dict
 
