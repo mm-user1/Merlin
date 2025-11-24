@@ -162,6 +162,24 @@ PARAMETER_MAP: Dict[str, Tuple[str, bool]] = {
     "trailShortOffset": ("trail_ma_short_offset", False),
 }
 
+# Reverse mapping: internal_name -> frontend_name
+# Used to convert optimizer's internal parameter names to strategy's expected frontend names
+INTERNAL_TO_FRONTEND_MAP: Dict[str, str] = {
+    internal: frontend for frontend, (internal, _) in PARAMETER_MAP.items()
+}
+# Add MA type parameters and global config parameters
+INTERNAL_TO_FRONTEND_MAP.update(
+    {
+        "ma_type": "maType",
+        "trail_ma_long_type": "trailLongType",
+        "trail_ma_short_type": "trailShortType",
+        "risk_per_trade_pct": "riskPerTrade",
+        "contract_size": "contractSize",
+        "commission_rate": "commissionRate",
+        "atr_period": "atrPeriod",
+    }
+)
+
 
 def generate_parameter_grid(config: OptimizationConfig) -> List[Dict[str, Any]]:
     """Generate the cartesian product of all parameter combinations."""
@@ -307,7 +325,14 @@ def _run_single_combination(args: Tuple[Dict[str, Any], pd.DataFrame, int, Any])
         )
 
     try:
-        result = strategy_class.run(df, params_dict, trade_start_idx)
+        # Convert internal parameter names (snake_case) to frontend names (camelCase)
+        # that StrategyParams.from_dict() expects
+        strategy_payload = {
+            INTERNAL_TO_FRONTEND_MAP.get(key, key): value
+            for key, value in params_dict.items()
+        }
+
+        result = strategy_class.run(df, strategy_payload, trade_start_idx)
         opt_result = _base_result()
         opt_result.net_profit_pct = result.net_profit_pct
         opt_result.max_drawdown_pct = result.max_drawdown_pct
@@ -456,8 +481,17 @@ def run_grid_optimization(config: OptimizationConfig) -> List[OptimizationResult
         except Exception as exc:
             raise ValueError(f"Failed to prepare dataset with warmup: {exc}")
 
+    # Add global configuration parameters to each combination
+    # These are not varied during optimization but must be passed to the strategy
+    global_params = {
+        "risk_per_trade_pct": config.risk_per_trade_pct,
+        "contract_size": config.contract_size,
+        "commission_rate": config.commission_rate,
+        "atr_period": config.atr_period,
+    }
+
     worker_args = [
-        (combo, df, trade_start_idx, strategy_class)
+        ({**combo, **global_params}, df, trade_start_idx, strategy_class)
         for combo in combinations
     ]
 

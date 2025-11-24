@@ -271,6 +271,15 @@ class OptunaOptimizer:
                 continue
             params_dict[internal_name] = int(round(float(value))) if is_int else float(value)
 
+        # Add global configuration parameters that are not in PARAMETER_MAP
+        # These are always fixed and must be passed to the strategy
+        params_dict.update({
+            "risk_per_trade_pct": self.base_config.risk_per_trade_pct,
+            "contract_size": self.base_config.contract_size,
+            "commission_rate": self.base_config.commission_rate,
+            "atr_period": self.base_config.atr_period,
+        })
+
         return params_dict
 
     def _objective(self, trial: optuna.Trial, search_space: Dict[str, Dict[str, Any]]) -> float:
