@@ -2964,6 +2964,9 @@
               calculateTotalCombinations();
             });
           });
+
+          // Синхронизируем состояние ALL при инициализации
+          syncAllToggle(group);
         });
       }
 
