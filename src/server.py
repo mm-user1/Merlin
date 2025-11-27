@@ -10,7 +10,7 @@ from typing import Any, Dict, List, Optional, Tuple
 import pandas as pd
 from flask import Flask, jsonify, request, send_file, send_from_directory
 
-from backtest_engine import StrategyParams, load_data, run_strategy, prepare_dataset_with_warmup
+from backtest_engine import load_data, prepare_dataset_with_warmup
 from optimizer_engine import (
     CSV_COLUMN_SPECS,
     OptimizationResult,
@@ -594,8 +594,22 @@ def run_walkforward_optimization() -> object:
             opened_file.close()
         return jsonify({"error": "Invalid optimization config JSON."}), HTTPStatus.BAD_REQUEST
 
+    strategy_id = request.form.get("strategy", "s01_trailing_ma")
+
+    warmup_bars_raw = data.get("warmupBars", "1000")
     try:
-        optimization_config = _build_optimization_config(data_source, config_payload)
+        warmup_bars = int(warmup_bars_raw)
+        warmup_bars = max(100, min(5000, warmup_bars))
+    except (TypeError, ValueError):
+        warmup_bars = 1000
+
+    try:
+        optimization_config = _build_optimization_config(
+            data_source,
+            config_payload,
+            warmup_bars=warmup_bars,
+            strategy_id=strategy_id,
+        )
     except ValueError as exc:
         if opened_file:
             opened_file.close()
@@ -680,15 +694,22 @@ def run_walkforward_optimization() -> object:
                 max_ma_length = max(max_ma_length, int(fixed_params["trailShortLength"]))
 
             # Use same formula as prepare_dataset_with_warmup(): max(500, max_ma_length * 1.5)
-            warmup_bars = max(500, int(max_ma_length * 1.5))
+            dynamic_warmup_bars = max(500, int(max_ma_length * 1.5))
+            effective_warmup_bars = max(warmup_bars, dynamic_warmup_bars)
 
-            print(f"Dynamic warmup calculation: max_ma_length={max_ma_length}, warmup_bars={warmup_bars}")
+            print(
+                "Dynamic warmup calculation: "
+                f"max_ma_length={max_ma_length}, "
+                f"warmup_bars={effective_warmup_bars}"
+            )
+
+            warmup_bars = effective_warmup_bars
 
             # Find the index of start_ts in the dataframe
             start_idx = df.index.searchsorted(start_ts)
 
             # Calculate warmup_start_idx (go back warmup_bars, but not before 0)
-            warmup_start_idx = max(0, start_idx - warmup_bars)
+            warmup_start_idx = max(0, start_idx - effective_warmup_bars)
 
             # Get the actual warmup start timestamp
             warmup_start_ts = df.index[warmup_start_idx]
@@ -716,6 +737,8 @@ def run_walkforward_optimization() -> object:
                 opened_file.close()
             return jsonify({"error": f"Failed to apply date filter: {str(e)}"}), HTTPStatus.BAD_REQUEST
 
+    optimization_config.warmup_bars = warmup_bars
+
     base_template = {
         "enabled_params": json.loads(json.dumps(optimization_config.enabled_params)),
         "param_ranges": json.loads(json.dumps(optimization_config.param_ranges)),
@@ -732,6 +755,8 @@ def run_walkforward_optimization() -> object:
         "filter_min_profit": bool(optimization_config.filter_min_profit),
         "min_profit_threshold": float(optimization_config.min_profit_threshold),
         "score_config": json.loads(json.dumps(optimization_config.score_config or {})),
+        "strategy_id": optimization_config.strategy_id,
+        "warmup_bars": optimization_config.warmup_bars,
     }
 
     optuna_settings = {
@@ -762,7 +787,13 @@ def run_walkforward_optimization() -> object:
 
     from walkforward_engine import WFConfig, WalkForwardEngine, export_wf_results_csv
 
-    wf_config = WFConfig(num_windows=num_windows, gap_bars=gap_bars, topk_per_window=topk)
+    wf_config = WFConfig(
+        num_windows=num_windows,
+        gap_bars=gap_bars,
+        topk_per_window=topk,
+        warmup_bars=warmup_bars,
+        strategy_id=strategy_id,
+    )
     engine = WalkForwardEngine(wf_config, base_template, optuna_settings)
 
     try:
@@ -922,6 +953,19 @@ def run_walkforward_optimization() -> object:
 
 @app.post("/api/backtest")
 def run_backtest() -> object:
+    """Run single backtest with selected strategy"""
+
+    # Get strategy ID from form (default to S01)
+    strategy_id = request.form.get("strategy", "s01_trailing_ma")
+
+    # Get warmup bars
+    warmup_bars_raw = request.form.get("warmupBars", "1000")
+    try:
+        warmup_bars = int(warmup_bars_raw)
+        warmup_bars = max(100, min(5000, warmup_bars))
+    except (TypeError, ValueError):
+        warmup_bars = 1000
+
     csv_file = request.files.get("file")
     csv_path_raw = (request.form.get("csvPath") or "").strip()
     data_source = None
@@ -954,11 +998,15 @@ def run_backtest() -> object:
     except json.JSONDecodeError:
         return ("Invalid payload JSON.", HTTPStatus.BAD_REQUEST)
 
-    try:
-        params = StrategyParams.from_dict(payload)
-    except ValueError as exc:
-        return (str(exc), HTTPStatus.BAD_REQUEST)
+    # Load strategy
+    from strategies import get_strategy
 
+    try:
+        strategy_class = get_strategy(strategy_id)
+    except ValueError as e:
+        return (str(e), HTTPStatus.BAD_REQUEST)
+
+    # Load data
     try:
         df = load_data(data_source)
     except ValueError as exc:
@@ -980,17 +1028,31 @@ def run_backtest() -> object:
                 pass
             opened_file = None
 
-    # Prepare dataset with warmup if date filtering is enabled
+    # Prepare dataset with warmup
     trade_start_idx = 0
-    if params.use_date_filter and (params.start is not None or params.end is not None):
+    use_date_filter = payload.get("dateFilter", False)
+    start = payload.get("start")
+    end = payload.get("end")
+
+    if use_date_filter and (start is not None or end is not None):
+        # Parse dates
+        if isinstance(start, str):
+            start = pd.Timestamp(start, tz="UTC")
+        if isinstance(end, str):
+            end = pd.Timestamp(end, tz="UTC")
+
+        # Apply warmup
         try:
-            df, trade_start_idx = prepare_dataset_with_warmup(df, params.start, params.end, params)
+            df, trade_start_idx = prepare_dataset_with_warmup(
+                df, start, end, warmup_bars
+            )
         except Exception as exc:  # pragma: no cover - defensive
             app.logger.exception("Failed to prepare dataset with warmup")
-            return ("Failed to prepare dataset for backtest.", HTTPStatus.INTERNAL_SERVER_ERROR)
+            return ("Failed to prepare dataset.", HTTPStatus.INTERNAL_SERVER_ERROR)
 
+    # Run strategy
     try:
-        result = run_strategy(df, params, trade_start_idx)
+        result = strategy_class.run(df, payload, trade_start_idx)
     except ValueError as exc:
         return (str(exc), HTTPStatus.BAD_REQUEST)
     except Exception as exc:  # pragma: no cover - defensive
@@ -999,11 +1061,17 @@ def run_backtest() -> object:
 
     return jsonify({
         "metrics": result.to_dict(),
-        "parameters": params.to_dict(),
+        "parameters": payload,
     })
 
 
-def _build_optimization_config(csv_file, payload: dict, worker_processes=None) -> OptimizationConfig:
+def _build_optimization_config(
+    csv_file,
+    payload: dict,
+    worker_processes=None,
+    strategy_id=None,
+    warmup_bars: Optional[int] = None,
+) -> OptimizationConfig:
     if not isinstance(payload, dict):
         raise ValueError("Invalid optimization config payload.")
 
@@ -1087,6 +1155,24 @@ def _build_optimization_config(csv_file, payload: dict, worker_processes=None) -
             normalized["normalization_method"] = normalization_value.strip().lower()
 
         return normalized
+
+    if strategy_id is None:
+        strategy_id = "s01_trailing_ma"
+
+    if warmup_bars is None:
+        warmup_bars_raw = payload.get("warmup_bars")
+        if warmup_bars_raw is None:
+            warmup_bars_raw = payload.get("warmupBars", 1000)
+        try:
+            warmup_bars = int(warmup_bars_raw)
+            warmup_bars = max(100, min(5000, warmup_bars))
+        except (TypeError, ValueError):
+            warmup_bars = 1000
+    else:
+        try:
+            warmup_bars = max(100, min(5000, int(warmup_bars)))
+        except (TypeError, ValueError):
+            warmup_bars = 1000
 
     enabled_params = payload.get("enabled_params")
     if not isinstance(enabled_params, dict):
@@ -1243,22 +1329,24 @@ def _build_optimization_config(csv_file, payload: dict, worker_processes=None) -
 
     config = OptimizationConfig(
         csv_file=csv_file,
+        worker_processes=worker_processes_value,
+        contract_size=float(contract_size),
+        commission_rate=float(commission_rate),
+        risk_per_trade_pct=float(risk_per_trade),
+        atr_period=int(atr_period),
         enabled_params=enabled_params,
         param_ranges=param_ranges,
         fixed_params=fixed_params,
         ma_types_trend=[str(ma).upper() for ma in ma_types_trend],
         ma_types_trail_long=[str(ma).upper() for ma in ma_types_trail_long],
         ma_types_trail_short=[str(ma).upper() for ma in ma_types_trail_short],
-        risk_per_trade_pct=float(risk_per_trade),
-        contract_size=float(contract_size),
-        commission_rate=float(commission_rate),
-        atr_period=int(atr_period),
-        worker_processes=worker_processes_value,
         filter_min_profit=filter_min_profit,
         min_profit_threshold=min_profit_threshold,
         score_config=score_config,
         lock_trail_types=lock_trail_types,
         optimization_mode=optimization_mode,
+        strategy_id=str(strategy_id),
+        warmup_bars=int(warmup_bars),
     )
 
     if optimization_mode == "optuna":
@@ -1411,6 +1499,15 @@ def run_optimization_endpoint() -> object:
     except json.JSONDecodeError:
         return ("Invalid optimization config JSON.", HTTPStatus.BAD_REQUEST)
 
+    strategy_id = request.form.get("strategy", "s01_trailing_ma")
+
+    warmup_bars_raw = request.form.get("warmupBars", "1000")
+    try:
+        warmup_bars = int(warmup_bars_raw)
+        warmup_bars = max(100, min(5000, warmup_bars))
+    except (TypeError, ValueError):
+        warmup_bars = 1000
+
     try:
         worker_processes_raw = config_payload.get("worker_processes")
         if worker_processes_raw is None:
@@ -1428,7 +1525,11 @@ def run_optimization_endpoint() -> object:
                 worker_processes = 32
 
         optimization_config = _build_optimization_config(
-            data_source, config_payload, worker_processes
+            data_source,
+            config_payload,
+            worker_processes,
+            strategy_id,
+            warmup_bars,
         )
     except ValueError as exc:
         if opened_file:
@@ -1570,6 +1671,94 @@ def run_optimization_endpoint() -> object:
         as_attachment=True,
         download_name=filename,
     )
+
+
+# ============================================
+# STRATEGY MANAGEMENT ENDPOINTS
+# ============================================
+
+
+@app.get("/api/strategies")
+def list_strategies_endpoint() -> object:
+    """
+    List all available strategies.
+
+    Returns:
+        JSON: {
+            "strategies": [
+                {
+                    "id": "s01_trailing_ma",
+                    "name": "S01 Trailing MA",
+                    "version": "v26",
+                    "description": "...",
+                    "author": "..."
+                }
+            ]
+        }
+    """
+    from strategies import list_strategies
+
+    strategies = list_strategies()
+    return jsonify({"strategies": strategies})
+
+
+@app.get("/api/strategies/<string:strategy_id>/config")
+def get_strategy_config_endpoint(strategy_id: str) -> object:
+    """
+    Get strategy configuration (from config.json).
+
+    Args:
+        strategy_id: Strategy identifier (e.g., 's01_trailing_ma')
+
+    Returns:
+        JSON: Full config.json content including parameters
+
+    Errors:
+        404: Strategy not found
+    """
+    from strategies import get_strategy_config
+
+    try:
+        config = get_strategy_config(strategy_id)
+        return jsonify(config)
+    except ValueError as e:
+        return (str(e), HTTPStatus.NOT_FOUND)
+
+
+@app.get("/api/strategies/<string:strategy_id>")
+def get_strategy_metadata_endpoint(strategy_id: str) -> object:
+    """
+    Get strategy metadata (lightweight version without full parameters).
+
+    Args:
+        strategy_id: Strategy identifier
+
+    Returns:
+        JSON: {
+            "id": "s01_trailing_ma",
+            "name": "S01 Trailing MA",
+            "version": "v26",
+            "description": "...",
+            "parameter_count": 25
+        }
+
+    Errors:
+        404: Strategy not found
+    """
+    from strategies import get_strategy_config
+
+    try:
+        config = get_strategy_config(strategy_id)
+        return jsonify({
+            "id": config.get('id'),
+            "name": config.get('name'),
+            "version": config.get('version'),
+            "description": config.get('description'),
+            "author": config.get('author', ''),
+            "parameter_count": len(config.get('parameters', {}))
+        })
+    except ValueError as e:
+        return (str(e), HTTPStatus.NOT_FOUND)
 
 
 if __name__ == "__main__":

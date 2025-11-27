@@ -19,9 +19,8 @@ from optimizer_engine import (
     OptimizationResult,
     PARAMETER_MAP,
     _generate_numeric_sequence,
-    _init_worker,
     _parse_timestamp,
-    _simulate_combination,
+    _run_single_combination,
     calculate_score,
 )
 
@@ -175,120 +174,41 @@ class OptunaOptimizer:
             sequence = [value]
         return [int(round(val)) for val in sequence]
 
-    def _setup_worker_pool(self, df: pd.DataFrame) -> None:
-        from backtest_engine import prepare_dataset_with_warmup, StrategyParams
+    def _setup_worker_pool(self) -> None:
+        """Initialize the worker pool for Optuna optimization."""
 
-        ma_specs: Set[Tuple[str, int]] = set()
+        from strategies import get_strategy
 
-        trend_lengths = self._collect_lengths("maLength")
-        trail_long_lengths = self._collect_lengths("trailLongLength")
-        trail_short_lengths = self._collect_lengths("trailShortLength")
+        try:
+            strategy_class = get_strategy(self.base_config.strategy_id)
+        except ValueError as e:
+            raise ValueError(
+                f"Failed to load strategy '{self.base_config.strategy_id}': {e}"
+            )
 
-        if self.base_config.lock_trail_types:
-            short_set = {ma.upper() for ma in self.base_config.ma_types_trail_short}
-            trail_long_types = [ma for ma in self.base_config.ma_types_trail_long if ma in short_set]
-            trail_short_types = trail_long_types
-        else:
-            trail_long_types = [ma.upper() for ma in self.base_config.ma_types_trail_long]
-            trail_short_types = [ma.upper() for ma in self.base_config.ma_types_trail_short]
+        from backtest_engine import prepare_dataset_with_warmup
 
-        for ma_type in [ma.upper() for ma in self.base_config.ma_types_trend]:
-            for length in trend_lengths:
-                ma_specs.add((ma_type, max(1, int(length))))
-
-        for ma_type in trail_long_types:
-            for length in trail_long_lengths:
-                ma_specs.add((ma_type, max(0, int(length))))
-
-        for ma_type in trail_short_types:
-            for length in trail_short_lengths:
-                ma_specs.add((ma_type, max(0, int(length))))
-
-        if self.base_config.enabled_params.get("stopLongLP"):
-            long_lp_values = {
-                max(1, int(val))
-                for val in _generate_numeric_sequence(
-                    *self.base_config.param_ranges["stopLongLP"], True
-                )
-            }
-        else:
-            long_lp_values = {max(1, int(self.base_config.fixed_params.get("stopLongLP", 1)))}
-
-        if self.base_config.enabled_params.get("stopShortLP"):
-            short_lp_values = {
-                max(1, int(val))
-                for val in _generate_numeric_sequence(
-                    *self.base_config.param_ranges["stopShortLP"], True
-                )
-            }
-        else:
-            short_lp_values = {max(1, int(self.base_config.fixed_params.get("stopShortLP", 1)))}
+        df = load_data(self.base_config.csv_file)
 
         use_date_filter = bool(self.base_config.fixed_params.get("dateFilter", False))
-        start = _parse_timestamp(self.base_config.fixed_params.get("start"))
-        end = _parse_timestamp(self.base_config.fixed_params.get("end"))
+        start_ts = _parse_timestamp(self.base_config.fixed_params.get("start"))
+        end_ts = _parse_timestamp(self.base_config.fixed_params.get("end"))
 
-        # Prepare dataset with warmup if date filtering is enabled
         trade_start_idx = 0
-        if use_date_filter and (start is not None or end is not None):
-            # Find the maximum MA length from all possible values
-            max_ma_length = max(
-                max(trend_lengths, default=1),
-                max(trail_long_lengths, default=0),
-                max(trail_short_lengths, default=0)
-            )
+        if use_date_filter and (start_ts is not None or end_ts is not None):
+            try:
+                df, trade_start_idx = prepare_dataset_with_warmup(
+                    df, start_ts, end_ts, self.base_config.warmup_bars
+                )
+            except Exception as exc:
+                raise ValueError(f"Failed to prepare dataset with warmup: {exc}")
 
-            # Create a dummy StrategyParams with max MA lengths for warmup calculation
-            dummy_params = StrategyParams(
-                use_backtester=True,
-                use_date_filter=use_date_filter,
-                start=start,
-                end=end,
-                ma_type="SMA",
-                ma_length=max_ma_length,
-                trail_ma_long_type="SMA",
-                trail_ma_long_length=max_ma_length,
-                trail_ma_short_type="SMA",
-                trail_ma_short_length=max_ma_length,
-                close_count_long=1,
-                close_count_short=1,
-                stop_long_atr=1.0,
-                stop_long_rr=1.0,
-                stop_long_lp=1,
-                stop_short_atr=1.0,
-                stop_short_rr=1.0,
-                stop_short_lp=1,
-                stop_long_max_pct=0.0,
-                stop_short_max_pct=0.0,
-                stop_long_max_days=0,
-                stop_short_max_days=0,
-                trail_rr_long=1.0,
-                trail_rr_short=1.0,
-                trail_ma_long_offset=0.0,
-                trail_ma_short_offset=0.0,
-                risk_per_trade_pct=self.base_config.risk_per_trade_pct,
-                contract_size=self.base_config.contract_size,
-                commission_rate=self.base_config.commission_rate,
-                atr_period=self.base_config.atr_period
-            )
-
-            df, trade_start_idx = prepare_dataset_with_warmup(df, start, end, dummy_params)
-
-        pool_args = (
-            df,
-            float(self.base_config.risk_per_trade_pct),
-            float(self.base_config.contract_size),
-            float(self.base_config.commission_rate),
-            int(self.base_config.atr_period),
-            list(ma_specs),
-            list(long_lp_values),
-            list(short_lp_values),
-            use_date_filter,
-            trade_start_idx,
-        )
+        self.df = df
+        self.trade_start_idx = trade_start_idx
+        self.strategy_class = strategy_class
 
         processes = min(32, max(1, int(self.base_config.worker_processes)))
-        self.pool = mp.Pool(processes=processes, initializer=_init_worker, initargs=pool_args)
+        self.pool = mp.Pool(processes=processes)
 
     # ------------------------------------------------------------------
     # Objective evaluation
@@ -296,7 +216,9 @@ class OptunaOptimizer:
     def _evaluate_parameters(self, params_dict: Dict[str, Any]) -> OptimizationResult:
         if self.pool is None:
             raise RuntimeError("Worker pool is not initialised.")
-        return self.pool.apply(_simulate_combination, (params_dict,))
+
+        args = (params_dict, self.df, self.trade_start_idx, self.strategy_class)
+        return self.pool.apply(_run_single_combination, (args,))
 
     def _prepare_trial_parameters(self, trial: optuna.Trial, search_space: Dict[str, Dict[str, Any]]) -> Dict[str, Any]:
         params_dict: Dict[str, Any] = {}
@@ -348,6 +270,15 @@ class OptunaOptimizer:
             if value is None:
                 continue
             params_dict[internal_name] = int(round(float(value))) if is_int else float(value)
+
+        # Add global configuration parameters that are not in PARAMETER_MAP
+        # These are always fixed and must be passed to the strategy
+        params_dict.update({
+            "risk_per_trade_pct": self.base_config.risk_per_trade_pct,
+            "contract_size": self.base_config.contract_size,
+            "commission_rate": self.base_config.commission_rate,
+            "atr_period": self.base_config.atr_period,
+        })
 
         return params_dict
 
@@ -429,9 +360,8 @@ class OptunaOptimizer:
         self.trials_without_improvement = 0
         self.pruned_trials = 0
 
-        df = load_data(self.base_config.csv_file)
         search_space = self._build_search_space()
-        self._setup_worker_pool(df)
+        self._setup_worker_pool()
 
         sampler = self._create_sampler()
         self.pruner = self._create_pruner()
