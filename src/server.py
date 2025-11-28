@@ -10,7 +10,7 @@ from typing import Any, Dict, List, Optional, Tuple
 import pandas as pd
 from flask import Flask, jsonify, request, send_file, send_from_directory
 
-from backtest_engine import load_data, prepare_dataset_with_warmup
+from core.backtest_engine import load_data, prepare_dataset_with_warmup
 from optimizer_engine import (
     CSV_COLUMN_SPECS,
     OptimizationResult,
@@ -785,7 +785,7 @@ def run_walkforward_optimization() -> object:
     gap_bars = max(0, gap_bars)
     topk = max(1, min(200, topk))
 
-    from walkforward_engine import WFConfig, WalkForwardEngine, export_wf_results_csv
+    from core.walkforward_engine import WFConfig, WalkForwardEngine, export_wf_results_csv
 
     wf_config = WFConfig(
         num_windows=num_windows,
@@ -844,7 +844,11 @@ def run_walkforward_optimization() -> object:
         original_csv_name = csv_path_raw
 
     # Generate filenames
-    from walkforward_engine import generate_wfa_output_filename, export_wfa_trades_history, _extract_symbol_from_csv_filename
+    from core.walkforward_engine import (
+        _extract_symbol_from_csv_filename,
+        export_wfa_trades_history,
+        generate_wfa_output_filename,
+    )
 
     csv_filename = generate_wfa_output_filename(
         original_csv_name,

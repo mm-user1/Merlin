@@ -7,7 +7,7 @@ from typing import Any, Dict
 
 import pandas as pd
 
-from backtest_engine import StrategyResult
+from core.backtest_engine import StrategyResult
 
 
 class BaseStrategy:

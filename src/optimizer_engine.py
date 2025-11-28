@@ -11,7 +11,7 @@ from typing import IO, Any, Dict, Iterable, List, Mapping, Optional, Tuple, Unio
 import pandas as pd
 from tqdm import tqdm
 
-from backtest_engine import DEFAULT_ATR_PERIOD, load_data
+from core.backtest_engine import DEFAULT_ATR_PERIOD, load_data
 
 # Constants
 CHUNK_SIZE = 2000
@@ -472,7 +472,7 @@ def run_grid_optimization(config: OptimizationConfig) -> List[OptimizationResult
 
     trade_start_idx = 0
     if use_date_filter and (start_ts is not None or end_ts is not None):
-        from backtest_engine import prepare_dataset_with_warmup
+        from core.backtest_engine import prepare_dataset_with_warmup
 
         try:
             df, trade_start_idx = prepare_dataset_with_warmup(
@@ -524,7 +524,7 @@ def run_optimization(config: OptimizationConfig) -> List[OptimizationResult]:
 
     mode = getattr(config, "optimization_mode", "grid")
     if mode == "optuna":
-        from optuna_engine import OptunaConfig, run_optuna_optimization
+        from core.optuna_engine import OptunaConfig, run_optuna_optimization
 
         optuna_config = OptunaConfig(
             target=getattr(config, "optuna_target", "score"),
