@@ -11,12 +11,11 @@ import pandas as pd
 from flask import Flask, jsonify, request, send_file, send_from_directory
 
 from core.backtest_engine import load_data, prepare_dataset_with_warmup
+from core.export import CSV_COLUMN_SPECS, export_optuna_results
 from optimizer_engine import (
-    CSV_COLUMN_SPECS,
     OptimizationResult,
     OptimizationConfig,
     PARAMETER_MAP,
-    export_to_csv,
     run_optimization,
 )
 
@@ -1659,7 +1658,7 @@ def run_optimization_endpoint() -> object:
                 value = getattr(results[0], attr_name, None)
         fixed_parameters.append((name, value))
 
-    csv_content = export_to_csv(
+    csv_content = export_optuna_results(
         results,
         fixed_parameters,
         filter_min_profit=optimization_config.filter_min_profit,

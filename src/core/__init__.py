@@ -40,6 +40,14 @@ from .walkforward_engine import (
     _extract_symbol_from_csv_filename,
 )
 
+from .export import (
+    CSV_COLUMN_SPECS,
+    export_optuna_results,
+    export_trades_csv,
+    export_trades_zip,
+    export_wfa_summary,
+)
+
 __all__ = [
     # backtest_engine exports
     "CSVSource",
@@ -64,4 +72,11 @@ __all__ = [
     "export_wf_results_csv",
     "generate_wfa_output_filename",
     "_extract_symbol_from_csv_filename",
+
+    # export
+    "CSV_COLUMN_SPECS",
+    "export_optuna_results",
+    "export_trades_csv",
+    "export_trades_zip",
+    "export_wfa_summary",
 ]
