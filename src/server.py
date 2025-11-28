@@ -12,9 +12,9 @@ from flask import Flask, jsonify, request, send_file, send_from_directory
 
 from core.backtest_engine import load_data, prepare_dataset_with_warmup
 from core.export import CSV_COLUMN_SPECS, export_optuna_results
-from optimizer_engine import (
-    OptimizationResult,
+from core.optuna_engine import (
     OptimizationConfig,
+    OptimizationResult,
     PARAMETER_MAP,
     run_optimization,
 )
@@ -1262,73 +1262,71 @@ def _build_optimization_config(
     optimization_mode_raw = (
         payload.get("optimization_mode")
         or payload.get("optimizationMode")
-        or "grid"
+        or "optuna"
     )
-    optimization_mode = str(optimization_mode_raw).strip().lower()
-    if optimization_mode not in {"grid", "optuna"}:
-        raise ValueError(f"Invalid optimization mode: {optimization_mode_raw}")
+    optimization_mode = str(optimization_mode_raw).strip().lower() or "optuna"
+    if optimization_mode != "optuna":
+        raise ValueError("Grid Search has been removed. Use Optuna optimization only.")
 
-    optuna_params: Dict[str, Any] = {}
-    if optimization_mode == "optuna":
-        optuna_target = str(payload.get("optuna_target", "score")).strip().lower()
-        optuna_budget_mode = str(payload.get("optuna_budget_mode", "trials")).strip().lower()
+    optuna_target = str(payload.get("optuna_target", "score")).strip().lower()
+    optuna_budget_mode = str(payload.get("optuna_budget_mode", "trials")).strip().lower()
 
-        try:
-            optuna_n_trials = int(payload.get("optuna_n_trials", 500))
-        except (TypeError, ValueError):
-            optuna_n_trials = 500
+    try:
+        optuna_n_trials = int(payload.get("optuna_n_trials", 500))
+    except (TypeError, ValueError):
+        optuna_n_trials = 500
 
-        try:
-            optuna_time_limit = int(payload.get("optuna_time_limit", 3600))
-        except (TypeError, ValueError):
-            optuna_time_limit = 3600
+    try:
+        optuna_time_limit = int(payload.get("optuna_time_limit", 3600))
+    except (TypeError, ValueError):
+        optuna_time_limit = 3600
 
-        try:
-            optuna_convergence = int(payload.get("optuna_convergence", 50))
-        except (TypeError, ValueError):
-            optuna_convergence = 50
+    try:
+        optuna_convergence = int(payload.get("optuna_convergence", 50))
+    except (TypeError, ValueError):
+        optuna_convergence = 50
 
-        try:
-            optuna_warmup_trials = int(payload.get("optuna_warmup_trials", 20))
-        except (TypeError, ValueError):
-            optuna_warmup_trials = 20
+    try:
+        optuna_warmup_trials = int(payload.get("optuna_warmup_trials", 20))
+    except (TypeError, ValueError):
+        optuna_warmup_trials = 20
 
-        optuna_enable_pruning = _parse_bool(payload.get("optuna_enable_pruning", True), True)
-        optuna_sampler = str(payload.get("optuna_sampler", "tpe")).strip().lower()
-        optuna_pruner = str(payload.get("optuna_pruner", "median")).strip().lower()
-        optuna_save_study = _parse_bool(payload.get("optuna_save_study", False), False)
+    optuna_enable_pruning = _parse_bool(payload.get("optuna_enable_pruning", True), True)
+    optuna_sampler = str(payload.get("optuna_sampler", "tpe")).strip().lower()
+    optuna_pruner = str(payload.get("optuna_pruner", "median")).strip().lower()
+    optuna_save_study = _parse_bool(payload.get("optuna_save_study", False), False)
 
-        allowed_targets = {"score", "net_profit", "romad", "sharpe", "max_drawdown"}
-        allowed_budget_modes = {"trials", "time", "convergence"}
-        allowed_samplers = {"tpe", "random"}
-        allowed_pruners = {"median", "percentile", "patient", "none"}
+    allowed_targets = {"score", "net_profit", "romad", "sharpe", "max_drawdown"}
+    allowed_budget_modes = {"trials", "time", "convergence"}
+    allowed_samplers = {"tpe", "random"}
+    allowed_pruners = {"median", "percentile", "patient", "none"}
 
-        if optuna_target not in allowed_targets:
-            raise ValueError(f"Invalid Optuna target: {optuna_target}")
-        if optuna_budget_mode not in allowed_budget_modes:
-            raise ValueError(f"Invalid Optuna budget mode: {optuna_budget_mode}")
-        if optuna_sampler not in allowed_samplers:
-            raise ValueError(f"Invalid Optuna sampler: {optuna_sampler}")
-        if optuna_pruner not in allowed_pruners:
-            raise ValueError(f"Invalid Optuna pruner: {optuna_pruner}")
+    if optuna_target not in allowed_targets:
+        raise ValueError(f"Invalid Optuna target: {optuna_target}")
+    if optuna_budget_mode not in allowed_budget_modes:
+        raise ValueError(f"Invalid Optuna budget mode: {optuna_budget_mode}")
+    if optuna_sampler not in allowed_samplers:
+        raise ValueError(f"Invalid Optuna sampler: {optuna_sampler}")
+    if optuna_pruner not in allowed_pruners:
+        raise ValueError(f"Invalid Optuna pruner: {optuna_pruner}")
 
-        optuna_n_trials = max(10, optuna_n_trials)
-        optuna_time_limit = max(60, optuna_time_limit)
-        optuna_convergence = max(10, optuna_convergence)
-        optuna_warmup_trials = max(0, optuna_warmup_trials)
+    optuna_n_trials = max(10, optuna_n_trials)
+    optuna_time_limit = max(60, optuna_time_limit)
+    optuna_convergence = max(10, optuna_convergence)
+    optuna_warmup_trials = max(0, optuna_warmup_trials)
 
-        optuna_params = {
-            "optuna_target": optuna_target,
-            "optuna_budget_mode": optuna_budget_mode,
-            "optuna_n_trials": optuna_n_trials,
-            "optuna_time_limit": optuna_time_limit,
-            "optuna_convergence": optuna_convergence,
-            "optuna_enable_pruning": optuna_enable_pruning,
-            "optuna_sampler": optuna_sampler,
-            "optuna_pruner": optuna_pruner,
-            "optuna_warmup_trials": optuna_warmup_trials,
-            "optuna_save_study": optuna_save_study,
-        }
+    optuna_params: Dict[str, Any] = {
+        "optuna_target": optuna_target,
+        "optuna_budget_mode": optuna_budget_mode,
+        "optuna_n_trials": optuna_n_trials,
+        "optuna_time_limit": optuna_time_limit,
+        "optuna_convergence": optuna_convergence,
+        "optuna_enable_pruning": optuna_enable_pruning,
+        "optuna_sampler": optuna_sampler,
+        "optuna_pruner": optuna_pruner,
+        "optuna_warmup_trials": optuna_warmup_trials,
+        "optuna_save_study": optuna_save_study,
+    }
 
     config = OptimizationConfig(
         csv_file=csv_file,
@@ -1425,12 +1423,12 @@ def generate_output_filename(csv_filename: str, config: OptimizationConfig, mode
     Generate standardized output filename.
 
     Format: EXCHANGE_TICKER TF START-END_MODE.csv
-    Example: "OKX_LINKUSDT.P, 15 2025.05.01-2025.09.01_Grid.csv"
+    Example: "OKX_LINKUSDT.P, 15 2025.05.01-2025.09.01_Optuna.csv"
 
     Args:
         csv_filename: Input CSV filename
         config: Optimization configuration
-        mode: Output mode ("Grid", "Optuna", "Optuna+WFA")
+        mode: Output mode ("Optuna" or "Optuna+WFA")
 
     Returns:
         Formatted filename string
@@ -1458,7 +1456,7 @@ def generate_output_filename(csv_filename: str, config: OptimizationConfig, mode
 
     # Determine mode
     if mode is None:
-        mode = "Optuna" if config.optimization_mode == "optuna" else "Grid"
+        mode = "Optuna"
 
     # Build filename
     return f"{prefix} {start_formatted}-{end_formatted}_{mode}.csv"
@@ -1558,57 +1556,50 @@ def run_optimization_endpoint() -> object:
         seconds = int(optimization_time_seconds % 60)
         optimization_time_str = f"{minutes}m {seconds}s"
 
-        if optimization_config.optimization_mode == "optuna":
-            target_labels = {
-                "score": "Composite Score",
-                "net_profit": "Net Profit %",
-                "romad": "RoMaD",
-                "sharpe": "Sharpe Ratio",
-                "max_drawdown": "Max Drawdown %",
-            }
+        target_labels = {
+            "score": "Composite Score",
+            "net_profit": "Net Profit %",
+            "romad": "RoMaD",
+            "sharpe": "Sharpe Ratio",
+            "max_drawdown": "Max Drawdown %",
+        }
 
-            summary = getattr(optimization_config, "optuna_summary", {})
-            total_trials = int(summary.get("total_trials", getattr(optimization_config, "optuna_n_trials", 0)))
-            completed_trials = int(summary.get("completed_trials", len(results)))
-            pruned_trials = int(summary.get("pruned_trials", 0))
-            best_value = summary.get("best_value")
+        summary = getattr(optimization_config, "optuna_summary", {})
+        total_trials = int(summary.get("total_trials", getattr(optimization_config, "optuna_n_trials", 0)))
+        completed_trials = int(summary.get("completed_trials", len(results)))
+        pruned_trials = int(summary.get("pruned_trials", 0))
+        best_value = summary.get("best_value")
 
-            if best_value is None and results:
-                best_result = results[0]
-                if optimization_config.optuna_target == "score":
-                    best_value = best_result.score
-                elif optimization_config.optuna_target == "net_profit":
-                    best_value = best_result.net_profit_pct
-                elif optimization_config.optuna_target == "romad":
-                    best_value = best_result.romad
-                elif optimization_config.optuna_target == "sharpe":
-                    best_value = best_result.sharpe_ratio
-                elif optimization_config.optuna_target == "max_drawdown":
-                    best_value = best_result.max_drawdown_pct
+        if best_value is None and results:
+            best_result = results[0]
+            if optimization_config.optuna_target == "score":
+                best_value = best_result.score
+            elif optimization_config.optuna_target == "net_profit":
+                best_value = best_result.net_profit_pct
+            elif optimization_config.optuna_target == "romad":
+                best_value = best_result.romad
+            elif optimization_config.optuna_target == "sharpe":
+                best_value = best_result.sharpe_ratio
+            elif optimization_config.optuna_target == "max_drawdown":
+                best_value = best_result.max_drawdown_pct
 
-            best_value_str = "-"
-            if best_value is not None:
-                try:
-                    best_value_str = f"{float(best_value):.4f}"
-                except (TypeError, ValueError):
-                    best_value_str = str(best_value)
+        best_value_str = "-"
+        if best_value is not None:
+            try:
+                best_value_str = f"{float(best_value):.4f}"
+            except (TypeError, ValueError):
+                best_value_str = str(best_value)
 
-            optimization_metadata = {
-                "method": "Optuna",
-                "target": target_labels.get(optimization_config.optuna_target, "Composite Score"),
-                "total_trials": total_trials,
-                "completed_trials": completed_trials,
-                "pruned_trials": pruned_trials,
-                "best_trial_number": summary.get("best_trial_number"),
-                "best_value": best_value_str,
-                "optimization_time": optimization_time_str,
-            }
-        else:
-            optimization_metadata = {
-                "method": "Grid Search",
-                "total_combinations": len(results),
-                "optimization_time": optimization_time_str,
-            }
+        optimization_metadata = {
+            "method": "Optuna",
+            "target": target_labels.get(optimization_config.optuna_target, "Composite Score"),
+            "total_trials": total_trials,
+            "completed_trials": completed_trials,
+            "pruned_trials": pruned_trials,
+            "best_trial_number": summary.get("best_trial_number"),
+            "best_value": best_value_str,
+            "optimization_time": optimization_time_str,
+        }
     except ValueError as exc:
         if opened_file:
             opened_file.close()

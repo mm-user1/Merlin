@@ -1,11 +1,13 @@
 """Optuna-based Bayesian optimization engine for S_01 TrailingMA."""
 from __future__ import annotations
 
+import bisect
 import logging
 import multiprocessing as mp
 import time
 from dataclasses import dataclass
-from typing import Any, Dict, Iterable, List, Optional, Set, Tuple
+from decimal import Decimal
+from typing import Any, Dict, Iterable, List, Optional, Tuple, Union
 
 import optuna
 from optuna.pruners import MedianPruner, PercentilePruner, PatientPruner
@@ -14,17 +16,383 @@ from optuna.trial import TrialState
 import pandas as pd
 
 from .backtest_engine import load_data
-from optimizer_engine import (
-    DEFAULT_SCORE_CONFIG,
-    OptimizationResult,
-    PARAMETER_MAP,
-    _generate_numeric_sequence,
-    _parse_timestamp,
-    _run_single_combination,
-    calculate_score,
-)
 
 logger = logging.getLogger(__name__)
+
+
+# ============================================================================
+# Data structures
+# ============================================================================
+
+
+@dataclass
+class OptimizationConfig:
+    """Configuration received from the optimizer form (Optuna-only)."""
+
+    csv_file: Any
+    worker_processes: int
+    contract_size: float
+    commission_rate: float
+    risk_per_trade_pct: float
+    atr_period: int
+    enabled_params: Dict[str, bool]
+    param_ranges: Dict[str, Tuple[float, float, float]]
+    ma_types_trend: List[str]
+    ma_types_trail_long: List[str]
+    ma_types_trail_short: List[str]
+    lock_trail_types: bool
+    fixed_params: Dict[str, Any]
+    score_config: Optional[Dict[str, Any]] = None
+
+    strategy_id: str = "s01_trailing_ma"
+    warmup_bars: int = 1000
+    filter_min_profit: bool = False
+    min_profit_threshold: float = 0.0
+    optimization_mode: str = "optuna"
+
+
+@dataclass
+class OptimizationResult:
+    """Represents a single optimization result row."""
+
+    ma_type: str
+    ma_length: int
+    close_count_long: int
+    close_count_short: int
+    stop_long_atr: float
+    stop_long_rr: float
+    stop_long_lp: int
+    stop_short_atr: float
+    stop_short_rr: float
+    stop_short_lp: int
+    stop_long_max_pct: float
+    stop_short_max_pct: float
+    stop_long_max_days: int
+    stop_short_max_days: int
+    trail_rr_long: float
+    trail_rr_short: float
+    trail_ma_long_type: str
+    trail_ma_long_length: int
+    trail_ma_long_offset: float
+    trail_ma_short_type: str
+    trail_ma_short_length: int
+    trail_ma_short_offset: float
+    net_profit_pct: float
+    max_drawdown_pct: float
+    total_trades: int
+    romad: Optional[float] = None
+    sharpe_ratio: Optional[float] = None
+    profit_factor: Optional[float] = None
+    ulcer_index: Optional[float] = None
+    recovery_factor: Optional[float] = None
+    consistency_score: Optional[float] = None
+    score: float = 0.0
+
+
+# ============================================================================
+# Constants
+# ============================================================================
+
+SCORE_METRIC_ATTRS: Dict[str, str] = {
+    "romad": "romad",
+    "sharpe": "sharpe_ratio",
+    "pf": "profit_factor",
+    "ulcer": "ulcer_index",
+    "recovery": "recovery_factor",
+    "consistency": "consistency_score",
+}
+
+DEFAULT_SCORE_CONFIG: Dict[str, Any] = {
+    "weights": {},
+    "enabled_metrics": {},
+    "invert_metrics": {},
+    "normalization_method": "percentile",
+    "filter_enabled": False,
+    "min_score_threshold": 0.0,
+}
+
+
+PARAMETER_MAP: Dict[str, Tuple[str, bool]] = {
+    "maLength": ("ma_length", True),
+    "closeCountLong": ("close_count_long", True),
+    "closeCountShort": ("close_count_short", True),
+    "stopLongX": ("stop_long_atr", False),
+    "stopLongRR": ("stop_long_rr", False),
+    "stopLongLP": ("stop_long_lp", True),
+    "stopShortX": ("stop_short_atr", False),
+    "stopShortRR": ("stop_short_rr", False),
+    "stopShortLP": ("stop_short_lp", True),
+    "stopLongMaxPct": ("stop_long_max_pct", False),
+    "stopShortMaxPct": ("stop_short_max_pct", False),
+    "stopLongMaxDays": ("stop_long_max_days", True),
+    "stopShortMaxDays": ("stop_short_max_days", True),
+    "trailRRLong": ("trail_rr_long", False),
+    "trailRRShort": ("trail_rr_short", False),
+    "trailLongLength": ("trail_ma_long_length", True),
+    "trailLongOffset": ("trail_ma_long_offset", False),
+    "trailShortLength": ("trail_ma_short_length", True),
+    "trailShortOffset": ("trail_ma_short_offset", False),
+}
+
+# Reverse mapping: internal_name -> frontend_name
+INTERNAL_TO_FRONTEND_MAP: Dict[str, str] = {
+    internal: frontend for frontend, (internal, _) in PARAMETER_MAP.items()
+}
+INTERNAL_TO_FRONTEND_MAP.update(
+    {
+        "ma_type": "maType",
+        "trail_ma_long_type": "trailLongType",
+        "trail_ma_short_type": "trailShortType",
+        "risk_per_trade_pct": "riskPerTrade",
+        "contract_size": "contractSize",
+        "commission_rate": "commissionRate",
+        "atr_period": "atrPeriod",
+    }
+)
+
+
+# ============================================================================
+# Utilities
+# ============================================================================
+
+
+def _generate_numeric_sequence(
+    start: float, stop: float, step: float, is_int: bool
+) -> List[Union[int, float]]:
+    if step == 0:
+        raise ValueError("Step must be non-zero for optimization ranges.")
+    delta = abs(step)
+    step_value = delta if start <= stop else -delta
+    decimals = max(0, -Decimal(str(step)).normalize().as_tuple().exponent)
+    epsilon = delta * 1e-9
+
+    values: List[Union[int, float]] = []
+    index = 0
+
+    while True:
+        raw_value = start + index * step_value
+        if step_value > 0:
+            if raw_value > stop + epsilon:
+                break
+        else:
+            if raw_value < stop - epsilon:
+                break
+
+        if is_int:
+            values.append(int(round(raw_value)))
+        else:
+            rounded_value = round(raw_value, decimals)
+            if rounded_value == 0:
+                rounded_value = 0.0
+            values.append(float(rounded_value))
+
+        index += 1
+
+    if not values:
+        if is_int:
+            values.append(int(round(start)))
+        else:
+            rounded_start = round(start, decimals)
+            values.append(float(0.0 if rounded_start == 0 else rounded_start))
+    return values
+
+
+def _parse_timestamp(value: Any) -> Optional[pd.Timestamp]:
+    if value in (None, ""):
+        return None
+    try:
+        ts = pd.Timestamp(value)
+    except (ValueError, TypeError):  # pragma: no cover - defensive
+        return None
+    if ts.tzinfo is None:
+        ts = ts.tz_localize("UTC")
+    else:
+        ts = ts.tz_convert("UTC")
+    return ts
+
+
+def _run_single_combination(
+    args: Tuple[Dict[str, Any], pd.DataFrame, int, Any]
+) -> OptimizationResult:
+    """
+    Worker function to run a single parameter combination using strategy.run().
+
+    Args:
+        args: Tuple of (params_dict, df, trade_start_idx, strategy_class)
+
+    Returns:
+        OptimizationResult with metrics for this combination
+    """
+
+    params_dict, df, trade_start_idx, strategy_class = args
+
+    def _as_int(key: str, default: int = 0) -> int:
+        try:
+            return int(float(params_dict.get(key, default)))
+        except (TypeError, ValueError):
+            return int(default)
+
+    def _as_float(key: str, default: float = 0.0) -> float:
+        try:
+            return float(params_dict.get(key, default))
+        except (TypeError, ValueError):
+            return float(default)
+
+    def _base_result() -> OptimizationResult:
+        return OptimizationResult(
+            ma_type=str(params_dict.get("ma_type", "")),
+            ma_length=_as_int("ma_length"),
+            close_count_long=_as_int("close_count_long"),
+            close_count_short=_as_int("close_count_short"),
+            stop_long_atr=_as_float("stop_long_atr"),
+            stop_long_rr=_as_float("stop_long_rr"),
+            stop_long_lp=max(1, _as_int("stop_long_lp", 1)),
+            stop_short_atr=_as_float("stop_short_atr"),
+            stop_short_rr=_as_float("stop_short_rr"),
+            stop_short_lp=max(1, _as_int("stop_short_lp", 1)),
+            stop_long_max_pct=_as_float("stop_long_max_pct"),
+            stop_short_max_pct=_as_float("stop_short_max_pct"),
+            stop_long_max_days=_as_int("stop_long_max_days"),
+            stop_short_max_days=_as_int("stop_short_max_days"),
+            trail_rr_long=_as_float("trail_rr_long"),
+            trail_rr_short=_as_float("trail_rr_short"),
+            trail_ma_long_type=str(params_dict.get("trail_ma_long_type", "")),
+            trail_ma_long_length=_as_int("trail_ma_long_length"),
+            trail_ma_long_offset=_as_float("trail_ma_long_offset"),
+            trail_ma_short_type=str(params_dict.get("trail_ma_short_type", "")),
+            trail_ma_short_length=_as_int("trail_ma_short_length"),
+            trail_ma_short_offset=_as_float("trail_ma_short_offset"),
+            net_profit_pct=0.0,
+            max_drawdown_pct=0.0,
+            total_trades=0,
+            sharpe_ratio=None,
+            profit_factor=None,
+            romad=None,
+            ulcer_index=None,
+            recovery_factor=None,
+            consistency_score=None,
+        )
+
+    try:
+        strategy_payload = {
+            INTERNAL_TO_FRONTEND_MAP.get(key, key): value
+            for key, value in params_dict.items()
+        }
+
+        result = strategy_class.run(df, strategy_payload, trade_start_idx)
+        opt_result = _base_result()
+        opt_result.net_profit_pct = result.net_profit_pct
+        opt_result.max_drawdown_pct = result.max_drawdown_pct
+        opt_result.total_trades = result.total_trades
+        opt_result.sharpe_ratio = result.sharpe_ratio
+        opt_result.profit_factor = result.profit_factor
+        opt_result.romad = result.romad
+        opt_result.ulcer_index = result.ulcer_index
+        opt_result.recovery_factor = result.recovery_factor
+        opt_result.consistency_score = result.consistency_score
+        return opt_result
+    except Exception:
+        return _base_result()
+
+
+def calculate_score(
+    results: List[OptimizationResult],
+    config: Optional[Dict[str, Any]],
+) -> List[OptimizationResult]:
+    """Calculate composite score for optimization results."""
+
+    if not results:
+        return results
+
+    if config is None:
+        config = {}
+
+    normalized_config = DEFAULT_SCORE_CONFIG.copy()
+    normalized_config.update({k: v for k, v in (config or {}).items() if v is not None})
+
+    def _as_bool(value: Any) -> bool:
+        if isinstance(value, bool):
+            return value
+        if isinstance(value, (int, float)):
+            return bool(value)
+        if isinstance(value, str):
+            lowered = value.strip().lower()
+            if lowered in {"true", "1", "yes", "y", "on"}:
+                return True
+            if lowered in {"false", "0", "no", "n", "off"}:
+                return False
+        return False
+
+    weights = normalized_config.get("weights") or {}
+    enabled_metrics = normalized_config.get("enabled_metrics") or {}
+    invert_metrics = normalized_config.get("invert_metrics") or {}
+    filter_enabled = _as_bool(normalized_config.get("filter_enabled", False))
+    try:
+        min_score_threshold = float(normalized_config.get("min_score_threshold", 0.0))
+    except (TypeError, ValueError):
+        min_score_threshold = 0.0
+    min_score_threshold = max(0.0, min(100.0, min_score_threshold))
+
+    normalization_method_raw = normalized_config.get("normalization_method", "percentile")
+    normalization_method = (
+        str(normalization_method_raw).strip().lower() if normalization_method_raw is not None else "percentile"
+    )
+    if normalization_method not in {"", "percentile"}:
+        normalization_method = "percentile"
+
+    metrics_to_normalize: List[str] = []
+    for metric in SCORE_METRIC_ATTRS:
+        if _as_bool(enabled_metrics.get(metric, False)):
+            metrics_to_normalize.append(metric)
+
+    normalized_values: Dict[str, Dict[int, float]] = {}
+    for metric_name in metrics_to_normalize:
+        attr_name = SCORE_METRIC_ATTRS[metric_name]
+        metric_values = [
+            getattr(item, attr_name)
+            for item in results
+            if getattr(item, attr_name) is not None
+        ]
+        if not metric_values:
+            normalized_values[metric_name] = {id(item): 50.0 for item in results}
+            continue
+        sorted_vals = sorted(float(value) for value in metric_values)
+        total = len(sorted_vals)
+        normalized_values[metric_name] = {}
+        invert = _as_bool(invert_metrics.get(metric_name, False))
+        for item in results:
+            value = getattr(item, attr_name)
+            if value is None:
+                rank = 50.0
+            else:
+                idx = bisect.bisect_left(sorted_vals, float(value))
+                rank = (idx / total) * 100.0
+                if invert:
+                    rank = 100.0 - rank
+            normalized_values[metric_name][id(item)] = rank
+
+    for item in results:
+        item.score = 0.0
+        score_total = 0.0
+        weight_total = 0.0
+        for metric_name in metrics_to_normalize:
+            weight_raw = weights.get(metric_name, 0.0)
+            try:
+                weight = float(weight_raw)
+            except (TypeError, ValueError):
+                weight = 0.0
+            weight = max(0.0, min(1.0, weight))
+            if weight <= 0:
+                continue
+            score_total += normalized_values[metric_name][id(item)] * weight
+            weight_total += weight
+        if weight_total > 0:
+            item.score = score_total / weight_total
+
+    if filter_enabled:
+        results = [item for item in results if item.score >= min_score_threshold]
+
+    return results
 
 
 @dataclass
@@ -483,3 +851,26 @@ def run_optuna_optimization(base_config, optuna_config: OptunaConfig) -> List[Op
 
     optimizer = OptunaOptimizer(base_config, optuna_config)
     return optimizer.optimize()
+
+
+def run_optimization(config: OptimizationConfig) -> List[OptimizationResult]:
+    """Compat wrapper that executes Optuna optimization only."""
+
+    if getattr(config, "optimization_mode", "optuna") != "optuna":
+        raise ValueError("Only Optuna optimization is supported in Phase 3.")
+
+    optuna_config = OptunaConfig(
+        target=getattr(config, "optuna_target", "score"),
+        budget_mode=getattr(config, "optuna_budget_mode", "trials"),
+        n_trials=int(getattr(config, "optuna_n_trials", 500) or 500),
+        time_limit=int(getattr(config, "optuna_time_limit", 3600) or 3600),
+        convergence_patience=int(getattr(config, "optuna_convergence", 50) or 50),
+        enable_pruning=bool(getattr(config, "optuna_enable_pruning", True)),
+        sampler=getattr(config, "optuna_sampler", "tpe"),
+        pruner=getattr(config, "optuna_pruner", "median"),
+        warmup_trials=int(getattr(config, "optuna_warmup_trials", 20) or 20),
+        save_study=bool(getattr(config, "optuna_save_study", False)),
+        study_name=getattr(config, "optuna_study_name", None),
+    )
+
+    return run_optuna_optimization(config, optuna_config)
