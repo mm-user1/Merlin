@@ -13,9 +13,9 @@ import json
 import numpy as np
 import pandas as pd
 
-from backtest_engine import TradeRecord, prepare_dataset_with_warmup
+from .backtest_engine import TradeRecord, prepare_dataset_with_warmup
+from .optuna_engine import OptunaConfig, run_optuna_optimization
 from optimizer_engine import OptimizationConfig
-from optuna_engine import OptunaConfig, run_optuna_optimization
 
 
 def _compute_segment_metrics(
@@ -876,7 +876,7 @@ def export_wfa_trades_history(
         List of generated CSV filenames
     """
     from pathlib import Path
-    from backtest_engine import prepare_dataset_with_warmup
+    from .backtest_engine import prepare_dataset_with_warmup
     from strategies import get_strategy
 
     strategy_id = getattr(wf_result, 'strategy_id', 's01_trailing_ma')

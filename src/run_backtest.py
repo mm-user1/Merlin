@@ -1,7 +1,7 @@
 import argparse
 import pandas as pd
 
-from backtest_engine import (
+from core.backtest_engine import (
     StrategyParams,
     load_data,
     prepare_dataset_with_warmup_legacy,

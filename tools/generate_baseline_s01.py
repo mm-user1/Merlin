@@ -23,7 +23,12 @@ sys.path.insert(0, str(Path(__file__).parent.parent / "src"))
 
 import pandas as pd
 import numpy as np
-from backtest_engine import StrategyParams, run_strategy, load_data, prepare_dataset_with_warmup
+from core.backtest_engine import (
+    StrategyParams,
+    load_data,
+    prepare_dataset_with_warmup,
+    run_strategy,
+)
 
 
 # Fixed parameters for baseline (from user requirements)

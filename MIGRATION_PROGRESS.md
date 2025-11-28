@@ -2,7 +2,7 @@
 
 **Project:** S01 Trailing MA v26 - Architecture Migration
 **Started:** 2025-11-28
-**Current Phase:** Ready for Phase 1
+**Current Phase:** Ready for Phase 2
 
 ---
 
@@ -36,11 +36,16 @@
   - [x] Test passing with current codebase (3 consecutive runs verified)
   - [x] **FIX APPLIED:** Corrected data loading to match UI exactly (UTC timezone, official functions)
 
-### ⏳ Phase 1: Core Extraction to src/core/
-- **Status:** NOT STARTED
-- **Complexity:** 🟢 LOW
-- **Risk:** 🟢 LOW
-- **Estimated Effort:** 2-3 hours
+### ✅ Phase 1: Core Extraction to src/core/
+- **Status:** COMPLETE
+- **Completed:** 2025-11-28
+- **Duration:** ~2 hours
+- **Tests:** 21/21 passing
+- **Deliverables:**
+  - [x] Created `src/core/` package with descriptive `__init__.py`
+  - [x] Moved `backtest_engine.py`, `optuna_engine.py`, and `walkforward_engine.py` into `src/core/`
+  - [x] Updated all imports to use the new `core` package
+  - [x] Regression and sanity suites validated
 
 ### ⏳ Phase 2: Export Extraction to export.py
 - **Status:** NOT STARTED
@@ -94,10 +99,10 @@
 
 ## Overall Progress
 
-**Phases Complete:** 2/11 (18%)
+**Phases Complete:** 3/11 (27%)
 **Estimated Total Effort:** 70-90 hours
-**Time Spent:** ~5 hours
-**Remaining Effort:** ~65-85 hours
+**Time Spent:** ~7 hours
+**Remaining Effort:** ~63-83 hours
 
 ---
 

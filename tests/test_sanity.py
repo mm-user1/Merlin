@@ -27,10 +27,10 @@ class TestSanityChecks:
     def test_imports_work(self):
         """Test that basic project imports work."""
         try:
-            import backtest_engine
-            import optuna_engine
+            import core.backtest_engine
+            import core.optuna_engine
+            import core.walkforward_engine
             import optimizer_engine
-            import walkforward_engine
         except ImportError as e:
             pytest.fail(f"Failed to import core modules: {e}")
 
@@ -56,11 +56,11 @@ class TestSanityChecks:
         src_dir = project_root / "src"
 
         expected_files = [
-            "backtest_engine.py",
-            "optuna_engine.py",
-            "optimizer_engine.py",
-            "walkforward_engine.py",
-            "server.py"
+            Path("core") / "backtest_engine.py",
+            Path("core") / "optuna_engine.py",
+            Path("core") / "walkforward_engine.py",
+            Path("optimizer_engine.py"),
+            Path("server.py"),
         ]
 
         for file_name in expected_files:

@@ -13,7 +13,7 @@ from optuna.samplers import RandomSampler, TPESampler
 from optuna.trial import TrialState
 import pandas as pd
 
-from backtest_engine import load_data
+from .backtest_engine import load_data
 from optimizer_engine import (
     DEFAULT_SCORE_CONFIG,
     OptimizationResult,
@@ -186,7 +186,7 @@ class OptunaOptimizer:
                 f"Failed to load strategy '{self.base_config.strategy_id}': {e}"
             )
 
-        from backtest_engine import prepare_dataset_with_warmup
+        from .backtest_engine import prepare_dataset_with_warmup
 
         df = load_data(self.base_config.csv_file)
 

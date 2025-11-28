@@ -1,5 +1,5 @@
 from strategies.base import BaseStrategy
-from backtest_engine import StrategyResult
+from core.backtest_engine import StrategyResult
 
 
 class S02Test(BaseStrategy):
