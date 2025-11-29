@@ -1,0 +1,449 @@
+"""
+Metrics calculation module for S01 Trailing MA v26.
+
+This module provides:
+- BasicMetrics: Net profit, drawdown, trade statistics
+- AdvancedMetrics: Sharpe, RoMaD, Profit Factor, Ulcer Index, Consistency
+- Calculation functions that operate on StrategyResult
+
+Architectural note: This module ONLY calculates metrics.
+It does NOT orchestrate backtests or optimization.
+Other modules (backtest_engine, optuna_engine, walkforward_engine) consume these metrics.
+"""
+from __future__ import annotations
+
+import logging
+import math
+from dataclasses import dataclass
+from typing import TYPE_CHECKING, Any, Dict, List, Optional
+
+import numpy as np
+import pandas as pd
+from backtesting import _stats
+
+if TYPE_CHECKING:
+    from .backtest_engine import StrategyResult, TradeRecord
+
+logger = logging.getLogger(__name__)
+
+
+# ============================================================================
+# Data Structures
+# ============================================================================
+
+
+@dataclass
+class BasicMetrics:
+    """
+    Basic performance metrics calculated from strategy results.
+
+    These are the fundamental metrics that describe strategy performance:
+    - Profitability (net profit, gross profit/loss)
+    - Risk (max drawdown)
+    - Activity (total trades, win rate)
+    - Efficiency (average win/loss sizes)
+
+    All metrics are calculated from the trade list and equity curve.
+    """
+
+    net_profit: float
+    net_profit_pct: float
+    gross_profit: float
+    gross_loss: float
+    max_drawdown: float
+    max_drawdown_pct: float
+    total_trades: int
+    winning_trades: int
+    losing_trades: int
+    win_rate: float
+    avg_win: float
+    avg_loss: float
+    avg_trade: float
+
+    def to_dict(self) -> Dict[str, Any]:
+        """Convert to dictionary for serialization."""
+        return {
+            "net_profit": self.net_profit,
+            "net_profit_pct": self.net_profit_pct,
+            "gross_profit": self.gross_profit,
+            "gross_loss": self.gross_loss,
+            "max_drawdown": self.max_drawdown,
+            "max_drawdown_pct": self.max_drawdown_pct,
+            "total_trades": self.total_trades,
+            "winning_trades": self.winning_trades,
+            "losing_trades": self.losing_trades,
+            "win_rate": self.win_rate,
+            "avg_win": self.avg_win,
+            "avg_loss": self.avg_loss,
+            "avg_trade": self.avg_trade,
+        }
+
+
+@dataclass
+class AdvancedMetrics:
+    """
+    Advanced risk-adjusted metrics for optimization and analysis.
+
+    These metrics provide deeper insight into strategy quality:
+    - Risk-adjusted returns (Sharpe, Sortino)
+    - Efficiency ratios (Profit Factor, RoMaD, Recovery Factor)
+    - Volatility measures (Ulcer Index)
+    - Consistency indicators (monthly profitability)
+
+    All values are Optional since they may not be calculable
+    (e.g., no trades, insufficient data for monthly returns).
+    """
+
+    sharpe_ratio: Optional[float] = None
+    sortino_ratio: Optional[float] = None
+    profit_factor: Optional[float] = None
+    romad: Optional[float] = None
+    recovery_factor: Optional[float] = None
+    ulcer_index: Optional[float] = None
+    consistency_score: Optional[float] = None
+
+    def to_dict(self) -> Dict[str, Any]:
+        """Convert to dictionary for serialization."""
+        return {
+            "sharpe_ratio": self.sharpe_ratio,
+            "sortino_ratio": self.sortino_ratio,
+            "profit_factor": self.profit_factor,
+            "romad": self.romad,
+            "recovery_factor": self.recovery_factor,
+            "ulcer_index": self.ulcer_index,
+            "consistency_score": self.consistency_score,
+        }
+
+
+@dataclass
+class WFAMetrics:
+    """
+    Walk-Forward Analysis aggregate metrics.
+
+    Aggregates metrics across multiple WFA windows to assess:
+    - Average performance across windows
+    - Consistency between in-sample and out-of-sample
+    - Success rate for OOS profitability
+    """
+
+    avg_net_profit_pct: float
+    avg_max_drawdown_pct: float
+    successful_windows: int
+    total_windows: int
+    success_rate: float
+    avg_sharpe_ratio: Optional[float] = None
+    avg_romad: Optional[float] = None
+
+    def to_dict(self) -> Dict[str, Any]:
+        """Convert to dictionary for serialization."""
+        return {
+            "avg_net_profit_pct": self.avg_net_profit_pct,
+            "avg_max_drawdown_pct": self.avg_max_drawdown_pct,
+            "successful_windows": self.successful_windows,
+            "total_windows": self.total_windows,
+            "success_rate": self.success_rate,
+            "avg_sharpe_ratio": self.avg_sharpe_ratio,
+            "avg_romad": self.avg_romad,
+        }
+
+
+# ============================================================================
+# Helper Functions
+# ============================================================================
+
+
+def _calculate_monthly_returns(
+    equity_curve: List[float],
+    time_index: pd.DatetimeIndex,
+) -> List[float]:
+    """
+    Calculate monthly percentage returns from equity curve and timestamps.
+
+    This is a COPY of the function from backtest_engine.py and must remain
+    bit-exact compatible with the original implementation.
+    """
+    if not equity_curve or len(equity_curve) != len(time_index):
+        return []
+
+    monthly_returns: List[float] = []
+    current_month = None
+    month_start_equity: Optional[float] = None
+
+    for equity, timestamp in zip(equity_curve, time_index):
+        month_key = (timestamp.year, timestamp.month)
+
+        if current_month is None:
+            current_month = month_key
+            month_start_equity = equity
+        elif month_key != current_month:
+            if month_start_equity is not None and month_start_equity > 0:
+                monthly_return = ((equity / month_start_equity) - 1.0) * 100.0
+                monthly_returns.append(monthly_return)
+
+            current_month = month_key
+            month_start_equity = equity
+
+    if month_start_equity is not None and month_start_equity > 0 and equity_curve:
+        last_equity = equity_curve[-1]
+        monthly_return = ((last_equity / month_start_equity) - 1.0) * 100.0
+        monthly_returns.append(monthly_return)
+
+    return monthly_returns
+
+
+def _calculate_profit_factor_value(trades: List[TradeRecord]) -> Optional[float]:
+    """Calculate Profit Factor (gross profit / gross loss)."""
+    if not trades:
+        return None
+
+    gross_profit = sum(t.net_pnl for t in trades if t.net_pnl > 0)
+    gross_loss = abs(sum(t.net_pnl for t in trades if t.net_pnl < 0))
+
+    if gross_loss > 0:
+        return gross_profit / gross_loss
+    if gross_profit > 0:
+        return 999.0
+    return 1.0
+
+
+def _calculate_sharpe_ratio_value(
+    monthly_returns: List[float],
+    risk_free_rate: float = 0.02,
+) -> Optional[float]:
+    """Calculate annualized Sharpe Ratio from monthly returns."""
+    if len(monthly_returns) < 2:
+        return None
+
+    monthly_array = np.array(monthly_returns, dtype=float)
+    if monthly_array.size < 2:
+        return None
+
+    avg_return = float(np.mean(monthly_array))
+    sd_return = float(np.std(monthly_array, ddof=0))
+
+    if sd_return == 0:
+        return None
+
+    rfr_monthly = (risk_free_rate * 100.0) / 12.0
+    sharpe = (avg_return - rfr_monthly) / sd_return
+    return sharpe
+
+
+def _calculate_ulcer_index_value(equity_curve: List[float]) -> Optional[float]:
+    """Calculate Ulcer Index (downside volatility measure)."""
+    equity_array = np.array(equity_curve, dtype=float)
+    if equity_array.size == 0:
+        return None
+
+    running_max = np.maximum.accumulate(equity_array)
+
+    with np.errstate(divide="ignore", invalid="ignore"):
+        drawdowns = np.where(running_max > 0, equity_array / running_max - 1.0, 0.0)
+
+    drawdown_squared_sum = float(np.square(drawdowns).sum())
+    ulcer = math.sqrt(drawdown_squared_sum / equity_array.size) * 100.0
+
+    return ulcer
+
+
+def _calculate_consistency_score_value(monthly_returns: List[float]) -> Optional[float]:
+    """Calculate percentage of profitable months."""
+    if len(monthly_returns) < 3:
+        return None
+
+    total_months = len(monthly_returns)
+    profitable_months = sum(1 for ret in monthly_returns if ret > 0)
+
+    consistency = (profitable_months / total_months) * 100.0
+    return consistency
+
+
+# ============================================================================
+# Main Calculation Functions
+# ============================================================================
+
+
+def calculate_basic(result: StrategyResult, initial_balance: Optional[float] = None) -> BasicMetrics:
+    """Calculate basic metrics from a strategy result."""
+    balance_curve = result.balance_curve
+    trades = result.trades
+
+    if initial_balance is not None:
+        starting_balance = initial_balance
+    elif balance_curve:
+        starting_balance = balance_curve[0]
+    else:
+        starting_balance = 0.0
+
+    if balance_curve:
+        net_profit = balance_curve[-1] - starting_balance
+        net_profit_pct = (net_profit / starting_balance * 100.0) if starting_balance != 0 else 0.0
+    else:
+        net_profit = 0.0
+        net_profit_pct = 0.0
+
+    gross_profit = 0.0
+    gross_loss = 0.0
+    winning_trades = 0
+    losing_trades = 0
+
+    for trade in trades:
+        if trade.net_pnl > 0:
+            gross_profit += trade.net_pnl
+            winning_trades += 1
+        elif trade.net_pnl < 0:
+            gross_loss += abs(trade.net_pnl)
+            losing_trades += 1
+
+    max_drawdown_pct = 0.0
+    max_drawdown = 0.0
+
+    if balance_curve:
+        equity_series = pd.Series(balance_curve).ffill()
+        drawdown = 1 - equity_series / equity_series.cummax()
+        _, peak_dd = _stats.compute_drawdown_duration_peaks(drawdown)
+
+        if not peak_dd.isna().all():
+            max_drawdown_pct = float(peak_dd.max() * 100)
+
+        peak_balance = float(equity_series.cummax().max()) if not equity_series.empty else 0.0
+        if peak_balance > 0:
+            max_drawdown = max_drawdown_pct / 100.0 * peak_balance
+
+    total_trades = len(trades)
+    win_rate = (winning_trades / total_trades * 100.0) if total_trades > 0 else 0.0
+    avg_win = (gross_profit / winning_trades) if winning_trades > 0 else 0.0
+    avg_loss = (gross_loss / losing_trades) if losing_trades > 0 else 0.0
+    avg_trade = (net_profit / total_trades) if total_trades > 0 else 0.0
+
+    return BasicMetrics(
+        net_profit=net_profit,
+        net_profit_pct=net_profit_pct,
+        gross_profit=gross_profit,
+        gross_loss=gross_loss,
+        max_drawdown=max_drawdown,
+        max_drawdown_pct=max_drawdown_pct,
+        total_trades=total_trades,
+        winning_trades=winning_trades,
+        losing_trades=losing_trades,
+        win_rate=win_rate,
+        avg_win=avg_win,
+        avg_loss=avg_loss,
+        avg_trade=avg_trade,
+    )
+
+
+def calculate_advanced(
+    result: StrategyResult,
+    initial_balance: Optional[float] = None,
+    risk_free_rate: float = 0.02,
+) -> AdvancedMetrics:
+    """Calculate advanced risk-adjusted metrics from strategy result."""
+    trades = result.trades
+    equity_curve = result.equity_curve
+    timestamps = result.timestamps
+
+    sharpe_ratio = None
+    sortino_ratio = None
+    profit_factor = None
+    romad = None
+    recovery_factor = None
+    ulcer_index = None
+    consistency_score = None
+
+    if trades:
+        profit_factor = _calculate_profit_factor_value(trades)
+
+    monthly_returns: List[float] = []
+    if trades and timestamps:
+        time_index = pd.DatetimeIndex(timestamps)
+        monthly_returns = _calculate_monthly_returns(equity_curve, time_index)
+
+    if len(monthly_returns) >= 2:
+        sharpe_ratio = _calculate_sharpe_ratio_value(monthly_returns, risk_free_rate)
+
+    if len(monthly_returns) >= 1:
+        consistency_score = _calculate_consistency_score_value(monthly_returns)
+
+    if equity_curve:
+        ulcer_index = _calculate_ulcer_index_value(equity_curve)
+
+    basic = calculate_basic(result, initial_balance)
+
+    if basic.max_drawdown_pct >= 0:
+        if abs(basic.max_drawdown_pct) < 1e-9:
+            romad = basic.net_profit_pct * 100.0 if basic.net_profit_pct >= 0 else 0.0
+        elif basic.max_drawdown_pct != 0:
+            romad = basic.net_profit_pct / abs(basic.max_drawdown_pct)
+        else:
+            romad = 0.0
+    else:
+        romad = 0.0
+
+    if basic.max_drawdown > 0:
+        recovery_factor = basic.net_profit / basic.max_drawdown
+
+    return AdvancedMetrics(
+        sharpe_ratio=sharpe_ratio,
+        sortino_ratio=sortino_ratio,
+        profit_factor=profit_factor,
+        romad=romad,
+        recovery_factor=recovery_factor,
+        ulcer_index=ulcer_index,
+        consistency_score=consistency_score,
+    )
+
+
+def calculate_for_wfa(wfa_results: List[Dict[str, Any]]) -> WFAMetrics:
+    """Calculate aggregate WFA metrics from multiple windows."""
+    if not wfa_results:
+        return WFAMetrics(
+            avg_net_profit_pct=0.0,
+            avg_max_drawdown_pct=0.0,
+            successful_windows=0,
+            total_windows=0,
+            success_rate=0.0,
+            avg_sharpe_ratio=None,
+            avg_romad=None,
+        )
+
+    net_profits: List[float] = []
+    drawdowns: List[float] = []
+    sharpes: List[float] = []
+    romads: List[float] = []
+
+    successful = 0
+
+    for window in wfa_results:
+        oos_result: Optional[StrategyResult] = window.get("oos_result")
+        if oos_result is None:
+            continue
+
+        net_profits.append(float(oos_result.net_profit_pct))
+        drawdowns.append(float(oos_result.max_drawdown_pct))
+
+        if oos_result.sharpe_ratio is not None:
+            sharpes.append(float(oos_result.sharpe_ratio))
+        if oos_result.romad is not None:
+            romads.append(float(oos_result.romad))
+
+        if float(oos_result.net_profit_pct) > 0:
+            successful += 1
+
+    total_windows = len(wfa_results)
+    success_rate = (successful / total_windows * 100.0) if total_windows else 0.0
+
+    avg_net_profit_pct = float(np.mean(net_profits)) if net_profits else 0.0
+    avg_max_drawdown_pct = float(np.mean(drawdowns)) if drawdowns else 0.0
+    avg_sharpe_ratio = float(np.mean(sharpes)) if sharpes else None
+    avg_romad = float(np.mean(romads)) if romads else None
+
+    return WFAMetrics(
+        avg_net_profit_pct=avg_net_profit_pct,
+        avg_max_drawdown_pct=avg_max_drawdown_pct,
+        successful_windows=successful,
+        total_windows=total_windows,
+        success_rate=success_rate,
+        avg_sharpe_ratio=avg_sharpe_ratio,
+        avg_romad=avg_romad,
+    )
