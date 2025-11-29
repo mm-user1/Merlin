@@ -132,7 +132,7 @@ def export_optuna_results(
 
     if optimization_metadata:
         output.write("Optuna Metadata\n")
-        output.write(f"Method,{optimization_metadata.get('method', 'Grid Search')}\n")
+        output.write(f"Method,{optimization_metadata.get('method', 'Optuna')}\n")
 
         if optimization_metadata.get("method") == "Optuna":
             output.write(f"Target,{optimization_metadata.get('target', 'Composite Score')}\n")

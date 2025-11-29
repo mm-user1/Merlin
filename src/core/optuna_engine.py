@@ -413,7 +413,7 @@ class OptunaConfig:
 
 
 class OptunaOptimizer:
-    """Optuna-based optimiser that reuses the grid search simulation engine."""
+    """Optuna-based optimizer for Bayesian hyperparameter search using multiprocess evaluation."""
 
     def __init__(self, base_config, optuna_config: OptunaConfig) -> None:
         self.base_config = base_config
