@@ -2,7 +2,7 @@
 Centralized export utilities for the TrailingMA platform.
 
 Provides pure data-to-string/bytes transformation helpers for:
-- Optuna/Grid optimization results
+- Optuna optimization results
 - Walk-Forward Analysis summaries (stubbed)
 - Trade history exports (CSV and ZIP)
 
@@ -22,6 +22,7 @@ from zipfile import ZIP_DEFLATED, ZipFile
 import pandas as pd
 
 from .backtest_engine import TradeRecord
+from .optuna_engine import OptimizationResult
 
 __all__ = [
     "CSV_COLUMN_SPECS",
@@ -95,7 +96,7 @@ def _format_fixed_param_value(value: Any) -> str:
 
 
 def export_optuna_results(
-    results: List[Any],
+    results: List[OptimizationResult],
     fixed_params: Union[Mapping[str, Any], Iterable[Tuple[str, Any]]],
     *,
     filter_min_profit: bool = False,
@@ -103,7 +104,7 @@ def export_optuna_results(
     optimization_metadata: Optional[Dict[str, Any]] = None,
 ) -> str:
     """
-    Export Optuna/Grid Search optimization results to CSV format string.
+    Export Optuna optimization results to CSV format string.
 
     The CSV has three sections:
     1. Optuna Metadata (optional) - optimization method, trials, best value, etc.
@@ -111,7 +112,7 @@ def export_optuna_results(
     3. Results Table - one row per trial with varied params + metrics
 
     Args:
-        results: List of OptimizationResult-like objects
+        results: List of OptimizationResult objects
         fixed_params: Parameters that were held constant (excluded from results table)
         filter_min_profit: If True, filter out results below threshold
         min_profit_threshold: Minimum net_profit_pct to include (if filtering enabled)

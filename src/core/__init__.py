@@ -27,6 +27,7 @@ from .backtest_engine import (
 
 from .optuna_engine import (
     OptunaConfig,
+    OptimizationResult,
     run_optuna_optimization,
 )
 
@@ -62,6 +63,7 @@ __all__ = [
 
     # optuna_engine exports
     "OptunaConfig",
+    "OptimizationResult",
     "run_optuna_optimization",
 
     # walkforward_engine exports

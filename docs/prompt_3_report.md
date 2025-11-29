@@ -12,3 +12,8 @@
 ## Deviations / Notes
 - Grid-search UI metrics such as total combination counts are now hidden; supporting helper functions remain guarded for compatibility but no longer display values because the corresponding elements were removed.
 - Output filenames are forced to Optuna mode; requests specifying non-Optuna modes return a validation error to enforce the new architecture.
+
+## Issues found after Phase 3
+- Missing `OptimizationResult` export in `src/core/__init__.py` => Added the dataclass to package imports and `__all__` for clean public interface.
+- Weak typing for `export_optuna_results` inputs => Annotated the `results` parameter with `List[OptimizationResult]` for better static checking.
+- Outdated Grid Search references in `export_optuna_results` documentation => Updated module and function docstrings to describe Optuna-only exports.
