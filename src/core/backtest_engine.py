@@ -7,6 +7,8 @@ import numpy as np
 import pandas as pd
 from backtesting import _stats
 
+from . import metrics
+
 FACTOR_T3 = 0.7
 FAST_KAMA = 2
 SLOW_KAMA = 30
@@ -45,20 +47,27 @@ class TradeRecord:
 @dataclass
 class StrategyResult:
     """
-    Result object returned by strategy.run()
+    Complete result of a strategy backtest.
 
-    Contains both basic metrics (always required) and advanced metrics
-    (optional, used for optimization scoring).
+    Stores both raw curves and calculated metrics to keep orchestration and
+    calculation concerns separate.
     """
 
-    # Basic metrics (always required)
-    net_profit_pct: float
-    max_drawdown_pct: float
-    total_trades: int
     trades: List[TradeRecord]
+    equity_curve: List[float]
+    balance_curve: List[float]
+    timestamps: List[pd.Timestamp]
 
-    # Advanced metrics (optional, for optimization scoring)
-    # These are calculated from trades and equity curve
+    net_profit: float = 0.0
+    net_profit_pct: float = 0.0
+    gross_profit: float = 0.0
+    gross_loss: float = 0.0
+    max_drawdown: float = 0.0
+    max_drawdown_pct: float = 0.0
+    total_trades: int = 0
+    winning_trades: int = 0
+    losing_trades: int = 0
+
     sharpe_ratio: Optional[float] = None
     profit_factor: Optional[float] = None
     romad: Optional[float] = None  # Return Over Maximum Drawdown
@@ -68,9 +77,18 @@ class StrategyResult:
 
     def to_dict(self) -> Dict[str, Any]:
         data = {
+            "net_profit": self.net_profit,
             "net_profit_pct": self.net_profit_pct,
+            "gross_profit": self.gross_profit,
+            "gross_loss": self.gross_loss,
+            "max_drawdown": self.max_drawdown,
             "max_drawdown_pct": self.max_drawdown_pct,
             "total_trades": self.total_trades,
+            "winning_trades": self.winning_trades,
+            "losing_trades": self.losing_trades,
+            "equity_curve": self.equity_curve,
+            "balance_curve": self.balance_curve,
+            "timestamps": [ts.isoformat() if hasattr(ts, "isoformat") else ts for ts in self.timestamps],
         }
 
         optional_metrics = {
@@ -519,210 +537,6 @@ def prepare_dataset_with_warmup_legacy(
     return prepare_dataset_with_warmup(df, start, end, required_warmup)
 
 
-# ============================================
-# ADVANCED METRICS CALCULATION
-# ============================================
-
-def calculate_monthly_returns(
-    equity_curve: List[float],
-    time_index: pd.DatetimeIndex
-) -> List[float]:
-    """
-    Calculate monthly returns from equity curve.
-
-    Args:
-        equity_curve: List of equity values (one per bar)
-        time_index: Datetime index aligned with equity_curve
-
-    Returns:
-        List of monthly returns (in %)
-    """
-    if not equity_curve or len(equity_curve) != len(time_index):
-        return []
-
-    monthly_returns: List[float] = []
-    current_month = None
-    month_start_equity: Optional[float] = None
-
-    for equity, timestamp in zip(equity_curve, time_index):
-        month_key = (timestamp.year, timestamp.month)
-
-        if current_month is None:
-            current_month = month_key
-            month_start_equity = equity
-        elif month_key != current_month:
-            if month_start_equity is not None and month_start_equity > 0:
-                monthly_return = ((equity / month_start_equity) - 1.0) * 100.0
-                monthly_returns.append(monthly_return)
-
-            current_month = month_key
-            month_start_equity = equity
-
-    if month_start_equity is not None and month_start_equity > 0 and equity_curve:
-        last_equity = equity_curve[-1]
-        monthly_return = ((last_equity / month_start_equity) - 1.0) * 100.0
-        monthly_returns.append(monthly_return)
-
-    return monthly_returns
-
-
-def calculate_profit_factor(trades: List[TradeRecord]) -> Optional[float]:
-    """
-    Calculate profit factor (gross profit / gross loss).
-
-    Args:
-        trades: List of completed trades
-
-    Returns:
-        Profit factor (None if no trades or no data)
-    """
-    if not trades:
-        return None
-
-    # Calculate profit factor in absolute dollar terms (not percentage)
-    # to match pre-migration behavior
-    gross_profit = sum(t.net_pnl for t in trades if t.net_pnl > 0)
-    gross_loss = abs(sum(t.net_pnl for t in trades if t.net_pnl < 0))
-
-    if gross_loss > 0:
-        return gross_profit / gross_loss
-    if gross_profit > 0:
-        return 999.0
-    return 1.0
-
-
-def calculate_sharpe_ratio(monthly_returns: List[float], risk_free_rate: float = 0.02) -> Optional[float]:
-    """
-    Calculate annualized Sharpe ratio.
-
-    Args:
-        monthly_returns: List of monthly returns (in %)
-        risk_free_rate: Annual risk-free rate (default 2%)
-
-    Returns:
-        Sharpe ratio (None if insufficient data)
-    """
-    if len(monthly_returns) < 2:
-        return None
-
-    monthly_array = np.array(monthly_returns, dtype=float)
-    if monthly_array.size < 2:
-        return None
-
-    avg_return = float(np.mean(monthly_array))
-    sd_return = float(np.std(monthly_array, ddof=0))
-
-    if sd_return == 0:
-        return None
-
-    rfr_monthly = (risk_free_rate * 100.0) / 12.0
-    sharpe = (avg_return - rfr_monthly) / sd_return
-    return sharpe
-
-
-def calculate_ulcer_index(equity_curve: List[float]) -> Optional[float]:
-    """
-    Calculate Ulcer Index (measure of downside volatility).
-
-    Args:
-        equity_curve: List of equity values
-
-    Returns:
-        Ulcer Index (in %, None if no data)
-    """
-    if not equity_curve:
-        return None
-
-    equity_array = np.asarray(equity_curve, dtype=float)
-    if equity_array.size == 0:
-        return None
-
-    running_max = np.maximum.accumulate(equity_array)
-
-    with np.errstate(divide="ignore", invalid="ignore"):
-        drawdowns = np.where(running_max > 0, equity_array / running_max - 1.0, 0.0)
-
-    drawdown_squared_sum = float(np.square(drawdowns).sum())
-    ulcer = math.sqrt(drawdown_squared_sum / equity_array.size) * 100.0
-
-    return ulcer
-
-
-def calculate_consistency_score(monthly_returns: List[float]) -> Optional[float]:
-    """
-    Calculate consistency score (% of profitable months).
-
-    Args:
-        monthly_returns: List of monthly returns (in %)
-
-    Returns:
-        Consistency score (0-100%, None if insufficient data)
-    """
-    if len(monthly_returns) < 3:
-        return None
-
-    total_months = len(monthly_returns)
-    profitable_months = sum(1 for ret in monthly_returns if ret > 0)
-
-    consistency = (profitable_months / total_months) * 100.0
-    return consistency
-
-
-def calculate_advanced_metrics(
-    equity_curve: List[float],
-    time_index: pd.DatetimeIndex,
-    trades: List[TradeRecord],
-    net_profit_pct: float,
-    max_drawdown_pct: float
-) -> Dict[str, Optional[float]]:
-    """
-    Calculate all advanced metrics from equity curve and trades.
-
-    This is a convenience function that calls all individual metric functions.
-
-    Args:
-        equity_curve: List of equity values (one per bar)
-        time_index: Datetime index aligned with equity_curve
-        trades: List of completed trades
-        net_profit_pct: Net profit percentage
-        max_drawdown_pct: Maximum drawdown percentage
-
-    Returns:
-        Dictionary with all advanced metrics (keys: sharpe_ratio, profit_factor, etc.)
-    """
-    monthly_returns = calculate_monthly_returns(equity_curve, time_index)
-
-    profit_factor = calculate_profit_factor(trades)
-
-    sharpe_ratio = calculate_sharpe_ratio(monthly_returns)
-
-    ulcer_index = calculate_ulcer_index(equity_curve)
-
-    consistency_score = calculate_consistency_score(monthly_returns)
-
-    romad: Optional[float] = None
-    if net_profit_pct >= 0:
-        if abs(max_drawdown_pct) < 1e-9:
-            romad = net_profit_pct * 100.0
-        elif max_drawdown_pct != 0:
-            romad = net_profit_pct / abs(max_drawdown_pct)
-        else:
-            romad = 0.0
-    else:
-        romad = 0.0
-
-    recovery_factor = romad
-
-    return {
-        "sharpe_ratio": sharpe_ratio,
-        "profit_factor": profit_factor,
-        "romad": romad,
-        "ulcer_index": ulcer_index,
-        "recovery_factor": recovery_factor,
-        "consistency_score": consistency_score,
-    }
-
-
 def run_strategy(df: pd.DataFrame, params: StrategyParams, trade_start_idx: int = 0) -> StrategyResult:
     if params.use_backtester is False:
         raise ValueError("Backtester is disabled in the provided parameters")
@@ -995,35 +809,38 @@ def run_strategy(df: pd.DataFrame, params: StrategyParams, trade_start_idx: int 
         mtm_curve.append(mark_to_market)  # Save MTM equity for Ulcer Index calculation
         prev_position = position
 
-    equity_series = pd.Series(realized_curve, index=df.index[: len(realized_curve)])
-    net_profit_pct = ((realized_equity - equity) / equity) * 100
-    max_drawdown_pct = compute_max_drawdown(equity_series)
-    total_trades = len(trades)
+    timestamps = list(df.index[: len(mtm_curve)])
 
-    # Calculate advanced metrics for optimization scoring
-    # These metrics are used by Grid/Optuna optimizers to compute composite scores
-    # Use mark-to-market equity curve (includes unrealized PnL) for Ulcer Index
-    # to match pre-migration behavior
-    advanced_metrics = calculate_advanced_metrics(
+    result = StrategyResult(
+        trades=trades,
         equity_curve=mtm_curve,
-        time_index=df.index[:len(mtm_curve)],
-        trades=trades,
-        net_profit_pct=net_profit_pct,
-        max_drawdown_pct=max_drawdown_pct
+        balance_curve=realized_curve,
+        timestamps=timestamps,
     )
 
-    return StrategyResult(
-        net_profit_pct=net_profit_pct,
-        max_drawdown_pct=max_drawdown_pct,
-        total_trades=total_trades,
-        trades=trades,
+    basic_metrics = metrics.calculate_basic(result, initial_balance=equity)
 
-        # Advanced metrics (optional, for optimization scoring)
-        # Will be None if insufficient data (e.g., <2 monthly periods for Sharpe)
-        sharpe_ratio=advanced_metrics['sharpe_ratio'],
-        profit_factor=advanced_metrics['profit_factor'],
-        romad=advanced_metrics['romad'],
-        ulcer_index=advanced_metrics['ulcer_index'],
-        recovery_factor=advanced_metrics['recovery_factor'],
-        consistency_score=advanced_metrics['consistency_score'],
+    result.net_profit = basic_metrics.net_profit
+    result.net_profit_pct = basic_metrics.net_profit_pct
+    result.gross_profit = basic_metrics.gross_profit
+    result.gross_loss = basic_metrics.gross_loss
+    result.max_drawdown = basic_metrics.max_drawdown
+    result.max_drawdown_pct = basic_metrics.max_drawdown_pct
+    result.total_trades = basic_metrics.total_trades
+    result.winning_trades = basic_metrics.winning_trades
+    result.losing_trades = basic_metrics.losing_trades
+
+    advanced_metrics = metrics.calculate_advanced(
+        result,
+        initial_balance=equity,
+        risk_free_rate=0.02,
     )
+
+    result.sharpe_ratio = advanced_metrics.sharpe_ratio
+    result.profit_factor = advanced_metrics.profit_factor
+    result.romad = advanced_metrics.romad
+    result.ulcer_index = advanced_metrics.ulcer_index
+    result.recovery_factor = advanced_metrics.recovery_factor
+    result.consistency_score = advanced_metrics.consistency_score
+
+    return result

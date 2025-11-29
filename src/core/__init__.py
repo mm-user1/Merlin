@@ -49,6 +49,15 @@ from .export import (
     export_wfa_summary,
 )
 
+from .metrics import (
+    BasicMetrics,
+    AdvancedMetrics,
+    WFAMetrics,
+    calculate_basic,
+    calculate_advanced,
+    calculate_for_wfa,
+)
+
 __all__ = [
     # backtest_engine exports
     "CSVSource",
@@ -81,4 +90,12 @@ __all__ = [
     "export_trades_csv",
     "export_trades_zip",
     "export_wfa_summary",
+
+    # metrics
+    "BasicMetrics",
+    "AdvancedMetrics",
+    "WFAMetrics",
+    "calculate_basic",
+    "calculate_advanced",
+    "calculate_for_wfa",
 ]

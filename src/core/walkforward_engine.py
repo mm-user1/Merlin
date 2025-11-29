@@ -13,48 +13,9 @@ import json
 import numpy as np
 import pandas as pd
 
+from . import metrics
 from .backtest_engine import TradeRecord, prepare_dataset_with_warmup
 from .optuna_engine import OptunaConfig, OptimizationConfig, run_optuna_optimization
-
-
-def _compute_segment_metrics(
-    trades: List[TradeRecord],
-    initial_equity: float = 100.0
-) -> Tuple[float, float, int]:
-    """
-    Compute performance metrics for a specific trade segment.
-
-    Args:
-        trades: List of trades in the segment
-        initial_equity: Starting equity for the segment
-
-    Returns:
-        Tuple of (profit_pct, max_drawdown_pct, trade_count)
-    """
-    if not trades:
-        return 0.0, 0.0, 0
-
-    # Calculate profit
-    total_pnl = sum(trade.net_pnl for trade in trades)
-    profit_pct = (total_pnl / initial_equity) * 100.0
-
-    # Calculate drawdown
-    equity_curve = [initial_equity]
-    running_equity = initial_equity
-    for trade in trades:
-        running_equity += trade.net_pnl
-        equity_curve.append(running_equity)
-
-    peak = equity_curve[0]
-    max_dd = 0.0
-    for equity in equity_curve:
-        if equity > peak:
-            peak = equity
-        drawdown = ((equity - peak) / peak) * 100.0
-        if drawdown < max_dd:
-            max_dd = drawdown
-
-    return profit_pct, max_dd, len(trades)
 
 
 @dataclass
@@ -329,19 +290,9 @@ class WalkForwardEngine:
                     is_df_prepared, params_copy, trade_start_idx
                 )
 
-                # Filter trades by entry time to ensure only IS period trades are counted
-                is_period_trades = [
-                    trade
-                    for trade in result.trades
-                    if is_start_time <= trade.entry_time <= is_end_time
-                ]
+                basic_metrics = metrics.calculate_basic(result, initial_balance=100.0)
 
-                # Compute IS metrics using only IS-period trades
-                is_profit_pct, _, _ = _compute_segment_metrics(
-                    is_period_trades, initial_equity=100.0
-                )
-
-                is_profits.append(is_profit_pct)
+                is_profits.append(basic_metrics.net_profit_pct)
 
             # Prepare OOS dataset with accumulated history (IS + gap for warmup)
             oos_start_time = df.index[window.oos_start]
@@ -368,22 +319,12 @@ class WalkForwardEngine:
                     oos_df_prepared, params_copy, trade_start_idx
                 )
 
-                # Filter trades by entry time to ensure only OOS period trades are counted
-                # (trades opened in [oos_start, oos_end] even if they close later)
-                oos_period_trades = [
-                    trade
-                    for trade in result.trades
-                    if oos_start_time <= trade.entry_time <= oos_end_time
-                ]
+                basic_metrics = metrics.calculate_basic(result, initial_balance=100.0)
+                metrics.calculate_advanced(result, initial_balance=100.0)
 
-                # Compute OOS metrics using only OOS-period trades
-                oos_profit_pct, oos_dd_pct, oos_trade_count = _compute_segment_metrics(
-                    oos_period_trades, initial_equity=100.0
-                )
-
-                oos_profits.append(oos_profit_pct)
-                oos_drawdowns.append(oos_dd_pct)
-                oos_trades.append(oos_trade_count)
+                oos_profits.append(basic_metrics.net_profit_pct)
+                oos_drawdowns.append(basic_metrics.max_drawdown_pct)
+                oos_trades.append(basic_metrics.total_trades)
 
             window_results.append(
                 WindowResult(
@@ -430,19 +371,10 @@ class WalkForwardEngine:
                     forward_df_prepared, params_copy, trade_start_idx
                 )
 
-                # Filter trades by entry time to ensure only Forward period trades are counted
-                # This is the same approach as OOS for consistency
-                forward_period_trades = [
-                    trade
-                    for trade in result.trades
-                    if forward_start_time <= trade.entry_time <= forward_end_time
-                ]
+                basic_metrics = metrics.calculate_basic(result, initial_balance=100.0)
+                metrics.calculate_advanced(result, initial_balance=100.0)
 
-                # Compute Forward metrics using only Forward-period trades
-                forward_profit_pct, _, _ = _compute_segment_metrics(
-                    forward_period_trades, initial_equity=100.0
-                )
-                forward_profits.append(forward_profit_pct)
+                forward_profits.append(basic_metrics.net_profit_pct)
             else:
                 forward_profits.append(0.0)
 
@@ -979,7 +911,9 @@ def export_wfa_trades_history(
         all_trades.sort(key=lambda t: t.entry_time)
 
         # Calculate forward profit for filename
-        fwd_profit_pct = _compute_segment_metrics(fwd_trades)[0] if fwd_trades else 0.0
+        basic_metrics = metrics.calculate_basic(fwd_result, initial_balance=100.0)
+        metrics.calculate_advanced(fwd_result, initial_balance=100.0)
+        fwd_profit_pct = basic_metrics.net_profit_pct
 
         # Generate filename: rank1_fwd+16.29.csv
         filename = f"rank{rank}_fwd{fwd_profit_pct:+.2f}.csv"

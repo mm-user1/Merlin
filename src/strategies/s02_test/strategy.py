@@ -1,3 +1,5 @@
+import pandas as pd
+
 from strategies.base import BaseStrategy
 from core.backtest_engine import StrategyResult
 
@@ -10,8 +12,8 @@ class S02Test(BaseStrategy):
     @staticmethod
     def run(df, params, trade_start_idx=0):
         return StrategyResult(
-            net_profit_pct=0.0,
-            max_drawdown_pct=0.0,
-            total_trades=0,
             trades=[],
+            equity_curve=[0.0],
+            balance_curve=[0.0],
+            timestamps=[pd.Timestamp("1970-01-01", tz="UTC")],
         )
