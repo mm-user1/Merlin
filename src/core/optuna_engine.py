@@ -15,6 +15,7 @@ from optuna.samplers import RandomSampler, TPESampler
 from optuna.trial import TrialState
 import pandas as pd
 
+from . import metrics
 from .backtest_engine import load_data
 
 logger = logging.getLogger(__name__)
@@ -280,16 +281,20 @@ def _run_single_combination(
         }
 
         result = strategy_class.run(df, strategy_payload, trade_start_idx)
+
+        basic_metrics = metrics.calculate_basic(result)
+        advanced_metrics = metrics.calculate_advanced(result)
+
         opt_result = _base_result()
-        opt_result.net_profit_pct = result.net_profit_pct
-        opt_result.max_drawdown_pct = result.max_drawdown_pct
-        opt_result.total_trades = result.total_trades
-        opt_result.sharpe_ratio = result.sharpe_ratio
-        opt_result.profit_factor = result.profit_factor
-        opt_result.romad = result.romad
-        opt_result.ulcer_index = result.ulcer_index
-        opt_result.recovery_factor = result.recovery_factor
-        opt_result.consistency_score = result.consistency_score
+        opt_result.net_profit_pct = basic_metrics.net_profit_pct
+        opt_result.max_drawdown_pct = basic_metrics.max_drawdown_pct
+        opt_result.total_trades = basic_metrics.total_trades
+        opt_result.sharpe_ratio = advanced_metrics.sharpe_ratio
+        opt_result.profit_factor = advanced_metrics.profit_factor
+        opt_result.romad = advanced_metrics.romad
+        opt_result.ulcer_index = advanced_metrics.ulcer_index
+        opt_result.recovery_factor = advanced_metrics.recovery_factor
+        opt_result.consistency_score = advanced_metrics.consistency_score
         return opt_result
     except Exception:
         return _base_result()
