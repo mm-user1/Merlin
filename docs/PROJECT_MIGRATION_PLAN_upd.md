@@ -1,33 +1,38 @@
-# Migration Plan - Updated
+# Migration Plan - Updated v2.1
 ## From Legacy S_01-Centric Architecture to Clean Core Architecture
 
-**Version:** 2.0
-**Date:** 2025-11-27
-**Status:** Final - Ready for Execution
-**Scope:** Step-by-step migration from current legacy architecture to target structure with 3 engines, metrics, export, and separated UI.
+**Version:** 2.1
+**Date:** 2025-12-03
+**Status:** Final - Ready for Phase 7 Execution
+**Scope:** Updated plan incorporating Phase 6 completion and addressing UI hardcoding issues.
 
 ---
 
 ## Executive Summary
 
-This updated plan incorporates feedback from two audit reports (claude_MIGRATION_AUDIT_REPORT_2.md and codex_migration_plan_audit_report.md) and addresses the following key adjustments:
+This updated plan reflects the completion of Phases -1 through 6 and addresses critical findings from the Phase 6 audit. The main changes from v2.0:
 
-### Key Changes from v1.4:
+### Key Updates in v2.1:
 
-1. **Frontend phase moved to end** - UI separation now happens AFTER legacy cleanup (more logical flow)
-2. **StrategyParams lives inside strategy.py** - Each strategy owns its parameter structure
-3. **metrics.py only calculates** - Other modules consume the metrics, metrics.py doesn't orchestrate
-4. **Data structures co-located with creators** - Structures live next to modules that populate them
-5. **Phase reordering** - Export moved earlier (low risk), Metrics before Indicators (easier validation)
-6. **Phase splitting** - Phase 2 split into 2.A (move) and 2.B (Grid removal) for risk management
+1. **Phase 7 remains unchanged** - S01 migration via duplicate strategy approach
+2. **NEW Phase 8: Dynamic Optimizer + CSS Extraction** - Fix hardcoded S01 parameters in UI
+3. **NEW Phase 9: Legacy Code Cleanup** - Delete all S01-specific hardcoded blocks
+4. **Phase 10: Frontend Separation** (was Phase 8) - Full UI modularization
+5. **Phase 11: Documentation** (was Phase 9) - No logging (deferred to post-migration)
 
-### Architecture Principles:
+### Rationale for Changes:
+
+**Phase 6 Audit Finding:** The optimizer UI has hardcoded S01 parameters that don't load for S04 strategy. This blocks production use of S04 and will complicate S01 migration.
+
+**Solution:** Insert new phases to fix UI dynamically BEFORE deleting legacy code, ensuring UI remains functional throughout migration.
+
+### Architecture Principles (Unchanged):
 
 - **Iterative migration** - Small, verifiable phases with regression tests
-- **Behavior preservation** - S01 results must remain identical (bit-exact where possible)
+- **Behavior preservation** - S01 results must remain identical
 - **Legacy co-existence** - Old code stays until new code is validated
 - **Test-driven** - Every high-risk change validated by automated tests
-- **Data structure ownership** - Each module owns the structures it creates and populates
+- **Data structure ownership** - Each module owns the structures it creates
 
 ---
 
@@ -46,1175 +51,110 @@ Following the principle "structures live where they're populated":
 ### Migration Safeguards
 
 On each phase:
-- Priority: **preserve S01 behavior** (and later, simple strategy)
+- Priority: **preserve S01 behavior** (and S04)
 - Important changes accompanied by regression and basic unit tests
 - Legacy code deleted **only after** successful validation of new implementation
 - Git tags at each phase completion: `phase-X-complete`
 
 ---
 
-## Phase -1: Test Infrastructure Setup
+## Phase -1: Test Infrastructure Setup ✅ COMPLETE
 
-**Complexity:** 🟢 LOW
-**Risk:** 🟢 LOW
-**Estimated Effort:** 2-4 hours
-**Priority:** 🔴 CRITICAL - MUST DO FIRST
+**Status:** COMPLETE (2025-11-28)
+**Duration:** ~2 hours
+**Tests:** 9/9 sanity tests passing
 
-### Goal
-
-Prepare minimal but usable test infrastructure before starting serious changes.
-
-### Steps
-
-1. Create `tests/` folder in project root
-2. Configure test execution via `pytest`:
-   - Simple `pytest.ini` or config in `pyproject.toml`
-   - Set test discovery patterns
-   - Configure output verbosity
-3. Add at least one "sanity" test to verify infrastructure works:
-   - `tests/test_sanity.py` with simple assertions
-   - Test basic imports: `from backtest_engine import StrategyResult`
-4. Establish habit:
-   - Run `pytest` before/after major migration phases
-   - Use it as quick "did we break everything?" indicator
-
-### Deliverables
-
-- [ ] `tests/` directory created
-- [ ] `pytest.ini` or `pyproject.toml` test config
-- [ ] `tests/test_sanity.py` passing
-- [ ] `pytest -v` command working
-- [ ] CI-ready: can run tests in pipeline later
-
-### Success Criteria
-
-- Running `pytest -v` shows green results
-- All team members (just you!) can run tests locally
-- Foundation ready for regression tests
+[Content unchanged - phase already completed]
 
 ---
 
-## Phase 0: Regression Baseline for S01
+## Phase 0: Regression Baseline for S01 ✅ COMPLETE
 
-**Complexity:** 🟡 MEDIUM
-**Risk:** 🟢 LOW
-**Estimated Effort:** 4-6 hours
-**Priority:** 🔴 CRITICAL - FOUNDATION FOR ALL VALIDATION
+**Status:** COMPLETE (2025-11-28)
+**Duration:** ~3 hours
+**Tests:** 12/12 regression tests passing
 
-### Goal
-
-Lock in current S01 behavior before any core changes. This becomes the "golden baseline" for all future validation.
-
-### Steps
-
-1. **Select baseline dataset:**
-   - Choose small representative dataset (or subset of real data)
-   - Example: 1-2 months of `OKX_LINKUSDT.P, 15 2025.05.01-2025.11.20.csv`
-   - Should be quick to run but cover key scenarios (trends, ranges, volatility)
-
-2. **Create baseline generation tool:**
-   - Script: `tools/generate_baseline_s01.py`
-   - Runs current (legacy) S01 with **fixed parameters** (document these!)
-   - Saves:
-     - Basic metrics (Net Profit %, Max DD %, Total Trades, etc.) → `data/baseline/s01_metrics.json`
-     - All trades → `data/baseline/s01_trades.csv`
-     - Equity curve → `data/baseline/s01_equity.csv` (optional but useful)
-
-3. **Create regression test:**
-   - Test: `tests/test_regression_s01.py`
-   - Loads baseline from `data/baseline/`
-   - Runs current S01 with same parameters
-   - Compares results with tolerances:
-     - Net Profit %: ±0.01% (floating point tolerance)
-     - Max DD %: ±0.01%
-     - Total Trades: exact match (±0)
-     - Trade entry/exit times: exact match
-     - Trade PnL: ±0.0001 (floating point tolerance)
-
-4. **Document baseline parameters:**
-   - Create `data/baseline/README.md` with:
-     - Exact parameters used
-     - Dataset details (symbol, timeframe, date range)
-     - Expected metrics values
-     - Tolerance levels and reasoning
-
-### Tolerance Recommendations
-
-```python
-# tests/test_regression_s01.py
-TOLERANCE_CONFIG = {
-    "net_profit_pct": 0.01,      # ±0.01%
-    "max_drawdown_pct": 0.01,    # ±0.01%
-    "total_trades": 0,            # exact match
-    "trade_pnl": 0.0001,          # floating point epsilon
-    "sharpe_ratio": 0.001,        # ±0.001
-}
-```
-
-### Deliverables
-
-- [ ] `tools/generate_baseline_s01.py` script
-- [ ] `data/baseline/` directory with stored results:
-  - `s01_metrics.json`
-  - `s01_trades.csv`
-  - `s01_equity.csv` (optional)
-  - `README.md` with documentation
-- [ ] `tests/test_regression_s01.py` comparing against baseline
-- [ ] Baseline parameters documented
-- [ ] Test passing with current codebase
-
-### Success Criteria
-
-- Regression test passes consistently (run 3+ times to verify)
-- Baseline captures enough detail to catch behavioral changes
-- Documentation allows reproducing baseline in future
+[Content unchanged - phase already completed]
 
 ---
 
-## Phase 1: Core Extraction to src/core/
+## Phase 1: Core Extraction to src/core/ ✅ COMPLETE
 
-**Complexity:** 🟢 LOW
-**Risk:** 🟢 LOW
-**Estimated Effort:** 2-3 hours
-**Priority:** 🟢 SAFE - PURE REORGANIZATION
+**Status:** COMPLETE (2025-11-28)
+**Duration:** ~2 hours
+**Tests:** 21/21 passing
 
-### Goal
-
-Create explicit `src/core/` directory and move all engines there WITHOUT changing imports or logic yet. This is a pure physical reorganization.
-
-### Steps
-
-1. **Create core directory:**
-   ```bash
-   mkdir src/core
-   touch src/core/__init__.py
-   ```
-
-2. **Move engines (no logic changes):**
-   ```bash
-   mv src/backtest_engine.py src/core/
-   mv src/optuna_engine.py src/core/
-   mv src/walkforward_engine.py src/core/
-   ```
-
-3. **Update imports everywhere:**
-   - `server.py`: `from backtest_engine import ...` → `from core.backtest_engine import ...`
-   - `run_backtest.py`: same
-   - `optuna_engine.py`: update internal imports
-   - `walkforward_engine.py`: update internal imports
-   - `strategies/s01_trailing_ma/strategy.py`: update imports
-
-4. **Test everything:**
-   - Run `pytest` (all tests should pass)
-   - Run manual smoke test:
-     - Start server: `python src/ui/server.py` (will update path in next phase)
-     - Test single backtest via UI
-     - Test Optuna optimization (small number of trials)
-
-### Deliverables
-
-- [ ] `src/core/` directory created
-- [ ] Three engines moved to `core/`
-- [ ] All imports updated across codebase
-- [ ] `pytest` passing
-- [ ] Manual smoke test passed
-- [ ] Git commit: "Phase 1: Move engines to core/"
-
-### Success Criteria
-
-- No behavioral changes (regression test passes)
-- Code runs exactly as before
-- Cleaner directory structure
+[Content unchanged - phase already completed]
 
 ---
 
-## Phase 2: Export Extraction to export.py
+## Phase 2: Export Extraction to export.py ✅ COMPLETE
 
-**Complexity:** 🟡 MEDIUM
-**Risk:** 🟢 LOW
-**Estimated Effort:** 4-6 hours
-**Priority:** 🟢 MOVED UP - LOW RISK, HIGH VALUE
+**Status:** COMPLETE (2025-11-28)
+**Duration:** ~4 hours
+**Tests:** 28/28 passing
 
-### Goal
-
-Centralize all export logic in a single module. This provides useful utilities for later phases and is low risk since export is "write-only" (doesn't affect calculations).
-
-### Rationale for Moving Up
-
-Originally Phase 5, moved earlier because:
-- Lower risk than Grid removal or metrics extraction
-- Provides useful utilities immediately
-- Helps decouple optimizer_engine from CSV formatting
-- Makes later phases cleaner (metrics/indicators can use export right away)
-
-### Steps
-
-1. **Create export module:**
-   ```python
-   # src/core/export.py
-   from typing import List, Dict, Any
-   from pathlib import Path
-
-   def export_trades_tv(trades: List[TradeRecord], path: str) -> None:
-       """Export trades in TradingView Trading Report Generator format"""
-       pass
-
-   def export_optuna_results(
-       results: List[OptimizationResult],
-       path: str,
-       fixed_params: Dict[str, Any]
-   ) -> None:
-       """Export Optuna results with parameter block header + results table"""
-       pass
-
-   def export_wfa_summary(
-       wfa_results: "WFAResults",  # forward reference
-       path: str
-   ) -> None:
-       """Export Walk-Forward Analysis summary CSV"""
-       pass
-   ```
-
-2. **Extract CSV export logic from optimizer_engine.py:**
-   - Move `CSV_COLUMN_SPECS` (lines 552-585) → `export.py`
-   - Move `export_to_csv()` (lines 610-698) → `export.py` as `export_optuna_results()`
-   - Keep same column filtering logic (fixed params exclusion)
-   - Keep same formatters (percent, float, float1, optional_float)
-
-3. **Update optimizer_engine.py:**
-   - Import: `from core.export import export_optuna_results`
-   - Replace `export_to_csv()` calls with `export_optuna_results()`
-
-4. **Update optuna_engine.py:**
-   - Import and use `export_optuna_results()` for saving results
-
-5. **Implement three export functions:**
-   - `export_optuna_results()` - CSV export after Optuna optimization
-   - `export_wfa_summary()` - CSV export after WFA (Optuna + Walk-Forward)
-   - `export_trades()` - CSV + ZIP with trade history (when Export Trades checkbox enabled)
-
-6. **Test exports:**
-   - Run Optuna optimization and verify CSV output format unchanged
-   - Manually inspect CSV structure matches original
-   - Verify parameter block and results table both present
-   - Test with various fixed_params configurations
-
-### Deliverables
-
-- [ ] `src/core/export.py` created
-- [ ] Export functions implemented and tested
-- [ ] `optimizer_engine.py` updated to use export module
-- [ ] `optuna_engine.py` updated to use export module
-- [ ] CSV output format verified unchanged
-- [ ] Manual test with sample optimization results
-- [ ] Git commit: "Phase 2: Extract export logic to export.py"
-
-### Success Criteria
-
-- Exported CSV files match original format exactly
-- All engines use centralized export
-- Regression tests still pass
+[Content unchanged - phase already completed]
 
 ---
 
-## Phase 3: Grid Search Removal
+## Phase 3: Grid Search Removal ✅ COMPLETE
 
-**Complexity:** 🟡 MEDIUM
+**Status:** COMPLETE (2025-11-29)
+**Complexity:** 🔴 HIGH
 **Risk:** 🟡 MEDIUM
-**Estimated Effort:** 6-8 hours
-**Priority:** ⚠️ REQUIRES CAREFUL EXECUTION
 
-### Goal
-
-Remove Grid Search completely and merge all shared code directly into `optuna_engine.py`. Since Optuna is the sole optimizer, there's no need for a separate utilities module.
-
-### Current coupling:
-```python
-# optuna_engine.py imports from optimizer_engine:
-from optimizer_engine import (
-    OptimizationResult,           # dataclass
-    DEFAULT_SCORE_CONFIG,          # dict constant
-    PARAMETER_MAP,                 # dict constant
-    _generate_numeric_sequence,    # utility function
-    _parse_timestamp,              # utility function
-    _run_single_combination,       # CORE SIMULATOR
-    calculate_score,               # scoring logic
-)
-```
-
-### Steps
-
-#### Step 1: Copy Shared Code to optuna_engine.py (3-4 hours)
-
-1. **Move structures and constants to optuna_engine.py:**
-   ```python
-   # src/core/optuna_engine.py
-   from dataclasses import dataclass
-   from typing import Dict, List, Any
-
-   @dataclass
-   class OptimizationResult:
-       """Result structure for Optuna optimization trials"""
-       # ... copy from optimizer_engine
-
-   DEFAULT_SCORE_CONFIG = {
-       # ... move from optimizer_engine
-   }
-
-   PARAMETER_MAP = {
-       # ... copy from optimizer_engine
-   }
-
-   def calculate_score(...) -> float:
-       """Calculate composite score from metrics for Optuna trials"""
-       # ... copy from optimizer_engine
-
-   def _generate_numeric_sequence(...) -> List:
-       """Generate numeric parameter sequence for Optuna sampling"""
-       # ... copy from optimizer_engine
-
-   def _parse_timestamp(...):
-       """Parse timestamp from various formats"""
-       # ... copy from optimizer_engine (or move to general utils if used elsewhere)
-
-   def _run_single_combination(...):
-       """Run backtest for single parameter combination"""
-       # ... copy from optimizer_engine
-   ```
-
-2. **Update optuna_engine.py imports:**
-   - Remove ALL imports from `optimizer_engine`
-   - Update code to use local definitions (defined above)
-   - Verify all Optuna functionality works
-
-3. **Test Optuna optimization:**
-   - Run end-to-end Optuna optimization
-   - Verify scores match previous runs
-   - Test all optimization targets (score, net_profit, romad, sharpe, max_drawdown)
-   - Test all budget modes (n_trials, timeout, patience)
-
-#### Step 2: Remove Grid Search Completely (3-4 hours)
-
-1. **Update server.py:**
-   - Find Grid Search mode selection in API endpoints
-   - Remove Grid Search configuration options
-   - Remove Grid Search execution paths
-   - Keep only:
-     - Optuna optimization endpoints
-     - WFA endpoints
-     - Single backtest endpoints
-
-2. **Update UI:**
-   - Remove Grid Search option from optimization mode dropdown
-   - Remove Grid-specific parameter inputs
-   - Update help text/documentation
-
-3. **Delete optimizer_engine.py:**
-   - Delete `src/optimizer_engine.py` completely
-   - No legacy archive needed (Grid Search not coming back)
-
-4. **Update documentation:**
-   - Update `CLAUDE.md` to remove Grid Search references
-   - Update `PROJECT_TARGET_ARCHITECTURE.md` if needed
-   - Add migration note in `changelog.md`
-
-5. **Clean imports:**
-   - Search codebase for `from optimizer_engine import`
-   - Should find NOTHING (all moved to optuna_engine.py)
-   - Remove any unused imports
-
-6. **Final testing:**
-   - Run Optuna optimization end-to-end
-   - Verify CSV export still works
-   - Run regression test
-   - Test with large parameter spaces (1000+ trials)
-
-### Deliverables
-
-- [ ] All shared code moved to `optuna_engine.py`
-- [ ] `optuna_engine.py` self-contained (no optimizer_engine imports)
-- [ ] Grid Search removed from server.py
-- [ ] Grid Search removed from UI
-- [ ] `optimizer_engine.py` deleted
-- [ ] All imports cleaned up
-- [ ] Documentation updated
-- [ ] Optuna end-to-end test passing
-- [ ] Regression test passing
-- [ ] Git commit: "Phase 3: Remove Grid Search, Optuna-only"
-
-### Success Criteria
-
-- Optuna is sole optimization engine
-- All optimization use cases covered
-- Performance maintained or improved
-- Codebase simpler (one less file, no optimization_utils.py)
-- No dependencies on deleted optimizer_engine.py
+[Content unchanged - phase already completed]
 
 ---
 
-## Phase 4: Metrics Extraction to metrics.py
+## Phase 4: Metrics Extraction to metrics.py ✅ COMPLETE
 
+**Status:** COMPLETE (2025-11-29)
 **Complexity:** 🔴 HIGH
 **Risk:** 🔴 HIGH
-**Estimated Effort:** 8-12 hours
-**Priority:** 🚨 HIGH-RISK PHASE #1
 
-### Goal
-
-Centralize all metrics calculation in `metrics.py`. Any formula change can break result comparability, so this requires careful OLD vs NEW comparison.
-
-### Rationale for Before Indicators
-
-Metrics are self-contained (operate on StrategyResult) while indicators are scattered throughout backtest_engine. Easier to validate metrics independently first.
-
-### Current State
-
-**Metrics currently in backtest_engine.py:**
-- Basic metrics: net_profit_pct, max_drawdown_pct, total_trades (lines 999-1001)
-- Advanced metrics: sharpe, profit_factor, romad, ulcer, recovery, consistency (lines 671-723)
-- Helper functions: `calculate_monthly_returns`, `calculate_sharpe_ratio`, etc.
-
-### Steps
-
-1. **Create metrics module structure:**
-   ```python
-   # src/core/metrics.py
-   from dataclasses import dataclass
-   from typing import List, Optional
-   from core.backtest_engine import StrategyResult, TradeRecord
-
-   @dataclass
-   class BasicMetrics:
-       """Basic performance metrics calculated from strategy results"""
-       net_profit: float
-       net_profit_pct: float
-       gross_profit: float
-       gross_loss: float
-       max_drawdown: float
-       max_drawdown_pct: float
-       total_trades: int
-       winning_trades: int
-       losing_trades: int
-       win_rate: float
-       avg_win: float
-       avg_loss: float
-       avg_trade: float
-
-   @dataclass
-   class AdvancedMetrics:
-       """Advanced risk-adjusted metrics for optimization"""
-       sharpe_ratio: Optional[float] = None
-       sortino_ratio: Optional[float] = None
-       profit_factor: Optional[float] = None
-       romad: Optional[float] = None
-       recovery_factor: Optional[float] = None
-       ulcer_index: Optional[float] = None
-       consistency_score: Optional[float] = None
-
-   @dataclass
-   class WFAMetrics:
-       """Walk-Forward Analysis aggregate metrics"""
-       avg_net_profit_pct: float
-       avg_max_drawdown_pct: float
-       successful_windows: int
-       total_windows: int
-       success_rate: float
-       # ... more WFA-specific metrics
-
-   def calculate_basic(result: StrategyResult) -> BasicMetrics:
-       """Calculate basic metrics from strategy result"""
-       pass
-
-   def calculate_advanced(result: StrategyResult) -> AdvancedMetrics:
-       """Calculate advanced metrics from strategy result"""
-       pass
-
-   def calculate_for_wfa(wfa_results: List) -> WFAMetrics:
-       """Calculate aggregate WFA metrics"""
-       pass
-   ```
-
-2. **Extract calculation functions:**
-   - Move `calculate_monthly_returns()` → `metrics.py`
-   - Move `calculate_sharpe_ratio()` → `metrics.py`
-   - Move `calculate_profit_factor()` → `metrics.py`
-   - Move `calculate_ulcer_index()` → `metrics.py`
-   - Move `calculate_consistency_score()` → `metrics.py`
-   - Implement `calculate_basic()` using extracted logic
-   - Implement `calculate_advanced()` using extracted functions
-
-3. **Parallel implementation strategy (CRITICAL):**
-   ```python
-   # In backtest_engine.py, keep OLD code temporarily:
-   def run_strategy_OLD(...) -> StrategyResult:
-       # ... existing implementation
-       result.net_profit_pct = ...  # OLD way
-       return result
-
-   # In backtest_engine.py, add NEW integration:
-   def run_strategy(...) -> StrategyResult:
-       # ... simulation logic
-       basic = metrics.calculate_basic(result)
-       advanced = metrics.calculate_advanced(result)
-
-       # Copy to result for backward compatibility
-       result.net_profit_pct = basic.net_profit_pct
-       result.sharpe_ratio = advanced.sharpe_ratio
-       # ...
-       return result
-   ```
-
-4. **Create parity test:**
-   ```python
-   # tests/test_metrics.py
-   def test_metrics_parity():
-       """Verify OLD and NEW implementations produce identical results"""
-       # Load baseline result
-       baseline_result = load_baseline_strategy_result()
-
-       # OLD way (current backtest_engine)
-       old_net_profit = baseline_result.net_profit_pct
-       old_sharpe = baseline_result.sharpe_ratio
-
-       # NEW way (metrics.py)
-       new_basic = calculate_basic(baseline_result)
-       new_advanced = calculate_advanced(baseline_result)
-
-       # Assert bit-exact match
-       assert old_net_profit == new_basic.net_profit_pct
-       assert old_sharpe == new_advanced.sharpe_ratio
-       # ... all metrics
-   ```
-
-5. **Test edge cases:**
-   ```python
-   def test_metrics_edge_cases():
-       """Test metrics with unusual inputs"""
-       # Zero trades
-       result_no_trades = StrategyResult(trades=[], ...)
-       basic = calculate_basic(result_no_trades)
-       assert basic.total_trades == 0
-       assert basic.win_rate == 0.0
-
-       # All losing trades
-       result_all_losses = ...
-       basic = calculate_basic(result_all_losses)
-       assert basic.winning_trades == 0
-
-       # All winning trades
-       # Single trade
-       # Very short equity curve
-   ```
-
-6. **Update engines to use metrics.py:**
-   - `backtest_engine.py`: Call `metrics.calculate_*` in `run_strategy()`
-   - `optuna_engine.py`: Use metrics for objective function
-   - `walkforward_engine.py`: Use metrics for window results
-
-7. **Remove OLD calculation code:**
-   - After validation passes, delete OLD metric functions from `backtest_engine.py`
-   - Keep only simulation logic in `backtest_engine`
-
-### Edge Cases to Test
-
-- Zero trades (division by zero)
-- All losing trades
-- All winning trades
-- Single trade
-- Very short equity curve (<30 bars)
-- Constant equity (no trades executed)
-- Negative equity (drawdown > 100%)
-
-### Validation Checklist
-
-- [ ] Parity test passes (OLD vs NEW identical)
-- [ ] Edge case tests pass
-- [ ] Regression test passes (S01 behavior unchanged)
-- [ ] Optuna trials produce same scores as before
-- [ ] Manual inspection: compare metrics for known strategy run
-
-### Deliverables
-
-- [ ] `src/core/metrics.py` created
-- [ ] All metric structures defined (BasicMetrics, AdvancedMetrics, WFAMetrics)
-- [ ] Calculation functions implemented
-- [ ] `tests/test_metrics.py` with edge cases
-- [ ] Parity test: OLD vs NEW (passing)
-- [ ] backtest_engine uses metrics.py
-- [ ] optuna_engine uses metrics.py
-- [ ] walkforward_engine uses metrics.py
-- [ ] OLD metric code deleted from backtest_engine
-- [ ] Regression test passing
-- [ ] Git commit: "Phase 4: Extract metrics to metrics.py"
-
-### Success Criteria
-
-- Bit-exact match between OLD and NEW implementations
-- All edge cases handled gracefully
-- No changes to optimization scores
-- S01 regression test passes
+[Content unchanged - phase already completed]
 
 ---
 
-## Phase 5: Indicators Package Extraction
+## Phase 5: Indicators Package Extraction ✅ COMPLETE
 
+**Status:** COMPLETE (2025-11-29)
 **Complexity:** 🔴 HIGH
 **Risk:** 🔴 HIGH
-**Estimated Effort:** 10-14 hours
-**Priority:** 🚨 HIGH-RISK PHASE #2
 
-### Goal
-
-Extract all indicators from `backtest_engine.py` into separate `indicators/` package while preserving exact calculation behavior.
-
-### Why This Is High Risk
-
-- Indicators currently embedded in backtest_engine.py (~150 lines)
-- S01 relies on 11 MA types + ATR + trail calculations
-- Any tiny change in indicator calculation = different trades = broken S01
-- Floating point operations sensitive to order: `(a+b)+c ≠ a+(b+c)`
-
-### Current Indicators (backtest_engine.py lines 222-379)
-
-**11 MA types:** SMA, EMA, WMA, HMA, VWMA, VWAP, ALMA, DEMA, KAMA, TMA, T3
-**Volatility:** ATR
-**Helper:** get_ma() (facade for all MA types)
-
-### Incremental Extraction Strategy
-
-**DO NOT extract all at once!** Extract one indicator at a time, test after each.
-
-### Steps
-
-1. **Create indicators package:**
-   ```bash
-   mkdir src/indicators
-   touch src/indicators/__init__.py
-   ```
-
-2. **Extract in safe order (LOW to HIGH risk):**
-
-   **Phase 5.1: Utilities (LOW RISK - 1 hour)**
-   ```python
-   # src/indicators/misc.py
-   def _parse_timestamp(...):
-       """Utility for timestamp parsing"""
-       # Move from backtest_engine if present
-   ```
-   - Run regression test ✓
-
-   **Phase 5.2: Basic MAs (MEDIUM RISK - 2-3 hours)**
-   ```python
-   # src/indicators/ma.py
-   def sma(series: pd.Series, length: int) -> pd.Series:
-       """Simple Moving Average"""
-       # Move from backtest_engine lines 226-227
-
-   def ema(series: pd.Series, length: int) -> pd.Series:
-       """Exponential Moving Average"""
-       # Move from backtest_engine lines 222-223
-
-   def wma(series: pd.Series, length: int) -> pd.Series:
-       """Weighted Moving Average"""
-       # Move from backtest_engine lines 230-234
-   ```
-   - Test each MA individually
-   - Run regression test after EACH extraction ✓
-
-   **Phase 5.3: Volume-Weighted MAs (MEDIUM RISK - 2 hours)**
-   ```python
-   # src/indicators/ma.py (continued)
-   def vwma(close: pd.Series, volume: pd.Series, length: int) -> pd.Series:
-       """Volume-Weighted Moving Average"""
-       # Move from backtest_engine lines 245-248
-       # Note: This is a moving average, not a pure volume indicator
-
-   def vwap(df: pd.DataFrame, length: int) -> pd.Series:
-       """Volume-Weighted Average Price"""
-       # Move from backtest_engine lines 318-323
-       # Note: This is a moving average, not a pure volume indicator
-   ```
-   - Test: Run S01 with VWMA/VWAP parameters
-   - Run regression test ✓
-
-   **Phase 5.4: Volatility Indicators (MEDIUM RISK - 2 hours)**
-   ```python
-   # src/indicators/volatility.py
-   def atr(df: pd.DataFrame, period: int = 14) -> pd.Series:
-       """Average True Range"""
-       # Move from backtest_engine lines 368-378
-
-   def natr(df: pd.DataFrame, period: int = 14) -> pd.Series:
-       """Normalized ATR"""
-       # If implemented
-   ```
-   - Test: Run S01 with ATR-based stops
-   - Create specific ATR test:
-     ```python
-     def test_atr_parity():
-         df = load_test_data()
-         old_atr = backtest_engine_OLD.atr(df, 14)
-         new_atr = volatility.atr(df, 14)
-         assert np.allclose(old_atr, new_atr, rtol=1e-10)
-     ```
-   - Run regression test ✓
-
-   **Phase 5.5: Advanced MAs (HIGH RISK - 4-5 hours)**
-   ```python
-   # src/indicators/ma.py (continued)
-   def hma(series: pd.Series, length: int) -> pd.Series:
-       """Hull Moving Average"""
-       # Move from backtest_engine lines 237-242
-
-   def alma(series: pd.Series, length: int, offset: float = 0.85, sigma: float = 6) -> pd.Series:
-       """Arnaud Legoux Moving Average"""
-       # Move from backtest_engine lines 251-262
-
-   def kama(series: pd.Series, length: int, fast: int = 2, slow: int = 30) -> pd.Series:
-       """Kaufman Adaptive Moving Average"""
-       # Move from backtest_engine lines 271-296
-
-   def dema(series: pd.Series, length: int) -> pd.Series:
-       """Double EMA"""
-       # Move from backtest_engine lines 265-268
-
-   def tma(series: pd.Series, length: int) -> pd.Series:
-       """Triangular Moving Average"""
-       # Move from backtest_engine lines 299-303
-
-   def t3(series: pd.Series, length: int, factor: float = 0.7) -> pd.Series:
-       """T3 Moving Average"""
-       # Move from backtest_engine lines 312-315 + gd() helper
-   ```
-   - Test EACH MA type individually
-   - Create comparison tests for each
-   - Run regression test after each ✓
-
-   **Phase 5.6: MA Facade (MEDIUM RISK - 1 hour)**
-   ```python
-   # src/indicators/ma.py
-   def get_ma(series: pd.Series, ma_type: str, length: int, **kwargs) -> pd.Series:
-       """Unified interface for all MA types"""
-       # Move from backtest_engine lines 326-365
-       VALID_MA_TYPES = {"SMA", "EMA", "HMA", ...}
-
-       if ma_type == "SMA":
-           return sma(series, length)
-       elif ma_type == "EMA":
-           return ema(series, length)
-       # ... etc
-   ```
-   - Test with all 11 MA types
-   - Run regression test ✓
-
-3. **Implement BaseStrategy fallback mechanism:**
-   ```python
-   # src/strategies/base.py
-   class BaseStrategy:
-       # Custom indicators per strategy (optional)
-       custom_indicators = {}
-
-       @classmethod
-       def get_indicator(cls, name: str, *args, **kwargs):
-           """Fallback mechanism for indicator lookup"""
-           # 1. Check if strategy has indicator_<name> method
-           method_name = f"indicator_{name}"
-           if hasattr(cls, method_name):
-               return getattr(cls, method_name)(*args, **kwargs)
-
-           # 2. Check custom_indicators dict
-           if name in cls.custom_indicators:
-               return cls.custom_indicators[name](*args, **kwargs)
-
-           # 3. Look up in indicators package
-           from indicators import ma, volatility, trend, oscillators
-
-           # Try each module
-           for module in [ma, volatility, trend, oscillators]:
-               if hasattr(module, name.lower()):
-                   return getattr(module, name.lower())(*args, **kwargs)
-
-           raise ValueError(f"Indicator '{name}' not found")
-   ```
-
-4. **Update backtest_engine.py to use indicators:**
-   ```python
-   # src/core/backtest_engine.py
-   from indicators.ma import get_ma, sma, ema, vwma, vwap
-   from indicators.volatility import atr
-
-   def run_strategy(...):
-       # Replace inline calculations with imports
-       ma_values = get_ma(df['Close'], params.ma_type, params.ma_length)
-       atr_values = atr(df, params.atr_period)
-       # Note: VWMA and VWAP are in ma.py, not volume.py
-       # ...
-   ```
-
-5. **Create comprehensive indicator tests:**
-   ```python
-   # tests/test_indicators.py
-   def test_sma_basic():
-       """Test SMA with known values"""
-       series = pd.Series([1, 2, 3, 4, 5])
-       result = sma(series, 3)
-       expected = pd.Series([nan, nan, 2.0, 3.0, 4.0])
-       assert np.allclose(result, expected, equal_nan=True)
-
-   def test_ema_decay():
-       """Test EMA decay factor"""
-       # ...
-
-   def test_all_ma_types():
-       """Ensure all 11 MA types work"""
-       data = load_test_data()
-       for ma_type in VALID_MA_TYPES:
-           result = get_ma(data['Close'], ma_type, 20)
-           assert result is not None
-           assert len(result) == len(data)
-   ```
-
-6. **Validation after each extraction:**
-   ```python
-   # After extracting each indicator
-   pytest tests/test_indicators.py::test_<indicator>_parity
-   pytest tests/test_regression_s01.py
-   ```
-
-### Critical Warnings
-
-🚨 **Floating point sensitivity:**
-- Even refactoring can change results
-- MUST compare outputs, not just logic
-- Use `np.allclose(rtol=1e-10)` for comparisons
-
-🚨 **Array indexing:**
-- Watch for off-by-one errors
-- Verify warmup period handling
-- Check NaN propagation at start of series
-
-🚨 **Dependency order:**
-- Some MAs depend on others (HMA uses WMA, DEMA uses EMA)
-- Extract dependencies first
-
-### Deliverables
-
-- [ ] `src/indicators/` package created
-- [ ] `indicators/__init__.py` with exports
-- [ ] `indicators/ma.py` (all 11 MA types including VWMA and VWAP)
-- [ ] `indicators/volatility.py` (ATR, NATR)
-- [ ] `indicators/trend.py`, `oscillators.py`, `misc.py` (as needed, if implemented)
-- [ ] `tests/test_indicators.py` with parity tests
-- [ ] BaseStrategy fallback mechanism implemented
-- [ ] backtest_engine.py updated to use indicators package
-- [ ] OLD indicator code deleted from backtest_engine
-- [ ] Regression test passing after EVERY extraction
-- [ ] Git commits after each sub-phase
-
-**Note:** No `volume.py` file - VWMA and VWAP are moving averages and belong in `ma.py`
-
-### Success Criteria
-
-- BIT-EXACT results (no tolerance for differences)
-- All 11 MA types produce identical output
-- ATR calculations match exactly
-- S01 regression test passes
-- No degradation in performance
+[Content unchanged - phase already completed]
 
 ---
 
-## Phase 6: Simple Strategy Testing
+## Phase 6: Simple Strategy Testing ✅ COMPLETE
 
+**Status:** COMPLETE (2025-12-03)
 **Complexity:** 🟡 MEDIUM
 **Risk:** 🟢 LOW
 **Estimated Effort:** 8-12 hours
-**Priority:** ✅ EXCELLENT VALIDATION APPROACH
+**Actual Effort:** ~10 hours
 
 ### Goal
 
-Test new architecture on dead-simple strategy BEFORE migrating complex S01. Much easier to debug issues without S01 complexity.
+Test new architecture end-to-end with S04 StochRSI strategy BEFORE migrating complex S01.
 
-### Why This Is Smart
+### What Was Delivered
 
-- Validates entire pipeline end-to-end
-- Tests all three engines (backtest, optuna, WFA)
-- Tests metrics, indicators, export
-- Much simpler to debug than S01
-- Proves architecture works before high-risk S01 migration
+✅ S04 StochRSI strategy implemented in new architecture
+✅ RSI and StochRSI indicators added to `oscillators.py`
+✅ Performance matched reference within ±5% tolerance
+✅ All 58 tests passing (4 new S04 tests + 54 existing)
+✅ Architecture validated for Phase 7
 
-### Simple MA Strategy Design
+### Critical Finding
 
-```python
-# src/strategies/simple_ma/strategy.py
-from dataclasses import dataclass
-from typing import Dict, Any
-import pandas as pd
-from strategies.base import BaseStrategy
-from core.backtest_engine import StrategyResult, TradeRecord
+⚠️ **UI Integration NOT Tested**: Optimizer parameters are hardcoded for S01 in the frontend. When S04 is selected, optimizer still shows S01 parameters instead of S04 parameters.
 
-@dataclass
-class SimpleMAParams:
-    """Parameters for Simple MA strategy - lives WITH the strategy"""
-    fast_length: int = 10
-    slow_length: int = 20
-    stop_loss_pct: float = 2.0  # %
+**Impact:** Blocks production use of S04 and will complicate future strategy additions.
 
-    @staticmethod
-    def from_dict(d: Dict[str, Any]) -> "SimpleMAParams":
-        return SimpleMAParams(
-            fast_length=int(d.get('fastLength', 10)),
-            slow_length=int(d.get('slowLength', 20)),
-            stop_loss_pct=float(d.get('stopLossPct', 2.0)),
-        )
-
-class SimpleMA(BaseStrategy):
-    """
-    Ultra-simple MA crossover strategy:
-    - Long when fast MA > slow MA
-    - Exit when fast MA < slow MA OR stop loss hit
-    - No trailing, no ATR, no complex logic
-    """
-
-    STRATEGY_ID = "simple_ma"
-    STRATEGY_NAME = "Simple MA Crossover"
-    STRATEGY_VERSION = "v1"
-
-    @staticmethod
-    def run(df: pd.DataFrame, params: Dict[str, Any], trade_start_idx: int = 0) -> StrategyResult:
-        """Dead simple strategy implementation"""
-        # Parse params
-        p = SimpleMAParams.from_dict(params)
-
-        # Calculate indicators
-        from indicators.ma import sma
-        fast_ma = sma(df['Close'], p.fast_length)
-        slow_ma = sma(df['Close'], p.slow_length)
-
-        # Simple bar-by-bar logic
-        trades = []
-        position = None
-
-        for i in range(trade_start_idx, len(df)):
-            # Entry logic
-            if position is None and fast_ma.iloc[i] > slow_ma.iloc[i]:
-                position = {
-                    'entry_time': df.index[i],
-                    'entry_price': df['Close'].iloc[i],
-                    'direction': 'Long'
-                }
-
-            # Exit logic
-            elif position is not None:
-                should_exit = False
-
-                # Exit on crossover down
-                if fast_ma.iloc[i] < slow_ma.iloc[i]:
-                    should_exit = True
-
-                # Exit on stop loss
-                pnl_pct = (df['Close'].iloc[i] - position['entry_price']) / position['entry_price'] * 100
-                if pnl_pct < -p.stop_loss_pct:
-                    should_exit = True
-
-                if should_exit:
-                    trades.append(TradeRecord(
-                        direction=position['direction'],
-                        entry_time=position['entry_time'],
-                        exit_time=df.index[i],
-                        entry_price=position['entry_price'],
-                        exit_price=df['Close'].iloc[i],
-                        size=1.0,
-                        net_pnl=(df['Close'].iloc[i] - position['entry_price']),
-                    ))
-                    position = None
-
-        # Build result
-        return StrategyResult(
-            trades=trades,
-            equity_curve=None,  # Calculate if needed
-            # Metrics calculated by metrics.py
-        )
-```
-
-### Config JSON
-
-```json
-{
-  "strategy_id": "simple_ma",
-  "strategy_name": "Simple MA Crossover",
-  "version": "v1",
-  "description": "Dead simple MA crossover for testing architecture",
-  "parameters": {
-    "fastLength": {
-      "type": "int",
-      "label": "Fast MA Length",
-      "default": 10,
-      "min": 5,
-      "max": 50,
-      "step": 1,
-      "optimize": {
-        "enabled": true,
-        "min": 5,
-        "max": 30,
-        "step": 5
-      }
-    },
-    "slowLength": {
-      "type": "int",
-      "label": "Slow MA Length",
-      "default": 20,
-      "min": 10,
-      "max": 100,
-      "step": 1,
-      "optimize": {
-        "enabled": true,
-        "min": 15,
-        "max": 50,
-        "step": 5
-      }
-    },
-    "stopLossPct": {
-      "type": "float",
-      "label": "Stop Loss %",
-      "default": 2.0,
-      "min": 0.5,
-      "max": 10.0,
-      "step": 0.5,
-      "optimize": {
-        "enabled": false
-      }
-    }
-  }
-}
-```
-
-### Steps
-
-1. **Create strategy files:**
-   ```bash
-   mkdir src/strategies/simple_ma
-   touch src/strategies/simple_ma/__init__.py
-   touch src/strategies/simple_ma/strategy.py
-   touch src/strategies/simple_ma/config.json
-   ```
-
-2. **Implement strategy** (as shown above)
-
-3. **Create matching TradingView version:**
-   ```pine
-   //@version=5
-   strategy("Simple MA Test", overlay=true)
-
-   fastLen = input.int(10, "Fast MA")
-   slowLen = input.int(20, "Slow MA")
-   stopPct = input.float(2.0, "Stop Loss %")
-
-   fastMA = ta.sma(close, fastLen)
-   slowMA = ta.sma(close, slowLen)
-
-   if (fastMA > slowMA)
-       strategy.entry("Long", strategy.long)
-
-   if (fastMA < slowMA)
-       strategy.close("Long")
-
-   strategy.exit("Stop", "Long", loss=close * stopPct / 100)
-   ```
-
-4. **Test progression:**
-   ```
-   Step 1: Single backtest
-   ├─ Run simple_ma via CLI
-   ├─ Verify trades make sense
-   └─ Export trades to CSV
-
-   Step 2: Compare with TradingView
-   ├─ Export TradingView trades
-   ├─ Compare entry/exit times
-   └─ Compare PnL (allow small tolerance for commission differences)
-
-   Step 3: Optuna optimization
-   ├─ Run 50-100 trials
-   ├─ Verify score improves over trials
-   ├─ Verify best params are reasonable
-   └─ Export results CSV
-
-   Step 4: WFA (if implemented)
-   ├─ Run 3-5 windows
-   ├─ Verify IS optimization works
-   ├─ Verify OOS testing works
-   └─ Export WFA summary
-
-   Step 5: UI integration
-   ├─ Select simple_ma in UI
-   ├─ Run backtest via web interface
-   ├─ Run optimization via web interface
-   └─ View/download results
-   ```
-
-5. **Create tests:**
-   ```python
-   # tests/test_simple_ma.py
-   def test_simple_ma_basic():
-       """Test simple_ma produces trades"""
-       df = load_test_data()
-       params = {'fastLength': 10, 'slowLength': 20, 'stopLossPct': 2.0}
-       result = SimpleMA.run(df, params)
-
-       assert result.total_trades > 0
-       assert len(result.trades) == result.total_trades
-
-   def test_simple_ma_optuna():
-       """Test Optuna optimization with simple_ma"""
-       config = OptunaConfig(
-           strategy_id="simple_ma",
-           n_trials=10,
-           # ...
-       )
-       results = run_optuna_optimization(config)
-
-       assert len(results) == 10
-       assert max(r.score for r in results) > min(r.score for r in results)
-   ```
-
-### Indicators to Use
-
-- **Only SMA** (simplest MA type)
-- Avoid VWMA/VWAP (need volume logic)
-- No ATR dependencies (too complex for this test)
-- No trailing stops (test that in S01)
-
-### Validation Checklist
-
-- [ ] Strategy runs without errors
-- [ ] Produces trades (not empty result)
-- [ ] TradingView comparison matches (±1% tolerance)
-- [ ] Optuna optimization improves score over trials
-- [ ] CSV export formats correct
-- [ ] UI integration works
-- [ ] All three engines tested (backtest, optuna, WFA)
-- [ ] Metrics calculated correctly
-- [ ] No regression in existing tests
-
-### Deliverables
-
-- [ ] `src/strategies/simple_ma/` created
-- [ ] `config.json` with simple parameters
-- [ ] `strategy.py` with simple logic
-- [ ] SimpleMAParams dataclass in strategy.py
-- [ ] Matching TradingView PineScript version
-- [ ] TradingView comparison completed
-- [ ] `tests/test_simple_ma.py` passing
-- [ ] All three engines tested and working
-- [ ] UI integration verified
-- [ ] Git commit: "Phase 6: Add simple_ma test strategy"
-
-### Success Criteria
-
-- Simple strategy validates entire architecture
-- All components working together (engines, metrics, indicators, export)
-- Confidence to proceed with S01 migration
-- No major issues discovered
+**Resolution:** Addressed in NEW Phase 8 (Dynamic Optimizer + CSS Extraction).
 
 ---
 
@@ -1235,8 +175,8 @@ Migrate S01 strategy to new architecture while:
 ### Why This Is Highest Risk
 
 - S01 is complex: 11 MA types, trailing stops, ATR sizing, close counts
-- Current S01 just calls `run_strategy()` from backtest_engine (line 726)
-- Must reimplement ~300 lines of complex logic in strategy class
+- Current S01 calls `run_strategy()` from backtest_engine (~300 lines of S01-specific logic)
+- Must reimplement complex logic in strategy class
 - Any difference in results is unacceptable
 
 ### Current S01 Architecture
@@ -1283,9 +223,8 @@ strategies/s01_trailing_ma_migrated/ ← NEW implementation
    ```
    - Update `strategy_id` to `"s01_trailing_ma_migrated"`
    - Keep all parameters identical
-   - Remove any legacy fields if present
 
-3. **Create strategy.py with StrategyParams:**
+3. **Create strategy.py with S01Params:**
    ```python
    # src/strategies/s01_trailing_ma_migrated/strategy.py
    from dataclasses import dataclass
@@ -1309,22 +248,32 @@ strategies/s01_trailing_ma_migrated/ ← NEW implementation
        trail_short_length: int = 30
 
        # Entry logic
-       close_count: int = 3
+       close_count_long: int = 3
+       close_count_short: int = 3
 
        # Position sizing
        qty: float = 1.0
        qty_mode: str = "fixed"  # "fixed" or "percent_equity"
 
-       # Stops
+       # Stops (ATR-based, max %, max days)
        enable_atr_stop: bool = True
-       atr_multiplier: float = 1.5
+       atr_multiplier_long: float = 1.5
+       atr_multiplier_short: float = 1.5
        atr_period: int = 14
-       enable_max_dd_stop: bool = False
-       max_dd_pct: float = 5.0
-       enable_max_days_stop: bool = False
-       max_days: int = 30
 
-       # ... more params
+       stop_long_max_pct: float = 5.0
+       stop_short_max_pct: float = 5.0
+
+       stop_long_max_days: int = 30
+       stop_short_max_days: int = 30
+
+       # Trailing exits
+       trail_rr_long: float = 1.0
+       trail_rr_short: float = 1.0
+       trail_long_offset: float = 0.0
+       trail_short_offset: float = 0.0
+
+       # ... more params as needed
 
        @staticmethod
        def from_dict(d: Dict[str, Any]) -> "S01Params":
@@ -1341,21 +290,7 @@ strategies/s01_trailing_ma_migrated/ ← NEW implementation
 **Strategy:** Copy run_strategy() logic in chunks, test each chunk.
 
 1. **Step 1: Copy run_strategy() to S01TrailingMAMigrated.run()** (2 hours)
-   ```python
-   class S01TrailingMAMigrated(BaseStrategy):
-       STRATEGY_ID = "s01_trailing_ma_migrated"
-       STRATEGY_NAME = "S01 Trailing MA (Migrated)"
-       STRATEGY_VERSION = "v26"
-
-       @staticmethod
-       def run(df: pd.DataFrame, params: Dict[str, Any], trade_start_idx: int = 0) -> StrategyResult:
-           # Parse params
-           p = S01Params.from_dict(params)
-
-           # COPY entire run_strategy() logic here initially
-           # This creates duplication temporarily - that's OK!
-           # ... (300+ lines)
-   ```
+   - Create exact copy of run_strategy() inside strategy class
    - Run comparison test (legacy vs migrated)
    - Should be IDENTICAL since it's exact copy
 
@@ -1370,29 +305,11 @@ strategies/s01_trailing_ma_migrated/ ← NEW implementation
    ```
    - Replace EACH indicator calculation one at a time
    - Run comparison after EACH replacement
-   - Expected: EXACT match (if indicator extraction was correct)
+   - Expected: EXACT match (if indicator extraction was correct in Phase 5)
 
 3. **Step 3: Refactor internal structure (optional)** (2-3 hours)
-   ```python
-   class S01TrailingMAMigrated(BaseStrategy):
-       @staticmethod
-       def _calculate_indicators(df, p):
-           """Extract indicator calculation to separate method"""
-           pass
-
-       @staticmethod
-       def _process_bar(i, df, p, state):
-           """Extract bar processing logic"""
-           pass
-
-       @staticmethod
-       def run(df, params, trade_start_idx):
-           p = S01Params.from_dict(params)
-           indicators = S01TrailingMAMigrated._calculate_indicators(df, p)
-           # ... main loop using _process_bar
-   ```
-   - This is OPTIONAL refactoring
-   - Only do if it makes code clearer
+   - Extract methods: `_calculate_indicators()`, `_process_bar()`, etc.
+   - This is OPTIONAL - only do if it improves clarity
    - Test after each refactor
 
 4. **Step 4: Final validation** (2-4 hours)
@@ -1403,6 +320,7 @@ strategies/s01_trailing_ma_migrated/ ← NEW implementation
 #### 7.3: Comprehensive Comparison Testing (4-6 hours)
 
 **Critical comparison function:**
+
 ```python
 # tests/test_s01_migration.py
 def test_s01_legacy_vs_migrated():
@@ -1420,140 +338,24 @@ def test_s01_legacy_vs_migrated():
     assert legacy_result.net_profit_pct == migrated_result.net_profit_pct
     assert legacy_result.max_drawdown_pct == migrated_result.max_drawdown_pct
     assert legacy_result.total_trades == migrated_result.total_trades
-    assert len(legacy_result.trades) == len(migrated_result.trades)
 
     # Compare trades one-by-one
     for t1, t2 in zip(legacy_result.trades, migrated_result.trades):
         assert t1.entry_time == t2.entry_time
         assert t1.exit_time == t2.exit_time
-        assert t1.entry_price == t2.entry_price
-        assert t1.exit_price == t2.exit_price
-        assert abs(t1.net_pnl - t2.net_pnl) < 1e-6  # floating point tolerance
-
-def test_s01_migrated_with_all_ma_types():
-    """Test migrated S01 with all 11 MA types"""
-    df = load_test_data()
-    base_params = load_baseline_params()
-
-    for ma_type in VALID_MA_TYPES:
-        params = {**base_params, 'maType': ma_type}
-
-        legacy_result = S01TrailingMA.run(df, params)
-        migrated_result = S01TrailingMAMigrated.run(df, params)
-
-        # Results should match
-        assert abs(legacy_result.net_profit_pct - migrated_result.net_profit_pct) < 0.01
-
-def test_s01_migrated_edge_cases():
-    """Test edge cases specific to S01"""
-    test_cases = [
-        {'closeCount': 1},   # Immediate entry
-        {'closeCount': 10},  # Many consecutive closes required
-        {'qtyMode': 'fixed', 'qty': 1.0},
-        {'qtyMode': 'percent_equity', 'qty': 10.0},
-        {'enableAtrStop': True, 'atrMultiplier': 1.0},
-        {'enableAtrStop': True, 'atrMultiplier': 3.0},
-        # ... more edge cases
-    ]
-
-    for test_case in test_cases:
-        # Test doesn't crash and produces reasonable results
-        pass
+        assert abs(t1.net_pnl - t2.net_pnl) < 1e-6
 ```
-
-#### 7.4: If Results Don't Match (Debugging Protocol)
-
-```python
-def debug_divergence():
-    """Protocol for finding where legacy and migrated diverge"""
-    # 1. Export equity curves to CSV
-    legacy_equity = pd.DataFrame(legacy_result.equity_curve)
-    migrated_equity = pd.DataFrame(migrated_result.equity_curve)
-
-    # 2. Find FIRST bar where they diverge
-    for i in range(len(legacy_equity)):
-        if abs(legacy_equity.iloc[i] - migrated_equity.iloc[i]) > 0.01:
-            print(f"Divergence at bar {i}")
-            # 3. Debug that specific bar
-            # - MA values at that bar
-            # - ATR values at that bar
-            # - Entry/exit signals
-            # - Position sizes
-            # - Trailing stop values
-            break
-
-    # 4. Fix root cause
-    # 5. Re-run full comparison
-```
-
-**Common issues to check:**
-- Indicator calculation order differs
-- Floating point accumulation (different order = different results)
-- Array indexing off-by-one errors
-- Warmup handling (trade_start_idx interpretation)
-- Position sizing rounding (floor vs round vs ceil)
-- Stop loss logic (inclusive vs exclusive comparisons)
-
-#### 7.5: Switch to Production (1-2 hours)
-
-**After 100% validation passes:**
-
-1. **Archive legacy:**
-   ```bash
-   mv src/strategies/s01_trailing_ma \
-      src/strategies/s01_trailing_ma_legacy
-   ```
-
-2. **Promote migrated to production:**
-   ```bash
-   mv src/strategies/s01_trailing_ma_migrated \
-      src/strategies/s01_trailing_ma
-   ```
-
-3. **Update strategy_id in config.json:**
-   ```json
-   {
-     "strategy_id": "s01_trailing_ma",  // back to original ID
-     "strategy_name": "S01 Trailing MA",
-     // ...
-   }
-   ```
-
-4. **Update strategy class:**
-   ```python
-   # Rename class back to S01TrailingMA
-   class S01TrailingMA(BaseStrategy):  # was S01TrailingMAMigrated
-       STRATEGY_ID = "s01_trailing_ma"
-       # ...
-   ```
-
-5. **Delete run_strategy() from backtest_engine.py:**
-   - This is the final step!
-   - Removes ~300 lines of S01-specific logic from core
-   - backtest_engine now truly generic
-
-6. **Update tests:**
-   ```python
-   # tests/test_regression_s01.py
-   # Now tests the migrated version (but it's the only version)
-   ```
-
-7. **Clean up:**
-   - Remove legacy folder (or keep archived for reference)
-   - Remove comparison tests (no longer needed)
-   - Update documentation
 
 ### Validation Checklist
 
 - [ ] Migrated strategy runs without errors
-- [ ] Legacy vs migrated comparison: EXACT match
+- [ ] Legacy vs migrated comparison: EXACT match (tolerance < 1e-6)
 - [ ] All 11 MA types tested
 - [ ] All stop types tested (ATR, max DD, max days)
 - [ ] Both position sizing modes tested (fixed, percent)
 - [ ] Multiple parameter combinations tested
 - [ ] Baseline regression test passes with migrated version
 - [ ] Optuna optimization produces similar scores
-- [ ] UI tested with migrated S01
 - [ ] Performance acceptable (not degraded)
 
 ### Deliverables
@@ -1564,420 +366,886 @@ def debug_divergence():
 - [ ] Uses indicators.* instead of inline calculations
 - [ ] `tests/test_s01_migration.py` with comprehensive tests
 - [ ] Regression test: legacy vs migrated (exact match)
-- [ ] Baseline comparison (exact match)
 - [ ] All Optuna trials produce similar scores
-- [ ] UI tested with migrated S01
-- [ ] Legacy archived, migrated promoted to production
-- [ ] run_strategy() deleted from backtest_engine.py
-- [ ] Git commits throughout migration
-- [ ] Final commit: "Phase 7: S01 migration complete"
+- [ ] Git commit: "Phase 7: S01 migration to new architecture"
 
 ### Success Criteria
 
 - Bit-exact match between legacy and migrated (tolerance < 1e-6)
 - All baseline tests pass
 - S01 fully functional in new architecture
-- backtest_engine.py is now generic (no S01-specific logic)
+- Legacy S01 kept for reference (not deleted yet)
 - Performance maintained or improved
+
+### Notes
+
+⚠️ **Do NOT delete legacy code in this phase.** Legacy cleanup happens in Phase 9 after UI is fixed in Phase 8.
 
 ---
 
-## Phase 8: Frontend Separation
+## Phase 8: Dynamic Optimizer + CSS Extraction (NEW)
 
 **Complexity:** 🟡 MEDIUM
-**Risk:** 🟢 LOW
-**Estimated Effort:** 6-10 hours
-**Priority:** ✅ MOVED TO END - LOGICAL PLACEMENT
+**Risk:** 🟡 MEDIUM
+**Estimated Effort:** 8-12 hours
+**Priority:** 🔴 CRITICAL - FIXES PRODUCTION BLOCKER
 
 ### Goal
 
-Make UI readable and maintainable by separating HTML/CSS/JS into proper files, WITHOUT changing behavior. This is pure UI refactoring with no impact on backend.
+Fix the hardcoded S01 parameters in the optimizer UI and make parameter loading fully dynamic for ANY strategy. Also extract CSS as preparatory work for Phase 10.
 
-### Rationale for Moving to End
+### Why This Phase Was Added
 
-Originally Phase 1, moved to end because:
-- Frontend changes don't affect backend logic
-- Can do this after all core functionality is migrated
-- More logical to clean up UI once core is stable
-- Allows focus on high-risk backend phases first
-- UI testing easier when core is already solid
+**Phase 6 Audit Finding:** The optimizer UI has hardcoded S01 parameters:
+- Hardcoded HTML controls (lines 1455-1829 in index.html, ~374 lines)
+- Hardcoded JavaScript array `OPTIMIZATION_PARAMETERS` (lines 2668-2840, ~172 lines)
 
-### Current State
+**Impact:**
+- When S04 is selected, optimizer shows S01 parameters instead of S04 parameters
+- Blocks production use of S04
+- Will block any future strategy additions
+- Must be fixed BEFORE deleting legacy code in Phase 9
 
-**index.html is MASSIVE: 192KB monolithic file**
-- Likely thousands of lines of inline JS and CSS
-- High chance of hidden dependencies and coupling
-- But: isolated from backend logic
+**Solution:** Make optimizer dynamically load parameters from strategy config.json, just like the backtest form already does.
+
+### Current vs Target Architecture
+
+**Current (Broken):**
+```
+User selects S04 → Backtest form loads S04 params ✅
+                 → Optimizer form shows S01 params ❌ (hardcoded HTML)
+```
+
+**Target (Fixed):**
+```
+User selects S04 → Backtest form loads S04 params ✅
+                 → Optimizer form loads S04 params ✅ (dynamic from config.json)
+```
+
+### Audit of Hardcoded S01 References
+
+#### Backend (server.py) - 19 S01-specific blocks:
+- `DEFAULT_PRESET` dict (lines 75-130) - S01 parameters as defaults
+- `MA_TYPES` tuple (lines 25-37) - shared, but referenced by S01 logic
+- Default strategy ID: `"s01_trailing_ma"` (lines 596, 962, 1163, 1503)
+- S01-specific parameter handling (lines 678-693, 1198-1215, 1341-1347)
+
+#### Frontend (index.html) - Major hardcoded sections:
+- Optimizer HTML controls (lines 1455-1829, ~374 lines)
+- `OPTIMIZATION_PARAMETERS` array (lines 2668-2840, 19 parameters, ~172 lines)
+- MA type checkboxes (hardcoded for S01 trend/trail MA selection)
+
+**Total:** ~550 lines of S01-specific hardcoded UI code
 
 ### Steps
 
-1. **Create UI directory structure:**
+#### 8.1: Extract CSS to Separate File (2-3 hours)
+
+This is preparatory work for Phase 10, but doing it now makes the next steps easier.
+
+1. **Create CSS directory:**
    ```bash
-   mkdir -p src/ui/templates
-   mkdir -p src/ui/static/css
-   mkdir -p src/ui/static/js
+   mkdir -p src/static/css
    ```
 
-2. **Move server.py:**
-   ```bash
-   mv src/server.py src/ui/server.py
-   ```
-   - Update import paths to `from core.backtest_engine import ...`
-
-3. **Extract CSS (2-3 hours):**
-   - Find all `<style>` blocks in index.html
-   - Move to `src/ui/static/css/style.css`
+2. **Extract all `<style>` blocks from index.html:**
+   - Find all style blocks in index.html
+   - Move to `src/static/css/style.css`
    - Keep CSS exactly as is (no refactoring yet)
-   - Optional: split into multiple files if very large:
-     - `layout.css` - grid, flexbox, positioning
-     - `components.css` - buttons, forms, tables
-     - `theme.css` - colors, fonts, spacing
 
-4. **Extract JavaScript (3-5 hours):**
-   - Find all `<script>` blocks in index.html
-   - Move to `src/ui/static/js/main.js`
-   - Keep JavaScript exactly as is (no refactoring yet)
-   - Watch for:
-     - Inline event handlers (`onclick="..."`) - might need to move to JS
-     - Script execution order dependencies
-     - DOM ready checks
-   - Optional: split into logical modules if very large:
-     - `api.js` - AJAX calls to backend
-     - `ui-handlers.js` - event handlers
-     - `charts.js` - visualization code (if exists)
-     - `utils.js` - helper functions
-
-5. **Update index.html:**
+3. **Update index.html:**
    ```html
-   <!DOCTYPE html>
-   <html>
    <head>
-       <meta charset="UTF-8">
-       <title>S01 TrailingMA Backtester</title>
-       <link rel="stylesheet" href="{{ url_for('static', filename='css/style.css') }}">
+       <link rel="stylesheet" href="/static/css/style.css">
    </head>
-   <body>
-       <!-- Clean HTML markup only -->
-
-       <script src="{{ url_for('static', filename='js/main.js') }}"></script>
-   </body>
-   </html>
    ```
 
-6. **Update Flask static file serving:**
+4. **Update Flask static serving:**
    ```python
-   # src/ui/server.py
-   from flask import Flask, send_from_directory
-
-   app = Flask(__name__,
-               static_folder='static',
-               template_folder='templates')
-
-   @app.route('/')
-   def index():
-       return render_template('index.html')
-
-   # Explicit static routes if needed
-   @app.route('/static/<path:path>')
-   def send_static(path):
-       return send_from_directory('static', path)
+   # src/server.py
+   app = Flask(__name__, static_folder='static', static_url_path='/static')
    ```
 
-7. **Test EVERY UI feature manually:**
-   - Start server: `python src/ui/server.py`
-   - Test all features:
-     - [ ] Strategy selection dropdown
-     - [ ] Parameter inputs (all fields)
-     - [ ] Date range selection
-     - [ ] Single backtest execution
-     - [ ] Optuna optimization execution
-     - [ ] WFA execution (if implemented)
-     - [ ] Results table display
-     - [ ] CSV export download
-     - [ ] Preset save/load
-     - [ ] CSV import for presets
-     - [ ] All buttons and controls
-     - [ ] Error handling and messages
+5. **Test:**
+   - Start server: `python src/server.py`
+   - Verify page loads and looks identical
+   - Check browser DevTools for CSS loading correctly
 
-8. **Watch out for:**
-   - Inline event handlers that need moving to JS
-   - Dynamic CSS (JS-generated styles)
-   - Script execution order dependencies
-   - AJAX endpoint paths (might need `/api/` prefix)
-   - CORS issues (unlikely in same-origin setup)
-   - Asset loading paths (relative vs absolute)
+#### 8.2: Create Dynamic Optimizer Form Generator (4-6 hours)
 
-### Suggested File Structure
+**Goal:** Replace hardcoded optimizer HTML with dynamic generation from config.json.
+
+1. **Replace hardcoded optimizer HTML with container:**
+
+Find this section in index.html (lines ~1454-1829):
+```html
+<!-- OLD: Hardcoded S01 parameters -->
+<div class="opt-row">
+  <input id="opt-maLength" type="checkbox" checked />
+  <label class="opt-label" for="opt-maLength">T MA Length</label>
+  ...
+</div>
+```
+
+Replace with:
+```html
+<!-- NEW: Dynamic container -->
+<div id="optimizerParamsContainer">
+  <!-- Parameters will be generated dynamically here -->
+</div>
+```
+
+2. **Create `generateOptimizerForm()` function:**
+
+```javascript
+/**
+ * Generate optimizer parameters form from strategy config
+ * Only shows parameters where optimize.enabled === true
+ */
+function generateOptimizerForm(config) {
+  const container = document.getElementById('optimizerParamsContainer');
+  if (!container) {
+    console.error('Optimizer container not found');
+    return;
+  }
+
+  container.innerHTML = '';
+
+  const params = config.parameters || {};
+  const groups = {};
+
+  // Group parameters by their 'group' property
+  for (const [paramName, paramDef] of Object.entries(params)) {
+    // Only include parameters that are optimizable
+    if (paramDef.optimize && paramDef.optimize.enabled) {
+      const group = paramDef.group || 'Other';
+      if (!groups[group]) {
+        groups[group] = [];
+      }
+      groups[group].push({ name: paramName, def: paramDef });
+    }
+  }
+
+  // Generate HTML for each group
+  for (const [groupName, groupParams] of Object.entries(groups)) {
+    const groupDiv = document.createElement('div');
+    groupDiv.className = 'opt-section';
+
+    const groupTitle = document.createElement('div');
+    groupTitle.className = 'opt-section-title';
+    groupTitle.textContent = groupName;
+    groupDiv.appendChild(groupTitle);
+
+    groupParams.forEach(({ name, def }) => {
+      const row = createOptimizerRow(name, def);
+      groupDiv.appendChild(row);
+    });
+
+    container.appendChild(groupDiv);
+  }
+
+  // Rebind event listeners after generating form
+  bindOptimizerInputs();
+}
+
+/**
+ * Create a single optimizer parameter row
+ */
+function createOptimizerRow(paramName, paramDef) {
+  const row = document.createElement('div');
+  row.className = 'opt-row';
+
+  // Checkbox
+  const checkbox = document.createElement('input');
+  checkbox.type = 'checkbox';
+  checkbox.id = `opt-${paramName}`;
+  checkbox.checked = paramDef.optimize.enabled || false;
+
+  const label = document.createElement('label');
+  label.className = 'opt-label';
+  label.htmlFor = `opt-${paramName}`;
+  label.textContent = paramDef.label || paramName;
+
+  // Controls div (from, to, step)
+  const controlsDiv = document.createElement('div');
+  controlsDiv.className = 'opt-controls';
+
+  // From input
+  const fromLabel = document.createElement('label');
+  fromLabel.textContent = 'From:';
+  const fromInput = document.createElement('input');
+  fromInput.className = 'tiny-input';
+  fromInput.id = `opt-${paramName}-from`;
+  fromInput.type = 'number';
+  fromInput.value = paramDef.optimize.min !== undefined ? paramDef.optimize.min : paramDef.min;
+  fromInput.step = paramDef.optimize.step || paramDef.step || (paramDef.type === 'int' ? '1' : '0.1');
+
+  // To input
+  const toLabel = document.createElement('label');
+  toLabel.textContent = 'To:';
+  const toInput = document.createElement('input');
+  toInput.className = 'tiny-input';
+  toInput.id = `opt-${paramName}-to`;
+  toInput.type = 'number';
+  toInput.value = paramDef.optimize.max !== undefined ? paramDef.optimize.max : paramDef.max;
+  toInput.step = paramDef.optimize.step || paramDef.step || (paramDef.type === 'int' ? '1' : '0.1');
+
+  // Step input
+  const stepLabel = document.createElement('label');
+  stepLabel.textContent = 'Step:';
+  const stepInput = document.createElement('input');
+  stepInput.className = 'tiny-input';
+  stepInput.id = `opt-${paramName}-step`;
+  stepInput.type = 'number';
+  stepInput.value = paramDef.optimize.step || paramDef.step || (paramDef.type === 'int' ? '1' : '0.1');
+  stepInput.step = paramDef.type === 'int' ? '1' : '0.01';
+  stepInput.min = paramDef.type === 'int' ? '1' : '0.01';
+
+  controlsDiv.appendChild(fromLabel);
+  controlsDiv.appendChild(fromInput);
+  controlsDiv.appendChild(toLabel);
+  controlsDiv.appendChild(toInput);
+  controlsDiv.appendChild(stepLabel);
+  controlsDiv.appendChild(stepInput);
+
+  row.appendChild(checkbox);
+  row.appendChild(label);
+  row.appendChild(controlsDiv);
+
+  return row;
+}
+```
+
+3. **Update `loadStrategyConfig()` to call generator:**
+
+```javascript
+async function loadStrategyConfig(strategyId) {
+  try {
+    const response = await fetch(`/api/strategies/${strategyId}/config`);
+    currentStrategyConfig = await response.json();
+
+    updateStrategyInfo(currentStrategyConfig);
+    generateBacktestForm(currentStrategyConfig);
+    generateOptimizerForm(currentStrategyConfig);  // ← ADD THIS LINE
+
+    console.log(`Loaded strategy: ${currentStrategyConfig.name}`);
+  } catch (error) {
+    console.error('Failed to load strategy config:', error);
+    alert('Error loading strategy configuration');
+  }
+}
+```
+
+4. **Delete hardcoded `OPTIMIZATION_PARAMETERS` array:**
+
+Remove lines 2668-2840 entirely. This array is no longer needed.
+
+5. **Update `bindOptimizerInputs()` function:**
+
+Make it work with dynamically generated IDs:
+
+```javascript
+function bindOptimizerInputs() {
+  // Get all optimizer checkboxes dynamically
+  const checkboxes = document.querySelectorAll('[id^="opt-"]:not([id$="-from"]):not([id$="-to"]):not([id$="-step"])');
+
+  checkboxes.forEach(checkbox => {
+    checkbox.addEventListener('change', function() {
+      const paramName = this.id.replace('opt-', '');
+      const fromInput = document.getElementById(`opt-${paramName}-from`);
+      const toInput = document.getElementById(`opt-${paramName}-to`);
+      const stepInput = document.getElementById(`opt-${paramName}-step`);
+
+      if (fromInput && toInput && stepInput) {
+        const disabled = !this.checked;
+        fromInput.disabled = disabled;
+        toInput.disabled = disabled;
+        stepInput.disabled = disabled;
+      }
+    });
+  });
+}
+```
+
+6. **Update optimization payload collection:**
+
+Modify the function that collects optimizer parameters to work dynamically:
+
+```javascript
+function collectOptimizerParams() {
+  const params = {};
+  const ranges = {};
+
+  // Get all optimizer checkboxes
+  const checkboxes = document.querySelectorAll('[id^="opt-"]:not([id$="-from"]):not([id$="-to"]):not([id$="-step"])');
+
+  checkboxes.forEach(checkbox => {
+    if (checkbox.checked) {
+      const paramName = checkbox.id.replace('opt-', '');
+      const fromValue = parseFloat(document.getElementById(`opt-${paramName}-from`).value);
+      const toValue = parseFloat(document.getElementById(`opt-${paramName}-to`).value);
+      const stepValue = parseFloat(document.getElementById(`opt-${paramName}-step`).value);
+
+      ranges[paramName] = [fromValue, toValue, stepValue];
+    }
+  });
+
+  return ranges;
+}
+```
+
+#### 8.3: Testing (2-3 hours)
+
+1. **Test with S01:**
+   - Select S01 from dropdown
+   - Verify optimizer shows S01 parameters
+   - Verify checkboxes, from/to/step inputs work
+   - Run small Optuna optimization (10 trials)
+   - Verify results
+
+2. **Test with S04:**
+   - Select S04 from dropdown
+   - Verify optimizer shows S04 parameters (6 optimizable params)
+   - Verify only enabled parameters shown
+   - Run small Optuna optimization (10 trials)
+   - Verify results
+
+3. **Test edge cases:**
+   - Switch between strategies multiple times
+   - Verify no JavaScript errors in console
+   - Test with missing optimize config (should handle gracefully)
+
+### Deliverables
+
+- [ ] CSS extracted to `src/static/css/style.css`
+- [ ] Flask static serving configured
+- [ ] Hardcoded optimizer HTML removed
+- [ ] Dynamic container added
+- [ ] `generateOptimizerForm()` function implemented
+- [ ] `createOptimizerRow()` helper function implemented
+- [ ] `loadStrategyConfig()` updated to generate optimizer form
+- [ ] `OPTIMIZATION_PARAMETERS` array deleted
+- [ ] `bindOptimizerInputs()` updated for dynamic IDs
+- [ ] Optimizer payload collection updated
+- [ ] Manual testing completed for S01 and S04
+- [ ] Optimizer works with both strategies
+- [ ] Git commit: "Phase 8: Dynamic optimizer + CSS extraction"
+
+### Success Criteria
+
+- ✅ S01 optimizer shows S01 parameters
+- ✅ S04 optimizer shows S04 parameters (rsiLen, stochLen, obLevel, osLevel, extLookback, confirmBars)
+- ✅ Switching strategies updates optimizer form correctly
+- ✅ Optuna optimization works with both strategies
+- ✅ CSS extracted successfully, page looks identical
+- ✅ No JavaScript errors in browser console
+
+### UI Status After This Phase
+
+- ✅ Backtest form: Dynamic, works for all strategies
+- ✅ Optimizer form: Dynamic, works for all strategies
+- ❌ UI structure: Still monolithic (4746-line index.html)
+- ⚠️ Legacy code: Still present in backend and frontend
+
+**Note:** UI will be fully functional for S01 and S04. Legacy code cleanup happens in Phase 9.
+
+---
+
+## Phase 9: Legacy Code Cleanup (NEW)
+
+**Complexity:** 🟡 MEDIUM
+**Risk:** 🟢 LOW
+**Estimated Effort:** 4-6 hours
+**Priority:** ✅ SAFE - UI IS ALREADY DYNAMIC
+
+### Goal
+
+Delete all hardcoded S01-specific blocks from backend and frontend now that UI is fully dynamic. Leave a clean codebase for Phase 10 (Frontend Separation).
+
+### Why This Phase Was Added
+
+After Phase 8, the UI is fully dynamic and no longer depends on hardcoded S01 parameters. Now it's safe to delete all legacy S01-specific code without breaking functionality.
+
+### What Gets Deleted
+
+#### Backend (server.py):
+
+1. **DEFAULT_PRESET dict** (lines 75-130)
+   - Replace with empty dict or minimal generic defaults
+   - Or load from default preset file
+
+2. **Default strategy ID hardcoding:**
+   - Line 596: `strategy_id = request.form.get("strategy", "s01_trailing_ma")`
+   - Line 962: `strategy_id = request.form.get("strategy", "s01_trailing_ma")`
+   - Line 1163: `strategy_id = "s01_trailing_ma"`
+   - Line 1503: `strategy_id = request.form.get("strategy", "s01_trailing_ma")`
+
+   Replace with:
+   ```python
+   strategy_id = request.form.get("strategy")
+   if not strategy_id:
+       return jsonify({"error": "No strategy specified"}), 400
+   ```
+
+3. **S01-specific parameter handling:**
+   - Lines 678-693: Hardcoded ma_length, trail_length checks for warmup calculation
+   - Lines 1198-1215: Hardcoded MA type mappings (ma_types_trend, ma_types_trail_long, etc.)
+   - Lines 1341-1347: Hardcoded trail type locking logic
+
+   **Decision:** Keep if generic enough, delete if S01-specific. Evaluate case-by-case.
+
+4. **MA_TYPES tuple** (lines 25-37):
+   - **Keep:** This is shared across strategies, not S01-specific
+   - Could be moved to a constants file later
+
+5. **BOOL_FIELDS, INT_FIELDS, FLOAT_FIELDS, LIST_FIELDS:**
+   - Lines 131-161: S01-specific field definitions for preset system
+   - **Decision:** Keep for now (presets deferred to later cleanup)
+
+#### Frontend (index.html):
+
+1. **Already deleted in Phase 8:**
+   - Hardcoded optimizer HTML (was lines 1455-1829)
+   - `OPTIMIZATION_PARAMETERS` array (was lines 2668-2840)
+
+2. **Additional cleanup:**
+   - Search for any remaining S01-specific comments
+   - Search for hardcoded parameter references
+   - Clean up unused JavaScript functions
+
+### Steps
+
+#### 9.1: Backend Cleanup (2-3 hours)
+
+1. **Update default strategy handling:**
+
+```python
+# OLD (lines 596, 962, 1163, 1503):
+strategy_id = request.form.get("strategy", "s01_trailing_ma")
+
+# NEW:
+strategy_id = request.form.get("strategy")
+if not strategy_id:
+    available_strategies = list_strategies()
+    if available_strategies:
+        strategy_id = available_strategies[0]['id']  # Use first available
+    else:
+        return jsonify({"error": "No strategies available"}), 500
+```
+
+2. **Simplify DEFAULT_PRESET:**
+
+```python
+# OLD (lines 75-130): Hardcoded S01 parameters
+
+# NEW: Minimal generic defaults
+DEFAULT_PRESET: Dict[str, Any] = {
+    "dateFilter": True,
+    "backtester": True,
+    "startDate": "2025-04-01",
+    "startTime": "00:00",
+    "endDate": "2025-09-01",
+    "endTime": "00:00",
+}
+```
+
+3. **Clean up S01-specific warmup calculation:**
+
+Lines 678-693 have hardcoded parameter names:
+```python
+# OLD:
+if "maLength" in param_ranges:
+    max_ma_length = max(max_ma_length, int(param_ranges["maLength"][1]))
+if "trailLongLength" in param_ranges:
+    max_ma_length = max(max_ma_length, int(param_ranges["trailLongLength"][1]))
+```
+
+**Decision:**
+- Option A: Delete entirely (let each strategy handle warmup)
+- Option B: Make generic (scan all int parameters for "length" in name)
+- **Recommended:** Option A - delete, revisit warmup handling in future
+
+4. **Clean up MA type handling:**
+
+Lines 1198-1215 have S01-specific MA type mappings:
+```python
+ma_types_trend = payload.get("ma_types_trend") or payload.get("maTypesTrend") or []
+ma_types_trail_long = payload.get("ma_types_trail_long") or ...
+```
+
+**Decision:** Keep if generic enough for other strategies, delete if S01-specific.
+
+5. **Search for remaining S01 references:**
+
+```bash
+grep -n "s01\|S01\|S_01" src/server.py
+```
+
+Delete or genericize any remaining hardcoded references.
+
+#### 9.2: Frontend Cleanup (1-2 hours)
+
+1. **Verify all hardcoded HTML is gone:**
+
+```bash
+grep -n "opt-maLength\|opt-closeCount\|opt-stop\|opt-trail" src/index.html
+```
+
+Should return NO results (deleted in Phase 8).
+
+2. **Search for S01-specific comments:**
+
+```bash
+grep -i "s01\|trailing.*ma\|legacy" src/index.html
+```
+
+Remove any legacy comments or references.
+
+3. **Clean up unused JavaScript:**
+
+Search for functions that reference deleted elements:
+- Old optimizer binding code
+- Hardcoded parameter lists
+
+#### 9.3: Delete Legacy S01 Implementation (1 hour)
+
+Now that S01 is migrated (Phase 7), delete the legacy version:
+
+```bash
+# Promote migrated to production
+mv src/strategies/s01_trailing_ma src/strategies/s01_trailing_ma_legacy_backup
+mv src/strategies/s01_trailing_ma_migrated src/strategies/s01_trailing_ma
+
+# Update strategy_id in config.json back to "s01_trailing_ma"
+# Update STRATEGY_ID in strategy.py back to "s01_trailing_ma"
+```
+
+**Important:** Keep `s01_trailing_ma_legacy_backup` for one more phase, just in case. Delete in Phase 11 documentation phase.
+
+#### 9.4: Delete run_strategy() from backtest_engine.py (30 min)
+
+This is the final step - removing S01-specific logic from core:
+
+```python
+# src/core/backtest_engine.py
+
+# DELETE: The ~300 line run_strategy() function
+# This function is S01-specific and no longer needed
+```
+
+After deletion:
+- backtest_engine.py is truly generic
+- No strategy-specific logic in core
+- Clean separation of concerns achieved
+
+#### 9.5: Testing (1 hour)
+
+1. **Run full test suite:**
+   ```bash
+   pytest tests/ -v
+   ```
+
+   Should show 70+ tests passing (including S01 migrated and S04).
+
+2. **Manual UI testing:**
+   - Start server
+   - Test S01 (migrated version)
+   - Test S04
+   - Test preset save/load
+   - Test Optuna optimization for both strategies
+
+3. **Verify no hardcoded references remain:**
+   ```bash
+   grep -r "s01_trailing_ma" src/ --include="*.py" --include="*.html" --include="*.js"
+   ```
+
+   Should only find:
+   - Strategy folder name
+   - References in generic code (list_strategies, etc.)
+   - No hardcoded defaults
+
+### Deliverables
+
+- [ ] Backend default strategy handling genericized
+- [ ] DEFAULT_PRESET simplified
+- [ ] S01-specific warmup code removed
+- [ ] MA type handling cleaned up
+- [ ] All S01 references removed from server.py
+- [ ] Frontend verified clean (no hardcoded HTML)
+- [ ] Unused JavaScript removed
+- [ ] Legacy S01 renamed to backup
+- [ ] Migrated S01 promoted to production
+- [ ] run_strategy() deleted from backtest_engine.py
+- [ ] All tests passing
+- [ ] Manual UI testing completed
+- [ ] Git commit: "Phase 9: Delete all legacy S01 code"
+
+### Success Criteria
+
+- ✅ No S01-specific hardcoded references in backend
+- ✅ No S01-specific hardcoded references in frontend
+- ✅ backtest_engine.py is truly generic (no run_strategy())
+- ✅ Both S01 and S04 work correctly in UI
+- ✅ All tests passing
+- ✅ Codebase clean and maintainable
+
+### Code Status After This Phase
+
+- ✅ S01: Fully migrated to new architecture
+- ✅ S04: Working in new architecture
+- ✅ Backend: Clean, no hardcoded S01 blocks
+- ✅ Frontend: Dynamic, no hardcoded parameters
+- ❌ UI structure: Still monolithic (need Phase 10)
+
+---
+
+## Phase 10: Full Frontend Separation
+
+**Complexity:** 🟡 MEDIUM
+**Risk:** 🟢 LOW
+**Estimated Effort:** 6-8 hours
+**Priority:** ✅ CLEAN ARCHITECTURE
+
+### Goal
+
+Complete the frontend separation by moving all HTML, CSS, and JavaScript into proper module structure as defined in PROJECT_STRUCTURE.md.
+
+### Why Now
+
+After Phase 9, all legacy code is gone and UI is fully dynamic. Now it's safe to restructure the frontend without worrying about breaking hardcoded dependencies.
+
+### Target Structure
 
 ```
 src/ui/
-├── server.py                    # Flask app
+├── server.py                    # Flask app (already in src/)
 ├── templates/
-│   └── index.html               # Clean HTML only
+│   └── index.html               # Clean HTML only (~500 lines)
 └── static/
     ├── css/
-    │   ├── style.css            # Main styles
-    │   ├── components.css       # Optional: component styles
-    │   └── layout.css           # Optional: layout styles
+    │   └── style.css            # Already extracted in Phase 8
     └── js/
         ├── main.js              # App initialization
         ├── api.js               # API calls
         ├── ui-handlers.js       # Event handlers
-        └── charts.js            # Optional: visualization
+        └── strategy-config.js   # Strategy loading and form generation
 ```
 
-### Testing Checklist
+### Steps
 
-Create manual testing checklist:
-```markdown
-## UI Smoke Test Checklist
+#### 10.1: Create UI Directory Structure (30 min)
 
-### Page Load
-- [ ] Page loads without errors
-- [ ] All CSS applied correctly
-- [ ] No console errors in browser DevTools
-
-### Strategy Selection
-- [ ] Strategy dropdown shows all strategies
-- [ ] Selecting strategy loads correct parameters
-- [ ] Parameter defaults match config.json
-
-### Single Backtest
-- [ ] Can input all parameters
-- [ ] Can select date range
-- [ ] Execute backtest button works
-- [ ] Results display correctly
-- [ ] Can download results CSV
-
-### Optimization
-- [ ] Optuna mode selected
-- [ ] Can set number of trials
-- [ ] Can enable/disable parameters for optimization
-- [ ] Execute optimization button works
-- [ ] Progress updates during optimization
-- [ ] Results table populates
-- [ ] Can sort/filter results
-- [ ] Can download optimization CSV
-
-### Presets
-- [ ] Can save current parameters as preset
-- [ ] Can load saved preset
-- [ ] Can delete preset
-- [ ] Can import preset from CSV
-
-### Edge Cases
-- [ ] Invalid parameter values show error
-- [ ] Network errors handled gracefully
-- [ ] Long-running operations don't freeze UI
-- [ ] Multiple operations don't conflict
+```bash
+mkdir -p src/ui/templates
+mkdir -p src/ui/static/js
+# Note: src/static/css already exists from Phase 8
+mv src/static src/ui/static
 ```
+
+#### 10.2: Move and Clean HTML (2-3 hours)
+
+1. **Extract JavaScript from index.html:**
+   - Find all `<script>` blocks
+   - Split into logical modules:
+     - `main.js` - Initialization, global variables
+     - `api.js` - Fetch calls to backend
+     - `ui-handlers.js` - Event listeners, button clicks
+     - `strategy-config.js` - loadStrategyConfig, generateBacktestForm, generateOptimizerForm
+
+2. **Move HTML to templates:**
+   ```bash
+   mv src/index.html src/ui/templates/index.html
+   ```
+
+3. **Clean HTML:**
+   - Remove all `<style>` blocks (already in style.css)
+   - Remove all `<script>` blocks (moved to JS files)
+   - Add script tags:
+   ```html
+   <script src="/static/js/api.js"></script>
+   <script src="/static/js/strategy-config.js"></script>
+   <script src="/static/js/ui-handlers.js"></script>
+   <script src="/static/js/main.js"></script>
+   ```
+
+#### 10.3: Move Server.py (30 min)
+
+```bash
+mv src/server.py src/ui/server.py
+```
+
+Update Flask configuration:
+```python
+# src/ui/server.py
+app = Flask(__name__,
+            static_folder='static',
+            template_folder='templates')
+```
+
+Update imports:
+```python
+# OLD:
+from core.backtest_engine import ...
+
+# NEW:
+import sys
+from pathlib import Path
+sys.path.insert(0, str(Path(__file__).parent.parent))
+from core.backtest_engine import ...
+```
+
+Or use proper package structure with `__init__.py`.
+
+#### 10.4: Modularize JavaScript (3-4 hours)
+
+**api.js:**
+```javascript
+// All fetch calls to backend
+async function fetchStrategies() { ... }
+async function fetchStrategyConfig(strategyId) { ... }
+async function runBacktest(payload) { ... }
+async function runOptimization(payload) { ... }
+```
+
+**strategy-config.js:**
+```javascript
+// Strategy configuration and form generation
+let currentStrategyConfig = null;
+let currentStrategyId = null;
+
+async function loadStrategyConfig(strategyId) { ... }
+function generateBacktestForm(config) { ... }
+function generateOptimizerForm(config) { ... }
+function createFormField(paramName, paramDef, prefix) { ... }
+function createOptimizerRow(paramName, paramDef) { ... }
+```
+
+**ui-handlers.js:**
+```javascript
+// Event listeners and UI interactions
+function bindOptimizerInputs() { ... }
+function handleStrategyChange() { ... }
+function handleBacktestSubmit() { ... }
+function handleOptimizationSubmit() { ... }
+```
+
+**main.js:**
+```javascript
+// Initialization and global setup
+document.addEventListener('DOMContentLoaded', async () => {
+    await loadStrategies();
+    // ... other initialization
+});
+```
+
+#### 10.5: Update Import Paths (1 hour)
+
+All Python imports need to be updated:
+```python
+# In tests, run_backtest.py, etc.
+# OLD:
+from core.backtest_engine import ...
+
+# NEW:
+from ui.server import ...
+```
+
+Or restructure project to use proper package imports.
+
+#### 10.6: Testing (1-2 hours)
+
+1. **Start server from new location:**
+   ```bash
+   cd src
+   python ui/server.py
+   # OR
+   cd src/ui
+   python server.py
+   ```
+
+2. **Test all UI functionality:**
+   - [ ] Page loads correctly
+   - [ ] CSS applied correctly
+   - [ ] JavaScript loads without errors
+   - [ ] Strategy selection works
+   - [ ] Backtest form generation works
+   - [ ] Optimizer form generation works
+   - [ ] Single backtest execution works
+   - [ ] Optimization execution works
+   - [ ] Results display correctly
+   - [ ] Preset save/load works
+
+3. **Browser DevTools checks:**
+   - No console errors
+   - All assets load (CSS, JS)
+   - Network tab shows successful API calls
 
 ### Deliverables
 
 - [ ] `src/ui/` directory structure created
-- [ ] `server.py` moved to `ui/`
-- [ ] `index.html` cleaned (HTML only) in `templates/`
-- [ ] `static/css/style.css` with all styles
-- [ ] `static/js/main.js` with all JavaScript
-- [ ] Flask static serving configured
-- [ ] Manual smoke test checklist completed
-- [ ] All UI features working
-- [ ] No behavior changes verified
-- [ ] Browser DevTools shows no errors
-- [ ] Git commit: "Phase 8: Separate frontend HTML/CSS/JS"
+- [ ] HTML moved to `templates/index.html` and cleaned
+- [ ] CSS already in `static/css/style.css` (from Phase 8)
+- [ ] JavaScript modularized into `static/js/*.js`
+- [ ] `server.py` moved to `ui/server.py`
+- [ ] Flask configuration updated
+- [ ] All imports updated
+- [ ] Full UI smoke test completed
+- [ ] No console errors in browser
+- [ ] Git commit: "Phase 10: Full frontend separation"
 
 ### Success Criteria
 
-- UI looks and behaves exactly as before
-- No functional regressions
-- Code more maintainable (separate concerns)
-- Easier to modify CSS/JS in future
+- ✅ UI looks and behaves exactly as before
+- ✅ No functional regressions
+- ✅ Clean separation of concerns (HTML/CSS/JS/Python)
+- ✅ Follows PROJECT_STRUCTURE.md
+- ✅ Easy to maintain and modify
+- ✅ All tests passing
+
+### Architecture Achievement
+
+After this phase:
+- ✅ Clean core architecture
+- ✅ Strategies in separate modules
+- ✅ Indicators extracted
+- ✅ Metrics centralized
+- ✅ Export unified
+- ✅ UI fully separated
+- ✅ No legacy code
+
+**Migration complete!** Only documentation remains (Phase 11).
 
 ---
 
-## Phase 9: Logging, Cleanup, Documentation
+## Phase 11: Documentation
 
-**Complexity:** 🟡 MEDIUM
+**Complexity:** 🟢 LOW
 **Risk:** 🟢 LOW
-**Estimated Effort:** 6-10 hours
-**Priority:** ✅ POLISH PHASE
+**Estimated Effort:** 4-6 hours
+**Priority:** ✅ FINALIZATION
 
 ### Goal
 
-Bring project to clean final state with proper logging, removed legacy code, and updated documentation.
+Update all documentation to reflect the final migrated state. NO logging implementation (deferred to post-migration).
+
+### Why No Logging
+
+Logging is a nice-to-have feature, not critical for architecture migration completion. Adding it now would:
+- Extend migration timeline
+- Add complexity
+- Distract from documentation focus
+
+**Decision:** Defer logging to post-migration updates. Focus on completing migration first.
 
 ### Steps
 
-#### 9.1: Logging Setup (2-3 hours)
+#### 11.1: Update Architecture Documentation (2 hours)
 
-1. **Create logging configuration:**
-   ```python
-   # src/core/logging_config.py
-   import logging
-   import sys
-   from pathlib import Path
-
-   def setup_logging(level=logging.INFO, debug=False, log_file=None):
-       """
-       Configure logging for the project
-
-       Args:
-           level: Default logging level
-           debug: If True, set level to DEBUG
-           log_file: Optional path to log file
-       """
-       if debug:
-           level = logging.DEBUG
-
-       handlers = [logging.StreamHandler(sys.stdout)]
-
-       if log_file:
-           log_file = Path(log_file)
-           log_file.parent.mkdir(parents=True, exist_ok=True)
-           handlers.append(logging.FileHandler(log_file))
-
-       logging.basicConfig(
-           level=level,
-           format='%(asctime)s [%(levelname)8s] %(name)s: %(message)s',
-           datefmt='%Y-%m-%d %H:%M:%S',
-           handlers=handlers
-       )
-
-       # Suppress noisy libraries
-       logging.getLogger('matplotlib').setLevel(logging.WARNING)
-       logging.getLogger('optuna').setLevel(logging.INFO)
-   ```
-
-2. **Add logging to engines:**
-   ```python
-   # src/core/backtest_engine.py
-   import logging
-   logger = logging.getLogger(__name__)
-
-   def run_backtest(...):
-       logger.info(f"Starting backtest: strategy={strategy_id}, "
-                   f"date_range={date_range}, warmup={warmup_bars}")
-       # ...
-       logger.debug(f"Prepared dataset: {len(df)} bars, "
-                    f"trade_start_idx={trade_start_idx}")
-       # ...
-       logger.info(f"Backtest complete: {result.total_trades} trades, "
-                   f"PnL={result.net_profit_pct:.2f}%")
-       return result
-   ```
-
-   ```python
-   # src/core/optuna_engine.py
-   import logging
-   logger = logging.getLogger(__name__)
-
-   def run_optuna_optimization(...):
-       logger.info(f"Starting Optuna optimization: {n_trials} trials, "
-                   f"target={target}, budget_mode={budget_mode}")
-
-       def objective(trial):
-           logger.debug(f"Trial {trial.number}: params={trial.params}")
-           # ...
-           logger.debug(f"Trial {trial.number}: score={score:.4f}")
-           return score
-
-       # ...
-       logger.info(f"Optimization complete: best_score={study.best_value:.4f}, "
-                   f"best_params={study.best_params}")
-   ```
-
-   ```python
-   # src/core/walkforward_engine.py
-   import logging
-   logger = logging.getLogger(__name__)
-
-   def run_walkforward(...):
-       logger.info(f"Starting WFA: {n_windows} windows, "
-                   f"IS_length={is_length}, OOS_length={oos_length}")
-
-       for i, window in enumerate(windows):
-           logger.info(f"Window {i+1}/{n_windows}: "
-                       f"IS={window.is_start}..{window.is_end}, "
-                       f"OOS={window.oos_start}..{window.oos_end}")
-           # ...
-
-       logger.info(f"WFA complete: avg_pnl={avg_pnl:.2f}%, "
-                   f"successful_windows={success_count}/{n_windows}")
-   ```
-
-3. **Add CLI logging flag:**
-   ```python
-   # src/cli/run_backtest.py
-   import argparse
-   from core.logging_config import setup_logging
-
-   parser = argparse.ArgumentParser()
-   parser.add_argument('--log-level',
-                      choices=['DEBUG', 'INFO', 'WARNING', 'ERROR'],
-                      default='INFO',
-                      help='Logging level')
-   parser.add_argument('--debug',
-                      action='store_true',
-                      help='Enable debug logging (same as --log-level DEBUG)')
-   parser.add_argument('--log-file',
-                      help='Optional log file path')
-
-   args = parser.parse_args()
-
-   setup_logging(
-       level=getattr(logging, args.log_level),
-       debug=args.debug,
-       log_file=args.log_file
-   )
-   ```
-
-#### 9.2: Final Cleanup (2-3 hours)
-
-1. **Delete legacy code:**
-   ```bash
-   # Remove archived legacy S01 (if confident)
-   rm -rf src/strategies/s01_trailing_ma_legacy
-
-   # Remove optimizer_engine.py (Grid Search)
-   # (should be done in Phase 3, but double-check)
-
-   # Remove any backup files
-   find . -name "*.bak" -delete
-   find . -name "*_old.py" -delete
-   ```
-
-2. **Remove unused imports:**
-   ```bash
-   # Use a tool like autoflake or manually search
-   grep -r "import.*optimizer_engine" src/
-   # Should return nothing
-   ```
-
-3. **Clean up temporary comments:**
-   - Remove `# TODO: migrate` comments
-   - Remove `# LEGACY:` markers
-   - Remove comparison code that's no longer needed
-
-4. **Verify no S01-specific code in backtest_engine:**
-   ```bash
-   grep -n "run_strategy" src/core/backtest_engine.py
-   # Should not find the old 300-line function
-   ```
-
-5. **Check for hardcoded paths:**
-   ```bash
-   grep -r "C:\\\\Users" src/
-   grep -r "/Users/someone" src/
-   # Fix any hardcoded absolute paths
-   ```
-
-#### 9.3: Documentation Updates (2-4 hours)
-
-1. **Update PROJECT_TARGET_ARCHITECTURE.md:**
+1. **PROJECT_TARGET_ARCHITECTURE.md:**
    ```markdown
    # Target Architecture Overview
 
-   **Status:** ✅ CURRENT IMPLEMENTATION (as of 2025-11-27)
+   **Status:** ✅ CURRENT IMPLEMENTATION (as of 2025-12-03)
 
    This document describes the CURRENT architecture after migration completion.
 
@@ -1987,45 +1255,97 @@ Bring project to clean final state with proper logging, removed legacy code, and
    - [x] Indicators extracted to indicators/ package
    - [x] Export centralized in export.py
    - [x] S01 migrated to new architecture
+   - [x] S04 implemented in new architecture
    - [x] Grid Search removed (Optuna only)
-   - [x] Frontend separated (HTML/CSS/JS)
+   - [x] Frontend fully separated (HTML/CSS/JS modules)
+   - [x] All legacy code removed
    ```
 
-2. **Update PROJECT_STRUCTURE.md:**
-   - Reflect actual directory structure
-   - Update all paths
-   - Remove references to deleted files
+2. **PROJECT_STRUCTURE.md:**
+   - Update directory tree to reflect actual structure
+   - Document all file locations
+   - Update component descriptions
 
-3. **Update CLAUDE.md:**
+3. **CLAUDE.md:**
    ```markdown
-   ## Architecture (Updated 2025-11-27)
+   ## Architecture (Updated 2025-12-03)
 
-   - **Core engines** in `src/core/`:
-     - `backtest_engine.py` - generic backtest simulator
-     - `optuna_engine.py` - Optuna optimization (Grid Search removed)
-     - `walkforward_engine.py` - WFA orchestrator
+   ### Completed Migration ✅
 
-   - **Utilities** in `src/core/`:
-     - `metrics.py` - all metrics calculation
-     - `export.py` - CSV export functions
-     - `optimization_utils.py` - shared optimization code
+   The project has completed its architecture migration from legacy
+   S01-centric design to clean modular architecture.
 
-   - **Domain layers**:
-     - `indicators/` - MA types, ATR, and other indicators
-     - `strategies/` - strategy implementations with own params
+   **Key Changes:**
+   - Core engines in `src/core/`
+   - Strategies in `src/strategies/` (S01, S04)
+   - Indicators in `src/indicators/`
+   - Metrics in `src/core/metrics.py`
+   - Export in `src/core/export.py`
+   - UI in `src/ui/` (fully separated)
 
-   - **Interface layer**:
-     - `ui/` - Flask server + HTML/CSS/JS frontend
-     - `cli/` - command-line tools
+   **Grid Search Removed:** Use Optuna for all optimization.
    ```
 
-4. **Create strategy development guide:**
+#### 11.2: Update Migration Documentation (1-2 hours)
+
+1. **This document (PROJECT_MIGRATION_PLAN_upd.md):**
+   - Mark all phases as COMPLETE
+   - Add "Migration Complete" banner at top
+   - Update status from "Ready for Execution" to "Completed"
+
+2. **MIGRATION_PROGRESS.md:**
+   - Mark all phases complete with dates
+   - Update overall progress to 100%
+   - Add final summary section
+
+3. **Create MIGRATION_SUMMARY.md:**
    ```markdown
-   # docs/ADDING_NEW_STRATEGY.md
+   # Migration Summary
 
-   ## How to Add a New Strategy
+   **Started:** 2025-11-28
+   **Completed:** 2025-12-0X
+   **Duration:** X weeks
+   **Total Phases:** 11
 
-   ### 1. Create Strategy Directory
+   ## What Was Achieved
+
+   - ✅ Clean architecture with separated concerns
+   - ✅ 2 strategies working (S01, S04)
+   - ✅ All legacy code removed
+   - ✅ UI fully dynamic and modular
+   - ✅ 70+ tests passing
+   - ✅ Performance maintained
+
+   ## Breaking Changes
+
+   - Grid Search removed (use Optuna)
+   - Import paths changed (use core.*)
+   - UI structure changed (now in src/ui/)
+
+   ## Migration to Future Versions
+
+   See docs/ADDING_NEW_STRATEGY.md for how to add strategies.
+   ```
+
+#### 11.3: Create Strategy Development Guide (2 hours)
+
+1. **docs/ADDING_NEW_STRATEGY.md:**
+   ```markdown
+   # Adding a New Strategy
+
+   ## Overview
+
+   After migration, adding new strategies is straightforward:
+   1. Create strategy directory
+   2. Define parameters dataclass
+   3. Implement strategy logic
+   4. Create config.json
+   5. Test
+
+   ## Step-by-Step Guide
+
+   ### 1. Create Directory Structure
+
    ```bash
    mkdir src/strategies/my_strategy
    touch src/strategies/my_strategy/__init__.py
@@ -2033,26 +1353,38 @@ Bring project to clean final state with proper logging, removed legacy code, and
    touch src/strategies/my_strategy/config.json
    ```
 
-   ### 2. Define Strategy Parameters
+   ### 2. Define Parameters
+
    ```python
-   # strategy.py
+   # src/strategies/my_strategy/strategy.py
    from dataclasses import dataclass
+   from typing import Dict, Any
 
    @dataclass
    class MyStrategyParams:
        param1: int = 10
        param2: float = 1.5
 
-       @staticmethod
-       def from_dict(d: Dict[str, Any]) -> "MyStrategyParams":
-           return MyStrategyParams(
+       @classmethod
+       def from_dict(cls, d: Dict[str, Any]) -> "MyStrategyParams":
+           return cls(
                param1=int(d.get('param1', 10)),
                param2=float(d.get('param2', 1.5)),
            )
+
+       def to_dict(self) -> Dict[str, Any]:
+           return {
+               'param1': self.param1,
+               'param2': self.param2,
+           }
    ```
 
-   ### 3. Implement Strategy Class
+   ### 3. Implement Strategy
+
    ```python
+   from strategies.base import BaseStrategy
+   from core.backtest_engine import StrategyResult, TradeRecord
+
    class MyStrategy(BaseStrategy):
        STRATEGY_ID = "my_strategy"
        STRATEGY_NAME = "My Strategy"
@@ -2062,345 +1394,294 @@ Bring project to clean final state with proper logging, removed legacy code, and
        def run(df: pd.DataFrame, params: Dict[str, Any],
                trade_start_idx: int = 0) -> StrategyResult:
            p = MyStrategyParams.from_dict(params)
-           # ... strategy logic
-           return StrategyResult(...)
+
+           # Calculate indicators
+           from indicators.ma import sma
+           ma = sma(df['Close'], p.param1)
+
+           # Bar-by-bar simulation
+           trades = []
+           for i in range(trade_start_idx, len(df)):
+               # Your logic here
+               pass
+
+           # Build result
+           result = StrategyResult(
+               trades=trades,
+               equity_curve=[],
+               balance_curve=[],
+               timestamps=[],
+           )
+
+           # Calculate metrics
+           from core import metrics
+           basic = metrics.calculate_basic(result, initial_balance=100.0)
+           advanced = metrics.calculate_advanced(result)
+
+           result.net_profit_pct = basic.net_profit_pct
+           result.max_drawdown_pct = basic.max_drawdown_pct
+           result.total_trades = basic.total_trades
+           result.sharpe_ratio = advanced.sharpe_ratio
+
+           return result
    ```
 
    ### 4. Create config.json
-   See config_json_format.md for full specification.
 
-   ### 5. Test Strategy
-   - Create tests/test_my_strategy.py
-   - Test single backtest
-   - Test optimization
-   - Compare with TradingView if possible
-   ```
-
-5. **Create config.json format documentation:**
-   ```markdown
-   # docs/CONFIG_JSON_FORMAT.md
-
-   ## Strategy Configuration Format
-
-   Every strategy must have a `config.json` file describing its parameters.
-
-   ### Basic Structure
    ```json
    {
-     "strategy_id": "my_strategy",
-     "strategy_name": "My Strategy",
+     "id": "my_strategy",
+     "name": "My Strategy",
      "version": "v1",
-     "description": "Strategy description",
+     "description": "Description here",
      "parameters": {
        "param1": {
          "type": "int",
          "label": "Parameter 1",
-         "description": "What this parameter does",
          "default": 10,
          "min": 1,
          "max": 100,
          "step": 1,
-         "group": "Entry",
+         "group": "Main",
          "optimize": {
            "enabled": true,
            "min": 5,
            "max": 50,
            "step": 5
          }
+       },
+       "param2": {
+         "type": "float",
+         "label": "Parameter 2",
+         "default": 1.5,
+         "min": 0.0,
+         "max": 10.0,
+         "step": 0.1,
+         "group": "Main",
+         "optimize": {
+           "enabled": false
+         }
        }
      }
    }
    ```
 
-   ### Parameter Types
-   - `int` - Integer parameter
-   - `float` - Floating point parameter
-   - `bool` - Boolean parameter
-   - `select` - Dropdown selection (add `options` array)
-   - `string` - Text input
+   ### 5. Test
 
-   ### Optimization Section
-   If `optimize.enabled = true`, parameter can be optimized by Optuna.
-   Optimization ranges can differ from UI input ranges.
+   ```python
+   # tests/test_my_strategy.py
+   def test_my_strategy_basic():
+       df = load_test_data()
+       params = {'param1': 10, 'param2': 1.5}
+       result = MyStrategy.run(df, params)
+
+       assert result is not None
+       assert len(result.trades) >= 0
    ```
 
-6. **Update changelog.md:**
-   ```markdown
-   # Changelog
+   ### 6. Use in UI
 
-   ## [2.0.0] - 2025-11-27 - Architecture Migration Complete
-
-   ### Major Changes
-   - Migrated to clean architecture with separate core/indicators/strategies
-   - Removed Grid Search optimizer (Optuna only)
-   - Centralized metrics calculation in metrics.py
-   - Extracted indicators to indicators/ package
-   - Migrated S01 strategy to new architecture
-   - Separated frontend (HTML/CSS/JS)
-   - Added comprehensive test suite
-   - Added logging throughout
-
-   ### Breaking Changes
-   - Grid Search no longer available
-   - optimizer_engine.py removed
-   - Import paths changed (use core.*)
-   - StrategyParams now lives in each strategy module
-
-   ### Migration Notes
-   - See PROJECT_MIGRATION_PLAN_upd.md for full migration details
-   - All functionality preserved, just reorganized
-   - Performance maintained or improved
+   The strategy will automatically appear in the UI dropdown after restart.
+   No UI changes needed - parameters load dynamically from config.json!
    ```
 
-#### 9.4: Final Verification (1-2 hours)
+2. **docs/CONFIG_JSON_FORMAT.md:**
+   - Document complete config.json specification
+   - Include all parameter types
+   - Document optimization section
+   - Provide examples
 
-1. **Run full test suite:**
-   ```bash
-   pytest -v
-   # All tests should pass
-   ```
+#### 11.4: Update Changelog (30 min)
 
-2. **Run complete workflow:**
-   - Single backtest via CLI
-   - Single backtest via UI
-   - Optuna optimization via CLI
-   - Optuna optimization via UI
-   - WFA (if implemented)
-   - CSV exports
-   - Preset save/load
+```markdown
+# Changelog
 
-3. **Performance check:**
-   - Run S01 optimization with 100 trials
-   - Should complete in reasonable time
-   - Compare with pre-migration benchmarks (if available)
+## [2.0.0] - 2025-12-0X - Architecture Migration Complete
 
-4. **Code quality check:**
-   ```bash
-   # Check for common issues
-   grep -r "TODO" src/
-   grep -r "FIXME" src/
-   grep -r "import.*optimizer_engine" src/
-   ```
+### Major Changes
+
+- **Architecture Migration:** Completed 11-phase migration from legacy to clean architecture
+- **Strategies:** S01 migrated, S04 added (StochRSI)
+- **Optimizer:** Grid Search removed, Optuna-only
+- **UI:** Fully dynamic parameter loading, separated frontend
+- **Core:** Metrics centralized, indicators extracted, export unified
+- **Legacy:** All hardcoded S01 code removed
+
+### Breaking Changes
+
+- Grid Search no longer available
+- optimizer_engine.py removed
+- Import paths changed (use `core.*`, not root imports)
+- UI moved to `src/ui/`
+- StrategyParams now lives in each strategy module
+- Frontend structure changed (HTML/CSS/JS separated)
+
+### New Features
+
+- Dynamic optimizer form generation (works with any strategy)
+- Strategy auto-discovery system
+- Comprehensive test suite (70+ tests)
+- S04 StochRSI strategy
+- RSI and StochRSI indicators
+
+### Bug Fixes
+
+- Fixed optimizer showing wrong parameters for different strategies
+- Fixed baseline mismatch (UTC timezone issue)
+- Fixed various Phase 6 audit issues
+
+### Migration Notes
+
+- See docs/PROJECT_MIGRATION_PLAN_upd.md for full migration details
+- All functionality preserved, just reorganized
+- Performance maintained or improved
+- No data loss or behavioral changes for S01
+
+### Documentation
+
+- Updated all architecture docs
+- Added strategy development guide
+- Added config.json format specification
+- Created migration summary
+
+### Future Work (Deferred)
+
+- Logging system (post-migration)
+- WFA optimization
+- Preset system overhaul
+- Additional strategies
+```
+
+#### 11.5: Clean Up Temporary Files (30 min)
+
+Delete backup and temporary files:
+```bash
+# Delete legacy S01 backup (kept through Phase 10 for safety)
+rm -rf src/strategies/s01_trailing_ma_legacy_backup
+
+# Delete any .bak files
+find . -name "*.bak" -delete
+
+# Delete any temporary test files
+find . -name "*_old.py" -delete
+find . -name "*_tmp.py" -delete
+```
 
 ### Deliverables
 
-- [ ] `src/core/logging_config.py` created
-- [ ] All engines use logging
-- [ ] CLI --debug and --log-level flags working
-- [ ] Legacy code deleted
-- [ ] Unused imports removed
-- [ ] Documentation updated:
-  - [ ] PROJECT_TARGET_ARCHITECTURE.md
-  - [ ] PROJECT_STRUCTURE.md
-  - [ ] CLAUDE.md
-  - [ ] docs/ADDING_NEW_STRATEGY.md
-  - [ ] docs/CONFIG_JSON_FORMAT.md
-  - [ ] changelog.md
-- [ ] Full test suite passing
-- [ ] Complete workflow tested
-- [ ] Git commit: "Phase 9: Add logging, cleanup, update docs"
+- [ ] PROJECT_TARGET_ARCHITECTURE.md updated
+- [ ] PROJECT_STRUCTURE.md updated
+- [ ] CLAUDE.md updated
+- [ ] PROJECT_MIGRATION_PLAN_upd.md marked complete
+- [ ] MIGRATION_PROGRESS.md marked complete
+- [ ] MIGRATION_SUMMARY.md created
+- [ ] docs/ADDING_NEW_STRATEGY.md created
+- [ ] docs/CONFIG_JSON_FORMAT.md created
+- [ ] Changelog.md updated
+- [ ] Temporary files cleaned up
+- [ ] Git commit: "Phase 11: Documentation complete - Migration finished"
+- [ ] Git tag: `migration-v2-complete`
 
 ### Success Criteria
 
-- Clean codebase with no legacy artifacts
-- Comprehensive logging for debugging
-- Documentation reflects current state
-- Easy for new contributors (or future you!) to understand
-- All tests passing
-- All features working
+- ✅ All documentation reflects current state
+- ✅ Easy for new contributors to understand
+- ✅ Clear guide for adding new strategies
+- ✅ Migration history documented
+- ✅ No outdated references to legacy architecture
+- ✅ Clean repository (no temporary files)
 
 ---
 
-## Summary of Phase Order Changes
+## Summary of Phase Order (v2.1)
 
-### Original Order (v1.4)
--1, 0, 1, 2, 3, 4, 5, 6, 7, 8
+### Updated Phase Sequence:
 
-### Updated Order (v2.0)
--1, 0, 1, 2 (Export), 3 (Grid removal), 4 (Metrics), 5 (Indicators), 6 (Simple), 7 (S01), 8 (Frontend), 9 (Polish)
+- ✅ Phase -1: Test Infrastructure
+- ✅ Phase 0: Regression Baseline
+- ✅ Phase 1: Core Extraction
+- ✅ Phase 2: Export Extraction
+- ✅ Phase 3: Grid Search Removal
+- ✅ Phase 4: Metrics Extraction
+- ✅ Phase 5: Indicators Extraction
+- ✅ Phase 6: S04 Strategy Testing
+- ⏳ Phase 7: S01 Migration
+- 🆕 Phase 8: Dynamic Optimizer + CSS (NEW)
+- 🆕 Phase 9: Legacy Code Cleanup (NEW)
+- ⏳ Phase 10: Frontend Separation (was Phase 8)
+- ⏳ Phase 11: Documentation (was Phase 9, no logging)
 
-### Key Reordering Rationale
+### Key Differences from v2.0:
 
-1. **Frontend moved from #1 to #8:**
-   - More logical to clean up UI AFTER core is stable
-   - Allows focus on high-risk backend first
-   - UI changes don't affect backend migration
+1. **Phase 8 (NEW):** Fix hardcoded optimizer parameters + extract CSS
+2. **Phase 9 (NEW):** Delete all legacy S01 code safely
+3. **Phase 10:** Frontend separation moved later (was Phase 8)
+4. **Phase 11:** Documentation only, no logging
 
-2. **Export moved from #5 to #2:**
-   - Lower risk than Grid removal
-   - Provides useful utilities early
-   - Helps decouple optimizer_engine
-   - Makes later phases cleaner
+### Rationale:
 
-3. **Metrics before Indicators (#4 → #3, #3 → #4):**
-   - Metrics are self-contained (operate on StrategyResult)
-   - Easier to validate independently
-   - Indicators are scattered and riskier
-   - Build confidence with metrics first
+The v2.1 plan fixes the **critical UI issue** discovered in Phase 6 audit by:
+1. Making UI dynamic BEFORE deleting legacy (Phase 8)
+2. Deleting legacy AFTER UI is fixed (Phase 9)
+3. Restructuring frontend AFTER legacy is gone (Phase 10)
 
-4. **Phase 2 split into 3.A and 3.B:**
-   - Original "Core move + Grid removal" was too large
-   - Now: Phase 1 (move to core), Phase 3 (Grid removal split)
-   - Better risk management
-
----
-
-## Cross-Cutting Concerns
-
-### Testing Strategy
-
-**Test Coverage Goals:**
-- ❌ NOT aiming for 100% coverage (pet project)
-- ✅ CRITICAL: Regression tests for S01 behavior
-- ✅ CRITICAL: Parity tests for extracted code (indicators, metrics)
-- ✅ GOOD: Edge case tests (zero trades, single trade, etc.)
-- ⚠️ OPTIONAL: Unit tests for utilities
-
-**Test Types:**
-- **Regression tests:** Ensure S01 behavior unchanged
-- **Parity tests:** Old vs new implementation matches
-- **Edge case tests:** Unusual inputs handled gracefully
-- **Integration tests:** End-to-end workflows work
-
-### Performance Considerations
-
-**Current Performance Features:**
-- Multiprocessing with worker pools (6 default)
-- Pre-computed indicator caches (in optimizer_engine _init_worker)
-- Vectorized numpy/pandas operations
-
-**Migration Risks:**
-1. ⚠️ Indicator extraction might break caching
-   - Current: _ma_cache, _lowest_cache, _highest_cache in workers
-   - After migration: Must preserve this pattern
-   - **RECOMMENDATION:** Keep caching in backtest_engine or create cache manager
-
-2. 💡 Profile before/after migration:
-   - Simple strategy should run 10x faster than S01
-   - Optuna should handle 1000+ trials/hour for simple strategy
-   - Use `python -m cProfile` if issues detected
-
-### Git Strategy
-
-```bash
-# Main development branch
-git checkout -b migration-v2
-
-# Each phase gets a tag
-git tag phase-1-complete
-git tag phase-2-export-complete
-git tag phase-3-grid-removal-complete
-# ... etc
-
-# High-risk phases get extra branches
-git checkout -b phase-5-indicators-sma
-git checkout -b phase-5-indicators-ema
-# ... merge incrementally
-```
-
-### Validation Checkpoints
-
-After each high-risk phase:
-```
-Phase X → Validation Checkpoint → Phase X+1
-         ↓
-   - Run full regression suite
-   - Manual UI smoke test
-   - Performance benchmark
-   - Git tag: "phase-X-complete"
-   - Update MIGRATION_PROGRESS.md
-```
-
----
-
-## Risk Matrix
-
-| Phase | Complexity | Risk | Failure Impact | Mitigation |
-|-------|-----------|------|----------------|------------|
-| Phase -1 | 🟢 LOW | 🟢 LOW | 🟢 Low - just delays start | Do first, invest time upfront |
-| Phase 0 | 🟡 MED | 🟢 LOW | 🔴 Critical - no safety net | Must complete before Phase 2+ |
-| Phase 1 | 🟢 LOW | 🟢 LOW | 🟢 Low - just reorganization | Simple move, test imports |
-| Phase 2 | 🟡 MED | 🟢 LOW | 🟢 Low - export only | Verify CSV formats |
-| Phase 3 | 🔴 HIGH | 🟡 MED | 🟡 Medium - optimizer breaks | Split into 3.A and 3.B |
-| Phase 4 | 🔴 HIGH | 🔴 HIGH | 🔴 Critical - scoring breaks | Parity tests, OLD/NEW comparison |
-| Phase 5 | 🔴 HIGH | 🔴 HIGH | 🔴 Critical - S01 breaks | Extract one indicator at a time |
-| Phase 6 | 🟡 MED | 🟢 LOW | 🟡 Medium - delays Phase 7 | TradingView validation |
-| Phase 7 | 🔴 VERY HIGH | 🔴 VERY HIGH | 🔴 Critical - S01 unusable | Dual-track, incremental, bit-exact validation |
-| Phase 8 | 🟡 MED | 🟢 LOW | 🟢 Low - UI only | Manual testing, no backend impact |
-| Phase 9 | 🟡 MED | 🟢 LOW | 🟢 Low - polish only | Standard cleanup |
+This ensures UI remains functional throughout and cleanup is safe.
 
 ---
 
 ## Timeline Estimates
 
-**Optimistic Scenario (experienced developer, no major issues):**
-- Total: 70-90 hours = 9-12 workdays = **2 weeks full-time** or **4-6 weeks part-time**
+**Optimistic Scenario:**
+- Phases 7-11: 38-52 hours = 5-7 workdays = **1-1.5 weeks full-time**
 
-**Realistic Scenario (some bugs, learning curve):**
-- Total: 90-120 hours = 12-15 workdays = **3 weeks full-time** or **6-8 weeks part-time**
+**Realistic Scenario:**
+- Phases 7-11: 52-68 hours = 7-9 workdays = **1.5-2 weeks full-time**
 
-**Pessimistic Scenario (significant issues, multiple iterations):**
-- Total: 120-160+ hours = 15-20+ workdays = **3-4 weeks full-time** or **2-3 months part-time**
-
-**Recommendation:** Plan for realistic scenario, hope for optimistic, prepare for pessimistic.
+**Total Migration (Phases -1 through 11):**
+- Optimistic: 90-110 hours = **2-2.5 weeks full-time**
+- Realistic: 110-140 hours = **2.5-3.5 weeks full-time**
 
 ---
 
-## Migration Tracking
+## Risk Matrix (Updated)
 
-Use this to track your progress:
-
-```markdown
-## MIGRATION_PROGRESS.md
-
-- [x] Phase -1: Test Infrastructure (Started: YYYY-MM-DD, Completed: YYYY-MM-DD)
-- [x] Phase 0: Regression Baseline
-- [x] Phase 1: Core Extraction
-- [ ] Phase 2: Export Extraction
-- [ ] Phase 3: Grid Search Removal
-  - [ ] 3.A: Extract shared code
-  - [ ] 3.B: Remove Grid Search
-- [ ] Phase 4: Metrics Extraction
-- [ ] Phase 5: Indicators Extraction
-  - [ ] 5.1: Utilities
-  - [ ] 5.2: Volume indicators
-  - [ ] 5.3: Volatility indicators
-  - [ ] 5.4: Basic MAs
-  - [ ] 5.5: Advanced MAs
-  - [ ] 5.6: MA facade
-- [ ] Phase 6: Simple Strategy Testing
-- [ ] Phase 7: S01 Migration
-  - [ ] 7.1: Create structure
-  - [ ] 7.2: Incremental migration
-  - [ ] 7.3: Comprehensive testing
-  - [ ] 7.4: Production switch
-- [ ] Phase 8: Frontend Separation
-- [ ] Phase 9: Logging, Cleanup, Documentation
-
-## Notes
-- Add notes about challenges, decisions, workarounds
-- Document any deviations from plan
-- Track time spent per phase
-```
+| Phase | Complexity | Risk | Failure Impact | Status |
+|-------|-----------|------|----------------|--------|
+| Phase -1 | 🟢 LOW | 🟢 LOW | 🟢 Low | ✅ COMPLETE |
+| Phase 0 | 🟡 MED | 🟢 LOW | 🔴 Critical | ✅ COMPLETE |
+| Phase 1 | 🟢 LOW | 🟢 LOW | 🟢 Low | ✅ COMPLETE |
+| Phase 2 | 🟡 MED | 🟢 LOW | 🟢 Low | ✅ COMPLETE |
+| Phase 3 | 🔴 HIGH | 🟡 MED | 🟡 Medium | ✅ COMPLETE |
+| Phase 4 | 🔴 HIGH | 🔴 HIGH | 🔴 Critical | ✅ COMPLETE |
+| Phase 5 | 🔴 HIGH | 🔴 HIGH | 🔴 Critical | ✅ COMPLETE |
+| Phase 6 | 🟡 MED | 🟢 LOW | 🟡 Medium | ✅ COMPLETE |
+| Phase 7 | 🔴 VERY HIGH | 🔴 VERY HIGH | 🔴 Critical | ⏳ PENDING |
+| Phase 8 (NEW) | 🟡 MED | 🟡 MED | 🟡 Medium | ⏳ PENDING |
+| Phase 9 (NEW) | 🟡 MED | 🟢 LOW | 🟢 Low | ⏳ PENDING |
+| Phase 10 | 🟡 MED | 🟢 LOW | 🟢 Low | ⏳ PENDING |
+| Phase 11 | 🟢 LOW | 🟢 LOW | 🟢 Low | ⏳ PENDING |
 
 ---
 
 ## Critical Success Factors
 
 ### ✅ Must Have
-1. **Regression baseline BEFORE any changes** (Phase 0)
-2. **Test infrastructure** (Phase -1)
+
+1. **Regression baseline BEFORE any changes** (Phase 0) ✅ DONE
+2. **Test infrastructure** (Phase -1) ✅ DONE
 3. **Bit-exact validation** for Phases 4, 5, 7
 4. **Incremental approach** - one change at a time
-5. **Legacy preservation** during migration (dual-track)
+5. **Dynamic UI** before legacy cleanup (Phase 8 → Phase 9 order)
 
 ### ⚠️ Should Have
-1. **TradingView validation** for strategies
+
+1. **TradingView validation** for strategies ✅ DONE for S04
 2. **Performance profiling** before/after
-3. **Documentation as you go** (not all at end)
+3. **Documentation as you go**
 4. **Git tags** at each phase completion
 
 ### 💡 Nice to Have
+
 1. **Parallel development** (multiple branches)
 2. **Rollback plan** (git tags enable this)
 3. **CI/CD pipeline** (GitHub Actions)
@@ -2408,68 +1689,53 @@ Use this to track your progress:
 
 ---
 
-## Final Notes
-
-### When to Stop and Ask for Help
-
-🚨 **STOP migration if:**
-1. Phase 0 baseline cannot be reproduced consistently
-2. Regression tests fail after Phase 4 or 5 and you can't fix quickly
-3. Performance degrades >50% after migration
-4. S01 migrated version differs from legacy by >0.1%
-
-### Tips for Success
-
-1. **Take your time with Phases 4, 5, and 7** - these are high-risk
-2. **Run regression test frequently** - after every significant change
-3. **Commit early, commit often** - easy to rollback if needed
-4. **Test in small increments** - don't batch multiple changes
-5. **Document decisions** - future you will thank present you
-6. **Celebrate milestones** - each phase completion is an achievement!
-
-### Questions During Migration
+## Questions During Migration
 
 If you encounter:
 - **Unexpected test failures:** Debug before proceeding
 - **Performance issues:** Profile and investigate
 - **Design questions:** Refer back to PROJECT_TARGET_ARCHITECTURE.md
 - **Scope creep:** Stay focused on migration, defer improvements
+- **UI issues:** Phase 8 should fix them, don't bypass
 
 ---
 
-## Appendix: Key Architecture Decisions
+**END OF MIGRATION PLAN v2.1**
 
-### Data Structure Ownership
-**Decision:** Structures live where they're populated
-**Rationale:** Clear ownership, easier to understand data flow
-**Impact:** No separate types.py needed
-
-### StrategyParams Location
-**Decision:** Inside each strategy's strategy.py
-**Rationale:** Each strategy owns its parameters, no shared StrategyParams
-**Impact:** Better encapsulation, easier to add new strategies
-
-### Frontend Timing
-**Decision:** Separate frontend AFTER core migration
-**Rationale:** UI doesn't affect backend, logical to clean up last
-**Impact:** Focus on high-risk backend first
-
-### Export Early
-**Decision:** Extract export before Grid removal
-**Rationale:** Low risk, provides utilities immediately
-**Impact:** Cleaner later phases, useful for debugging
-
-### Metrics Before Indicators
-**Decision:** Extract metrics before indicators
-**Rationale:** Metrics self-contained, easier to validate
-**Impact:** Build confidence before riskier indicator extraction
-
----
-
-**END OF MIGRATION PLAN**
-
-**Version:** 2.0
-**Status:** Ready for Execution
-**Last Updated:** 2025-11-27
+**Version:** 2.1
+**Status:** Ready for Phase 7 Execution
+**Last Updated:** 2025-12-03
 **Author:** Migration Team
-**Next Step:** Begin Phase -1 (Test Infrastructure Setup)
+**Next Step:** Begin Phase 7 (S01 Migration via Duplicate)
+
+---
+
+## Appendix: Hardcoded S01 References Audit
+
+### Backend (server.py)
+
+**Lines with S01 hardcoding:**
+- 75-130: DEFAULT_PRESET with S01 parameters
+- 596: Default strategy_id = "s01_trailing_ma"
+- 962: Default strategy_id = "s01_trailing_ma"
+- 1163: Hardcoded strategy_id = "s01_trailing_ma"
+- 1503: Default strategy_id = "s01_trailing_ma"
+- 678-693: S01 parameter names for warmup calculation
+- 1198-1215: S01 MA type mappings
+- 1341-1347: S01 trail type handling
+
+**Total:** ~160 lines of S01-specific backend code
+
+### Frontend (index.html)
+
+**Before Phase 8:**
+- 1455-1829: Hardcoded optimizer HTML (~374 lines)
+- 2668-2840: OPTIMIZATION_PARAMETERS array (~172 lines)
+
+**Total:** ~546 lines of S01-specific frontend code
+
+**After Phase 8:** All deleted ✅
+
+### Grand Total
+
+**~700 lines of S01-specific hardcoded code** identified and tracked for cleanup in Phase 9.
