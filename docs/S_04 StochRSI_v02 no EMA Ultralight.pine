@@ -1,0 +1,214 @@
+// S_04 StochRSI_v01 Ultralight
+// based on S_01 Movings_v26 JMA
+// @version=5
+strategy(title="S_04 StochRSI Ultralight",
+	 overlay=true,
+	 initial_capital=100,
+	 currency="USDT",
+	 calc_on_order_fills=true,
+	 calc_on_every_tick=true,
+	 use_bar_magnifier=true,
+	 fill_orders_on_standard_ohlc=true,
+	 process_orders_on_close=true,
+	 default_qty_type=strategy.cash,
+	 default_qty_value=100,
+	 commission_type=strategy.commission.percent,
+	 commission_value=0.05)
+
+
+
+// Some functions in this strategy are not needed in Python beacuse of its Pine specific or it is already presented in project
+// I'll mark them by "skip start" and "skip end" - this means start and end of block you need to skip
+// Date Filter standart function - use the built-in function of the project (Date Range) and skip this block
+// skip start
+useDateFilter     = input.bool(true, "Date Filer", inline="Use Date Filer")
+drawTester        = input.bool(title="Backtester", defval=true, inline="Use Date Filer")
+bool mptable_on   = input.bool(title="Table", defval=true, display=display.none, inline="Use Date Filer")
+comments          = input.string(title="", defval="", inline="Use Date Filer")
+
+startDate         = input.time(timestamp('2025-06-01'), title="Start Date")
+endDate           = input.time(timestamp('2025-10-01'), title="End Date")
+// skip end
+
+
+// ++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++ INPUTS ++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++
+
+rsiLen   = input.int(16,  "RSI length",      minval = 1)
+stochLen = input.int(16,  "Stoch length",    minval = 1)
+kLen     = input.int(3,   "%K smoothing",    minval = 1)
+dLen     = input.int(3,   "%D smoothing",    minval = 1)
+
+obLevel  = input.float(75.0, "Overbought level",  minval = 0.0, maxval = 100.0)
+osLevel  = input.float(15.0, "Oversold level",    minval = 0.0, maxval = 100.0)
+
+extLookback  = input.int(23, "Extremum lookback (X bars)", minval = 2)
+confirmBars  = input.int(14,  "Bars after extremum (N)",    minval = 1)
+
+riskPerTrade              = input.float(title="Risk Per Trade", defval=2, step=0.5, inline="Risk Per Trade")
+contractsSize             = input.float(title="Contract Size", defval=0.01, options=[0.0001, 0.001, 0.01, 0.1, 1, 10, 100, 1000, 10000, 100000, 1000000], inline="Risk Per Trade")
+
+
+// ++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++ CALCULATIONS ++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++
+
+
+rsi  = ta.rsi(close, rsiLen)
+rsiH = ta.highest(rsi, stochLen)
+rsiL = ta.lowest(rsi,  stochLen)
+den  = rsiH - rsiL
+
+stochRsi = den != 0.0 ? (rsi - rsiL) / den * 100.0 : 0.0
+
+k = ta.sma(stochRsi, kLen)
+d = ta.sma(k, dLen)
+
+
+// skip start
+// Check Dates Range
+timeInRange = not useDateFilter or time >= startDate and time <= endDate
+// skip end
+
+// Check if there is crossing of K and D in OB or OS levels
+var bool osCrossLongFlag  = false
+var bool obCrossShortFlag = false
+
+bullCrossInOS = ta.crossover(k, d) and k < osLevel and d < osLevel
+if bullCrossInOS
+    osCrossLongFlag := true
+
+resetOS = ta.crossover(k, osLevel)
+if resetOS
+    osCrossLongFlag := false
+
+bearCrossInOB = ta.crossunder(k, d) and k > obLevel and d > obLevel
+if bearCrossInOB
+    obCrossShortFlag := true
+
+resetOB = ta.crossunder(k, obLevel)
+if resetOB
+    obCrossShortFlag := false
+
+
+// Long trend detect
+var float swingLow      = na
+var int   swingLowCount = 0
+var bool  trendLongFlag = false
+
+lowestLow = ta.lowest(low, extLookback)
+
+isNewSwingLow = na(swingLow) or (lowestLow != swingLow)
+if isNewSwingLow
+    swingLow      := lowestLow
+    swingLowCount := 0
+    trendLongFlag := false
+
+if not na(swingLow)
+    if low > swingLow
+        swingLowCount += 1
+        if swingLowCount >= confirmBars
+            trendLongFlag := true
+    else if low < swingLow
+        swingLow      := low
+        swingLowCount := 0
+        trendLongFlag := false
+
+// Short trend detect
+var float swingHigh      = na
+var int   swingHighCount = 0
+var bool  trendShortFlag = false
+
+highestHigh = ta.highest(high, extLookback)
+
+isNewSwingHigh = na(swingHigh) or (highestHigh != swingHigh)
+if isNewSwingHigh
+    swingHigh      := highestHigh
+    swingHighCount := 0
+    trendShortFlag := false
+
+if not na(swingHigh)
+    if high < swingHigh
+        swingHighCount += 1
+        if swingHighCount >= confirmBars
+            trendShortFlag := true
+    else if high > swingHigh
+        swingHigh      := high
+        swingHighCount := 0
+        trendShortFlag := false
+
+
+
+// ++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++ ENTRY ++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++
+
+
+// Check long/short conditions
+longConditions  = osCrossLongFlag and trendLongFlag and timeInRange and strategy.position_size == 0 and strategy.position_size[1] == 0 and barstate.isconfirmed
+shortConditions = obCrossShortFlag and trendShortFlag and timeInRange and strategy.position_size == 0 and strategy.position_size[1] == 0 and barstate.isconfirmed
+
+
+// Save trade price, stop and target
+var t_entry           = 0.0
+var t_stop            = 0.0
+var positionSize      = 0.0
+
+// Enter trade
+if longConditions
+    t_entry := close
+    t_stop := swingLow
+    positionSize := math.floor(((strategy.equity * (riskPerTrade/100)) / (close - t_stop)) / contractsSize) * contractsSize
+    strategy.entry(id="Long", direction=strategy.long, qty=positionSize)
+
+if shortConditions
+    t_entry := close
+    t_stop := swingHigh
+    positionSize := math.floor(((strategy.equity * (riskPerTrade/100)) / (t_stop - close)) / contractsSize) * contractsSize
+    strategy.entry(id="Short", direction=strategy.short, qty=positionSize)
+
+longStopDistance  = close - t_stop
+longStopPct = (longStopDistance/close)*100
+
+shortStopDistance = t_stop - close
+shortStopPct      = (shortStopDistance/close)*100
+
+// ++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++ EXIT ++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++
+// Exit trade by Stop Loss
+if strategy.position_size > 0
+    strategy.exit(id="Long SL", from_entry="Long", stop=t_stop)
+
+if strategy.position_size < 0
+    strategy.exit(id="Short SL", from_entry="Short", stop=t_stop)
+
+
+// Exit trade by opposite StochRSI signal
+if strategy.position_size > 0 and bearCrossInOB
+    strategy.close("Long",  comment = "Long exit by StochRSI")
+
+if strategy.position_size < 0 and bullCrossInOS
+    strategy.close("Short",  comment = "Short exit by StochRSI")
+
+
+// Reference test results:
+// Test Configuration:
+// CSV File: ./data/raw/"OKX_LINKUSDT.P, 15 2025.05.01-2025.11.20.csv"
+
+// Default Parameters:
+
+// Date range: from 2025-06-01 to 2025-10-01
+
+// Parameters:
+// RSI length = 16
+// Stoch length = 16
+// %K smoothing = 3
+// %D smoothing = 3
+// Overbought level = 75
+// Oversold level = 15
+// Extremum lookback (X bars) = 23
+// Bars after extremum (N) = 14
+
+// Risk Per Trade = 2 (project default setting)
+// Contract Size = 0.01  (project default setting)
+
+// Expected Results
+
+// Performance Metrics:
+// ├─ Net Profit:        113.26%
+// ├─ Max Drawdown:      10.99%
+// ├─ Total Trades:      52
