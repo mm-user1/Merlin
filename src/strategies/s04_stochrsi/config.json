@@ -1,0 +1,129 @@
+{
+  "id": "s04_stochrsi",
+  "name": "S04 StochRSI",
+  "version": "v02",
+  "description": "StochRSI swing strategy with swing-based stops",
+  "author": "",
+  "parameters": {
+    "rsiLen": {
+      "type": "int",
+      "label": "RSI Length",
+      "default": 16,
+      "min": 1,
+      "max": 200,
+      "step": 1,
+      "group": "StochRSI",
+      "optimize": { "enabled": true, "min": 4, "max": 50, "step": 2 }
+    },
+    "stochLen": {
+      "type": "int",
+      "label": "Stoch Length",
+      "default": 16,
+      "min": 1,
+      "max": 200,
+      "step": 1,
+      "group": "StochRSI",
+      "optimize": { "enabled": true, "min": 4, "max": 50, "step": 2 }
+    },
+    "kLen": {
+      "type": "int",
+      "label": "%K Smoothing",
+      "default": 3,
+      "min": 1,
+      "max": 50,
+      "step": 1,
+      "group": "StochRSI",
+      "optimize": { "enabled": false }
+    },
+    "dLen": {
+      "type": "int",
+      "label": "%D Smoothing",
+      "default": 3,
+      "min": 1,
+      "max": 50,
+      "step": 1,
+      "group": "StochRSI",
+      "optimize": { "enabled": false }
+    },
+    "obLevel": {
+      "type": "float",
+      "label": "Overbought Level",
+      "default": 75.0,
+      "min": 0.0,
+      "max": 100.0,
+      "step": 0.5,
+      "group": "Levels",
+      "optimize": { "enabled": true, "min": 60.0, "max": 90.0, "step": 1.0 }
+    },
+    "osLevel": {
+      "type": "float",
+      "label": "Oversold Level",
+      "default": 15.0,
+      "min": 0.0,
+      "max": 100.0,
+      "step": 0.5,
+      "group": "Levels",
+      "optimize": { "enabled": true, "min": 5.0, "max": 30.0, "step": 1.0 }
+    },
+    "extLookback": {
+      "type": "int",
+      "label": "Extremum Lookback",
+      "default": 23,
+      "min": 2,
+      "max": 200,
+      "step": 1,
+      "group": "Trend Confirmation",
+      "optimize": { "enabled": true, "min": 5, "max": 60, "step": 1 }
+    },
+    "confirmBars": {
+      "type": "int",
+      "label": "Confirm Bars",
+      "default": 14,
+      "min": 1,
+      "max": 200,
+      "step": 1,
+      "group": "Trend Confirmation",
+      "optimize": { "enabled": true, "min": 2, "max": 40, "step": 1 }
+    },
+    "riskPerTrade": {
+      "type": "float",
+      "label": "Risk per Trade (%)",
+      "default": 2.0,
+      "min": 0.0,
+      "max": 10.0,
+      "step": 0.1,
+      "group": "Position Sizing",
+      "optimize": { "enabled": false }
+    },
+    "contractSize": {
+      "type": "float",
+      "label": "Contract Size",
+      "default": 0.01,
+      "min": 0.0001,
+      "max": 1000000,
+      "step": 0.0001,
+      "group": "Position Sizing",
+      "optimize": { "enabled": false }
+    },
+    "initialCapital": {
+      "type": "float",
+      "label": "Initial Capital",
+      "default": 100.0,
+      "min": 0.0,
+      "max": 1000000.0,
+      "step": 1.0,
+      "group": "Backtest Settings",
+      "optimize": { "enabled": false }
+    },
+    "commissionPct": {
+      "type": "float",
+      "label": "Commission (%)",
+      "default": 0.05,
+      "min": 0.0,
+      "max": 1.0,
+      "step": 0.01,
+      "group": "Backtest Settings",
+      "optimize": { "enabled": false }
+    }
+  }
+}

@@ -30,6 +30,9 @@ from .ma import (
 # Volatility
 from .volatility import atr
 
+# Oscillators
+from .oscillators import rsi, stoch_rsi
+
 __all__ = [
     # Moving Averages
     "sma",
@@ -47,4 +50,7 @@ __all__ = [
     "VALID_MA_TYPES",
     # Volatility
     "atr",
+    # Oscillators
+    "rsi",
+    "stoch_rsi",
 ]
