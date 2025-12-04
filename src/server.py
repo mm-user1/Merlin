@@ -1200,24 +1200,31 @@ def _build_optimization_config(
     if not isinstance(fixed_params, dict):
         raise ValueError("fixed_params must be a dictionary.")
 
-    ma_types_trend = payload.get("ma_types_trend") or payload.get("maTypesTrend") or []
-    ma_types_trail_long = (
-        payload.get("ma_types_trail_long")
-        or payload.get("maTypesTrailLong")
-        or []
-    )
-    ma_types_trail_short = (
-        payload.get("ma_types_trail_short")
-        or payload.get("maTypesTrailShort")
-        or []
-    )
+    is_s01_strategy = bool(strategy_id) and "s01" in str(strategy_id).lower()
+    ma_types_trend: List[str] = []
+    ma_types_trail_long: List[str] = []
+    ma_types_trail_short: List[str] = []
+    lock_trail_types = False
 
-    lock_trail_types_raw = (
-        payload.get("lock_trail_types")
-        or payload.get("lockTrailTypes")
-        or payload.get("trailLock")
-    )
-    lock_trail_types = _parse_bool(lock_trail_types_raw, False)
+    if is_s01_strategy:
+        ma_types_trend = payload.get("ma_types_trend") or payload.get("maTypesTrend") or []
+        ma_types_trail_long = (
+            payload.get("ma_types_trail_long")
+            or payload.get("maTypesTrailLong")
+            or []
+        )
+        ma_types_trail_short = (
+            payload.get("ma_types_trail_short")
+            or payload.get("maTypesTrailShort")
+            or []
+        )
+
+        lock_trail_types_raw = (
+            payload.get("lock_trail_types")
+            or payload.get("lockTrailTypes")
+            or payload.get("trailLock")
+        )
+        lock_trail_types = _parse_bool(lock_trail_types_raw, False)
 
     risk_per_trade = payload.get("risk_per_trade_pct")
     if risk_per_trade is None:
