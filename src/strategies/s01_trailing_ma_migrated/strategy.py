@@ -12,7 +12,7 @@ import numpy as np
 import pandas as pd
 
 from core import metrics
-from core.backtest_engine import StrategyParams, StrategyResult, TradeRecord
+from core.backtest_engine import StrategyResult, TradeRecord
 from indicators.ma import get_ma
 from indicators.volatility import atr
 from strategies.base import BaseStrategy
@@ -42,7 +42,7 @@ class S01Params:
     trail_rr_short: float = 1.0
     trail_ma_long_type: str = "SMA"
     trail_ma_long_length: int = 160
-    trail_ma_long_offset: float = 1.0
+    trail_ma_long_offset: float = -1.0
     trail_ma_short_type: str = "SMA"
     trail_ma_short_length: int = 160
     trail_ma_short_offset: float = 1.0
@@ -53,38 +53,73 @@ class S01Params:
 
     @classmethod
     def from_dict(cls, payload: Optional[Dict[str, Any]]) -> "S01Params":
-        parsed = StrategyParams.from_dict(payload or {})
+        """
+        Parse S01 parameters from frontend/API payload.
+        Maps camelCase (frontend) to snake_case (Python).
+
+        This method directly parses the input dictionary without using
+        legacy StrategyParams, ensuring the strategy owns its parameters.
+
+        Args:
+            payload: Dictionary with camelCase parameter names from frontend
+
+        Returns:
+            S01Params instance with all parameters parsed
+        """
+        d = payload or {}
+
+        # Date handling (convert string to Timestamp if needed)
+        start = d.get("start")
+        end = d.get("end")
+        if isinstance(start, str):
+            start = pd.Timestamp(start, tz="UTC")
+        if isinstance(end, str):
+            end = pd.Timestamp(end, tz="UTC")
+
         return cls(
-            use_backtester=parsed.use_backtester,
-            use_date_filter=parsed.use_date_filter,
-            start=parsed.start,
-            end=parsed.end,
-            ma_type=parsed.ma_type,
-            ma_length=parsed.ma_length,
-            close_count_long=parsed.close_count_long,
-            close_count_short=parsed.close_count_short,
-            stop_long_atr=parsed.stop_long_atr,
-            stop_long_rr=parsed.stop_long_rr,
-            stop_long_lp=parsed.stop_long_lp,
-            stop_short_atr=parsed.stop_short_atr,
-            stop_short_rr=parsed.stop_short_rr,
-            stop_short_lp=parsed.stop_short_lp,
-            stop_long_max_pct=parsed.stop_long_max_pct,
-            stop_short_max_pct=parsed.stop_short_max_pct,
-            stop_long_max_days=parsed.stop_long_max_days,
-            stop_short_max_days=parsed.stop_short_max_days,
-            trail_rr_long=parsed.trail_rr_long,
-            trail_rr_short=parsed.trail_rr_short,
-            trail_ma_long_type=parsed.trail_ma_long_type,
-            trail_ma_long_length=parsed.trail_ma_long_length,
-            trail_ma_long_offset=parsed.trail_ma_long_offset,
-            trail_ma_short_type=parsed.trail_ma_short_type,
-            trail_ma_short_length=parsed.trail_ma_short_length,
-            trail_ma_short_offset=parsed.trail_ma_short_offset,
-            risk_per_trade_pct=parsed.risk_per_trade_pct,
-            contract_size=parsed.contract_size,
-            commission_rate=parsed.commission_rate,
-            atr_period=parsed.atr_period,
+            # Backtester flags
+            use_backtester=bool(d.get("backtester", True)),
+            use_date_filter=bool(d.get("dateFilter", True)),
+            start=start,
+            end=end,
+
+            # Main MA parameters
+            ma_type=str(d.get("maType", "EMA")),
+            ma_length=int(d.get("maLength", 45)),
+
+            # Entry logic
+            close_count_long=int(d.get("closeCountLong", 7)),
+            close_count_short=int(d.get("closeCountShort", 5)),
+
+            # Stop parameters (ATR-based)
+            stop_long_atr=float(d.get("stopLongX", 2.0)),
+            stop_long_rr=float(d.get("stopLongRR", 3.0)),
+            stop_long_lp=int(d.get("stopLongLP", 2)),
+            stop_short_atr=float(d.get("stopShortX", 2.0)),
+            stop_short_rr=float(d.get("stopShortRR", 3.0)),
+            stop_short_lp=int(d.get("stopShortLP", 2)),
+
+            # Stop parameters (max % and max days)
+            stop_long_max_pct=float(d.get("stopLongMaxPct", 3.0)),
+            stop_short_max_pct=float(d.get("stopShortMaxPct", 3.0)),
+            stop_long_max_days=int(d.get("stopLongMaxDays", 2)),
+            stop_short_max_days=int(d.get("stopShortMaxDays", 4)),
+
+            # Trail parameters
+            trail_rr_long=float(d.get("trailRRLong", 1.0)),
+            trail_rr_short=float(d.get("trailRRShort", 1.0)),
+            trail_ma_long_type=str(d.get("trailLongType", "SMA")),
+            trail_ma_long_length=int(d.get("trailLongLength", 160)),
+            trail_ma_long_offset=float(d.get("trailLongOffset", -1.0)),
+            trail_ma_short_type=str(d.get("trailShortType", "SMA")),
+            trail_ma_short_length=int(d.get("trailShortLength", 160)),
+            trail_ma_short_offset=float(d.get("trailShortOffset", 1.0)),
+
+            # Risk parameters
+            risk_per_trade_pct=float(d.get("riskPerTrade", 2.0)),
+            contract_size=float(d.get("contractSize", 0.01)),
+            commission_rate=float(d.get("commissionRate", 0.0005)),
+            atr_period=int(d.get("atrPeriod", 14)),
         )
 
     def to_dict(self) -> Dict[str, Any]:
