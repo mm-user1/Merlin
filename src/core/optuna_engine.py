@@ -479,28 +479,31 @@ class OptunaOptimizer:
         trail_long_types = [ma.upper() for ma in self.base_config.ma_types_trail_long]
         trail_short_types = [ma.upper() for ma in self.base_config.ma_types_trail_short]
 
-        if not trend_types or not trail_long_types or not trail_short_types:
-            raise ValueError("At least one MA type must be selected in each group.")
+        include_ma_types = bool(trend_types or trail_long_types or trail_short_types)
 
-        space["ma_type"] = {"type": "categorical", "choices": trend_types}
+        if include_ma_types:
+            if not trend_types or not trail_long_types:
+                raise ValueError("At least one MA type must be selected in each group.")
 
-        if self.base_config.lock_trail_types:
-            short_set = {ma.upper() for ma in trail_short_types}
-            paired = [ma for ma in trail_long_types if ma in short_set]
-            if not paired:
-                raise ValueError(
-                    "No overlapping trail MA types available when lock_trail_types is enabled."
-                )
-            space["trail_ma_long_type"] = {"type": "categorical", "choices": paired}
-        else:
-            space["trail_ma_long_type"] = {
-                "type": "categorical",
-                "choices": trail_long_types,
-            }
-            space["trail_ma_short_type"] = {
-                "type": "categorical",
-                "choices": trail_short_types,
-            }
+            space["ma_type"] = {"type": "categorical", "choices": trend_types}
+
+            if self.base_config.lock_trail_types:
+                short_set = {ma.upper() for ma in trail_short_types}
+                paired = [ma for ma in trail_long_types if ma in short_set] or trail_long_types
+                space["trail_ma_long_type"] = {"type": "categorical", "choices": paired}
+            else:
+                if not trail_short_types:
+                    raise ValueError(
+                        "At least one trail short MA type must be selected when lock_trail_types is disabled."
+                    )
+                space["trail_ma_long_type"] = {
+                    "type": "categorical",
+                    "choices": trail_long_types,
+                }
+                space["trail_ma_short_type"] = {
+                    "type": "categorical",
+                    "choices": trail_short_types,
+                }
 
         return space
 
