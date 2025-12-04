@@ -19,7 +19,7 @@ from core.optuna_engine import (
     run_optimization,
 )
 
-app = Flask(__name__)
+app = Flask(__name__, static_folder="static", static_url_path="/static")
 
 
 MA_TYPES: Tuple[str, ...] = (
@@ -35,6 +35,11 @@ MA_TYPES: Tuple[str, ...] = (
     "VWMA",
     "VWAP",
 )
+
+
+@app.route("/static/<path:path>")
+def send_static(path: str) -> object:
+    return send_from_directory("static", path)
 
 SCORE_METRIC_KEYS: Tuple[str, ...] = (
     "romad",
