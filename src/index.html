@@ -1377,49 +1377,50 @@
       return formGroup;
     }
 
+    const MA_TYPES = [
+      'EMA',
+      'SMA',
+      'HMA',
+      'WMA',
+      'ALMA',
+      'KAMA',
+      'TMA',
+      'T3',
+      'DEMA',
+      'VWMA',
+      'VWAP'
+    ];
+
+    function isS01Strategy(strategyId = currentStrategyId) {
+      return typeof strategyId === 'string' && strategyId.toLowerCase().includes('s01');
+    }
+
+    function getMaTypeContainer() {
+      return document.getElementById('maTypeSelectorContainer');
+    }
+
+    function isMaSelectorVisible() {
+      const container = getMaTypeContainer();
+      if (!container) {
+        return false;
+      }
+      const style = window.getComputedStyle(container);
+      return style.display !== 'none';
+    }
+
+    function getMaTypeCheckboxes(group) {
+      const container = getMaTypeContainer();
+      if (!container) {
+        return { allCheckbox: null, checkboxes: [] };
+      }
+      const allCheckbox = container.querySelector(`input.opt-ma-type[data-group="${group}"][data-type="ALL"]`);
+      const checkboxes = Array.from(
+        container.querySelectorAll(`input.opt-ma-type[data-group="${group}"]:not([data-type="ALL"])`)
+      );
+      return { allCheckbox, checkboxes };
+    }
+
     document.addEventListener('DOMContentLoaded', () => {
-      const MA_TYPES = [
-        'EMA',
-        'SMA',
-        'HMA',
-        'WMA',
-        'ALMA',
-        'KAMA',
-        'TMA',
-        'T3',
-        'DEMA',
-        'VWMA',
-        'VWAP'
-      ];
-
-      function isS01Strategy(strategyId = currentStrategyId) {
-        return typeof strategyId === 'string' && strategyId.toLowerCase().includes('s01');
-      }
-
-      function getMaTypeContainer() {
-        return document.getElementById('maTypeSelectorContainer');
-      }
-
-      function isMaSelectorVisible() {
-        const container = getMaTypeContainer();
-        if (!container) {
-          return false;
-        }
-        const style = window.getComputedStyle(container);
-        return style.display !== 'none';
-      }
-
-      function getMaTypeCheckboxes(group) {
-        const container = getMaTypeContainer();
-        if (!container) {
-          return { allCheckbox: null, checkboxes: [] };
-        }
-        const allCheckbox = container.querySelector(`input.opt-ma-type[data-group="${group}"][data-type="ALL"]`);
-        const checkboxes = Array.from(
-          container.querySelectorAll(`input.opt-ma-type[data-group="${group}"]:not([data-type="ALL"])`)
-        );
-        return { allCheckbox, checkboxes };
-      }
 
       loadStrategiesList();
 
@@ -2640,32 +2641,7 @@
           trailShortTypes.push(String(dynamicParams.trailShortType));
         }
 
-        const legacyParams = {
-          maLength: Number(document.getElementById('maLength').value),
-          closeCountLong: Number(document.getElementById('closeCountLong').value),
-          closeCountShort: Number(document.getElementById('closeCountShort').value),
-          stopLongX: Number(document.getElementById('stopLongX').value),
-          stopLongRR: Number(document.getElementById('stopLongRR').value),
-          stopLongLP: Number(document.getElementById('stopLongLP').value),
-          stopShortX: Number(document.getElementById('stopShortX').value),
-          stopShortRR: Number(document.getElementById('stopShortRR').value),
-          stopShortLP: Number(document.getElementById('stopShortLP').value),
-          stopLongMaxPct: Number(document.getElementById('stopLongMaxPct').value),
-          stopShortMaxPct: Number(document.getElementById('stopShortMaxPct').value),
-          stopLongMaxDays: Number(document.getElementById('stopLongMaxDays').value),
-          stopShortMaxDays: Number(document.getElementById('stopShortMaxDays').value),
-          trailRRLong: Number(document.getElementById('trailRRLong').value),
-          trailRRShort: Number(document.getElementById('trailRRShort').value),
-          trailLongLength: Number(document.getElementById('trailLongLength').value),
-          trailLongOffset: Number(document.getElementById('trailLongOffset').value),
-          trailShortLength: Number(document.getElementById('trailShortLength').value),
-          trailShortOffset: Number(document.getElementById('trailShortOffset').value),
-          riskPerTrade: Number(document.getElementById('riskPerTrade').value),
-          contractSize: Number(document.getElementById('contractSize').value)
-        };
-
         const payload = {
-          ...legacyParams,
           ...dynamicParams,
           dateFilter: document.getElementById('dateFilter').checked,
           backtester: document.getElementById('backtester').checked,
@@ -3088,6 +3064,11 @@
         const maTypesTrailShort = state.isS01 ? state.trailShortTypes : [];
         const lockTrail = state.isS01 ? Boolean(state.lockTrailTypes) : false;
 
+        const riskPerTrade = getBacktestParamValue('riskPerTrade', paramsDef.riskPerTrade, dynamicParams) || 0;
+        const contractSize = getBacktestParamValue('contractSize', paramsDef.contractSize, dynamicParams) || 0;
+        const commissionRate = getBacktestParamValue('commissionPct', paramsDef.commissionPct, dynamicParams);
+        const atrPeriod = getBacktestParamValue('atrPeriod', paramsDef.atrPeriod, dynamicParams);
+
         return {
           enabled_params: enabledParams,
           param_ranges: paramRanges,
@@ -3096,10 +3077,10 @@
           ma_types_trail_long: maTypesTrailLong,
           ma_types_trail_short: maTypesTrailShort,
           lock_trail_types: lockTrail,
-          risk_per_trade_pct: Number(document.getElementById('riskPerTrade').value) || 0,
-          contract_size: Number(document.getElementById('contractSize').value) || 0,
-          commission_rate: 0.0005,
-          atr_period: 14,
+          risk_per_trade_pct: Number(riskPerTrade) || 0,
+          contract_size: Number(contractSize) || 0,
+          commission_rate: commissionRate !== undefined ? Number(commissionRate) || 0 : 0.0005,
+          atr_period: atrPeriod !== undefined ? Number(atrPeriod) || 14 : 14,
           worker_processes: workerProcesses,
           filter_min_profit: filterEnabled,
           min_profit_threshold: minProfitThreshold,
