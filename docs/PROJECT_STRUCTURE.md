@@ -61,10 +61,6 @@ project-root/
 │   │   │   ├── __init__.py
 │   │   │   ├── strategy.py          # current/main S_01 implementation (after migration)
 │   │   │   └── config.json          # parameter/range descriptions
-│   │   └── s01_trailing_ma_migrated/
-│   │       ├── __init__.py
-│   │       ├── strategy.py          # temporary folder for migrated S_01 version
-│   │       └── config.json
 │   │   # other strategies will be added here following the same template
 │   │
 │   ├── ui/                          # server and frontend
@@ -177,7 +173,7 @@ Strategy implementations with their own parameters:
   - Position sizing modes (fixed qty or % of equity)
   - `S01Params` dataclass lives inside strategy.py
 
-- **`s01_trailing_ma_migrated/`** - Temporary migration folder
+- **`s01_trailing_ma/`** - Migrated S01 strategy (legacy folder removed)
   - Used during Phase 7 migration
   - Allows parallel testing: legacy vs migrated
   - Deleted after validation completes
@@ -325,7 +321,7 @@ See `PROJECT_MIGRATION_PLAN_upd.md` for detailed migration steps.
 - **`src/strategies/`**:
   - `base.py` defines the interface and common functionality
   - `simple_ma/` - training strategy for architecture validation
-  - `s01_trailing_ma_migrated/` - temporary folder for S01 migration
+  - `s01_trailing_ma/` - migrated S01 strategy (production)
   - `s01_trailing_ma/` - main S01 version after migration completion
 
 - **`src/ui/`** - Separate "island" for web interface:

@@ -2,7 +2,7 @@
 
 **Project:** S01 Trailing MA v26 - Architecture Migration
 **Started:** 2025-11-28
-**Current Phase:** Phase 8 - Dynamic Optimizer
+**Current Phase:** Phase 9 - Legacy Cleanup
 **Plan Version:** 2.1 (Updated 2025-12-03)
 
 ---
@@ -190,7 +190,7 @@ After Phase 8, UI is fully dynamic and no longer depends on hardcoded S01 parame
 - [ ] Genericize default strategy handling in server.py
 - [ ] Simplify DEFAULT_PRESET to minimal defaults
 - [ ] Remove S01-specific warmup calculations
-- [ ] Promote s01_trailing_ma_migrated to production
+- [x] Promote s01_trailing_ma_migrated to production
 - [ ] Delete run_strategy() from backtest_engine.py
 - [ ] Verify no hardcoded S01 references remain
 - [ ] All tests passing

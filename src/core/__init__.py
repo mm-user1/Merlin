@@ -17,12 +17,8 @@ from .backtest_engine import (
     CSVSource,
     TradeRecord,
     StrategyResult,
-    StrategyParams,
-    DEFAULT_ATR_PERIOD,
     load_data,
     prepare_dataset_with_warmup,
-    prepare_dataset_with_warmup_legacy,
-    run_strategy,
 )
 
 from .optuna_engine import (
@@ -63,12 +59,8 @@ __all__ = [
     "CSVSource",
     "TradeRecord",
     "StrategyResult",
-    "StrategyParams",
-    "DEFAULT_ATR_PERIOD",
     "load_data",
     "prepare_dataset_with_warmup",
-    "prepare_dataset_with_warmup_legacy",
-    "run_strategy",
 
     # optuna_engine exports
     "OptunaConfig",

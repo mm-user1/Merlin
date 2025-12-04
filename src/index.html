@@ -3,7 +3,7 @@
 <head>
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-  <title>S_01 TrailingMA — Backtester и Optimizer</title>
+  <title>Strategy Backtester &amp; Optimizer</title>
     <link rel="stylesheet" href="/static/css/style.css" />
 </head>
 <body>
@@ -3204,6 +3204,13 @@
           return;
         }
 
+        if (!currentStrategyId) {
+          if (wfStatusEl) {
+            wfStatusEl.textContent = 'Please select a strategy before running Walk-Forward.';
+          }
+          return;
+        }
+
         const totalSources = sources.length;
         const config = buildOptunaConfig(state);
         const hasEnabledParams = Object.values(config.enabled_params || {}).some(Boolean);
@@ -3260,7 +3267,7 @@
           updateStatus(index, `${fileLabel} — running Walk-Forward…`);
 
           const formData = new FormData();
-          formData.append('strategy', currentStrategyId || 's01_trailing_ma');
+          formData.append('strategy', currentStrategyId);
           const warmupValue = document.getElementById('warmupBars')?.value || '1000';
           formData.append('warmupBars', warmupValue);
           if (isFileObject) {
@@ -3400,6 +3407,13 @@
 
         const state = gatherFormState();
 
+        if (!currentStrategyId) {
+          optimizerResultsEl.textContent = 'Please select a strategy before running optimization.';
+          optimizerResultsEl.classList.remove('ready');
+          optimizerResultsEl.style.display = 'block';
+          return;
+        }
+
         const wfEnabled = Boolean(document.getElementById('enableWF')?.checked);
 
         if (!state.start || !state.end) {
@@ -3506,7 +3520,7 @@
           }
 
           const formData = new FormData();
-          formData.append('strategy', currentStrategyId || 's01_trailing_ma');
+          formData.append('strategy', currentStrategyId);
           const warmupValue = document.getElementById('warmupBars')?.value || '1000';
           formData.append('warmupBars', warmupValue);
           if (isFileObject) {
@@ -3778,6 +3792,12 @@
           return;
         }
 
+        if (!currentStrategyId) {
+          errorEl.textContent = 'Пожалуйста, выберите стратегию перед запуском расчёта.';
+          errorEl.style.display = 'block';
+          return;
+        }
+
         const combinations = [];
         const useLock = Boolean(state.lockTrailTypes);
 
@@ -3838,7 +3858,7 @@
           };
 
           const formData = new FormData();
-          formData.append('strategy', currentStrategyId || 's01_trailing_ma');
+          formData.append('strategy', currentStrategyId);
           const warmupInput = document.getElementById('warmupBars');
           formData.append('warmupBars', warmupInput ? warmupInput.value : '1000');
           if (primaryFile) {

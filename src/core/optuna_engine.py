@@ -45,7 +45,7 @@ class OptimizationConfig:
     fixed_params: Dict[str, Any]
     score_config: Optional[Dict[str, Any]] = None
 
-    strategy_id: str = "s01_trailing_ma"
+    strategy_id: str = ""
     warmup_bars: int = 1000
     filter_min_profit: bool = False
     min_profit_threshold: float = 0.0
@@ -863,6 +863,9 @@ def run_optuna_optimization(base_config, optuna_config: OptunaConfig) -> List[Op
 
 def run_optimization(config: OptimizationConfig) -> List[OptimizationResult]:
     """Compat wrapper that executes Optuna optimization only."""
+
+    if not getattr(config, "strategy_id", ""):
+        raise ValueError("strategy_id must be specified in OptimizationConfig.")
 
     if getattr(config, "optimization_mode", "optuna") != "optuna":
         raise ValueError("Only Optuna optimization is supported in Phase 3.")

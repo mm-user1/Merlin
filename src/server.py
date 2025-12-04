@@ -10,6 +10,7 @@ from typing import Any, Dict, List, Optional, Tuple
 import pandas as pd
 from flask import Flask, jsonify, request, send_file, send_from_directory
 
+
 from core.backtest_engine import load_data, prepare_dataset_with_warmup
 from core.export import CSV_COLUMN_SPECS, export_optuna_results
 from core.optuna_engine import (
@@ -35,6 +36,25 @@ MA_TYPES: Tuple[str, ...] = (
     "VWMA",
     "VWAP",
 )
+
+
+def _resolve_strategy_id_from_request() -> Tuple[Optional[str], Optional[object]]:
+    from strategies import list_strategies
+
+    json_payload = request.get_json(silent=True) if request.is_json else None
+    strategy_id = request.form.get("strategy")
+
+    if not strategy_id and isinstance(json_payload, dict):
+        strategy_id = json_payload.get("strategy")
+
+    if strategy_id:
+        return strategy_id, None
+
+    available = list_strategies()
+    if available:
+        return available[0]["id"], None
+
+    return None, (jsonify({"error": "No strategies available."}), HTTPStatus.INTERNAL_SERVER_ERROR)
 
 
 @app.route("/static/<path:path>")
@@ -598,7 +618,9 @@ def run_walkforward_optimization() -> object:
             opened_file.close()
         return jsonify({"error": "Invalid optimization config JSON."}), HTTPStatus.BAD_REQUEST
 
-    strategy_id = request.form.get("strategy", "s01_trailing_ma")
+    strategy_id, error_response = _resolve_strategy_id_from_request()
+    if error_response:
+        return error_response
 
     warmup_bars_raw = data.get("warmupBars", "1000")
     try:
@@ -963,8 +985,9 @@ def run_walkforward_optimization() -> object:
 def run_backtest() -> object:
     """Run single backtest with selected strategy"""
 
-    # Get strategy ID from form (default to S01)
-    strategy_id = request.form.get("strategy", "s01_trailing_ma")
+    strategy_id, error_response = _resolve_strategy_id_from_request()
+    if error_response:
+        return error_response
 
     # Get warmup bars
     warmup_bars_raw = request.form.get("warmupBars", "1000")
@@ -1083,6 +1106,8 @@ def _build_optimization_config(
     if not isinstance(payload, dict):
         raise ValueError("Invalid optimization config payload.")
 
+    from strategies import list_strategies
+
     def _parse_bool(value, default=False):
         if isinstance(value, bool):
             return value
@@ -1165,7 +1190,14 @@ def _build_optimization_config(
         return normalized
 
     if strategy_id is None:
-        strategy_id = "s01_trailing_ma"
+        strategy_id = payload.get("strategy")
+
+    if not strategy_id:
+        available_strategies = list_strategies()
+        if available_strategies:
+            strategy_id = available_strategies[0]["id"]
+        else:
+            raise ValueError("Strategy ID is required for optimization.")
 
     if warmup_bars is None:
         warmup_bars_raw = payload.get("warmup_bars")
@@ -1512,7 +1544,11 @@ def run_optimization_endpoint() -> object:
     except json.JSONDecodeError:
         return ("Invalid optimization config JSON.", HTTPStatus.BAD_REQUEST)
 
-    strategy_id = request.form.get("strategy", "s01_trailing_ma")
+    strategy_id, error_response = _resolve_strategy_id_from_request()
+    if error_response:
+        if opened_file:
+            opened_file.close()
+        return error_response
 
     warmup_bars_raw = request.form.get("warmupBars", "1000")
     try:
