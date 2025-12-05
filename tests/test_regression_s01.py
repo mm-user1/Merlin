@@ -29,14 +29,9 @@ from typing import Dict, Any
 sys.path.insert(0, str(Path(__file__).parent.parent / "src"))
 
 import pandas as pd
-import numpy as np
-from core.backtest_engine import (
-    StrategyParams,
-    TradeRecord,
-    load_data,
-    prepare_dataset_with_warmup,
-    run_strategy,
-)
+
+from core.backtest_engine import load_data, prepare_dataset_with_warmup
+from strategies.s01_trailing_ma.strategy import S01Params, S01TrailingMA
 
 
 # Tolerance configuration
@@ -95,7 +90,7 @@ def current_result(baseline_metrics, test_data):
     params_dict = baseline_metrics["parameters"]
 
     # Parse parameters
-    params = StrategyParams.from_dict(params_dict)
+    params = S01Params.from_dict(params_dict)
 
     # Prepare dataset with warmup (same as baseline generation)
     start_ts = pd.Timestamp(params_dict["start"], tz="UTC")
@@ -107,7 +102,7 @@ def current_result(baseline_metrics, test_data):
     )
 
     # Run strategy
-    result = run_strategy(df_prepared, params, trade_start_idx)
+    result = S01TrailingMA.run(df_prepared, params.to_dict(), trade_start_idx)
 
     return result
 
@@ -313,7 +308,7 @@ class TestS01RegressionConsistency:
     def test_multiple_runs_produce_same_results(self, test_data, baseline_metrics):
         """Test that running the strategy multiple times produces identical results."""
         params_dict = baseline_metrics["parameters"]
-        params = StrategyParams.from_dict(params_dict)
+        params = S01Params.from_dict(params_dict)
 
         start_ts = pd.Timestamp(params_dict["start"], tz="UTC")
         end_ts = pd.Timestamp(params_dict["end"], tz="UTC")
@@ -324,8 +319,8 @@ class TestS01RegressionConsistency:
         )
 
         # Run strategy twice
-        result1 = run_strategy(df_prepared, params, trade_start_idx)
-        result2 = run_strategy(df_prepared, params, trade_start_idx)
+        result1 = S01TrailingMA.run(df_prepared, params.to_dict(), trade_start_idx)
+        result2 = S01TrailingMA.run(df_prepared, params.to_dict(), trade_start_idx)
 
         # Results should be identical
         assert result1.net_profit_pct == result2.net_profit_pct

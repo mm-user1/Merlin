@@ -16,17 +16,16 @@ import pytest
 sys.path.insert(0, str(Path(__file__).parent.parent / "src"))
 
 from core.backtest_engine import (  # noqa: E402
-    StrategyParams,
     StrategyResult,
     TradeRecord,
     load_data,
     prepare_dataset_with_warmup,
-    run_strategy,
 )
 from core.metrics import (  # noqa: E402
     calculate_basic,
     calculate_advanced,
 )
+from strategies.s01_trailing_ma.strategy import S01Params, S01TrailingMA  # noqa: E402
 
 PROJECT_ROOT = Path(__file__).parent.parent
 DATA_PATH = PROJECT_ROOT / "data" / "raw" / "OKX_LINKUSDT.P, 15 2025.05.01-2025.11.20.csv"
@@ -49,7 +48,7 @@ def baseline_params():
 @pytest.fixture(scope="module")
 def test_result(test_data, baseline_params):
     params_dict, baseline = baseline_params
-    params = StrategyParams.from_dict(params_dict)
+    params = S01Params.from_dict(params_dict)
 
     start_ts = pd.Timestamp(params_dict["start"], tz="UTC")
     end_ts = pd.Timestamp(params_dict["end"], tz="UTC")
@@ -59,7 +58,7 @@ def test_result(test_data, baseline_params):
         test_data, start_ts, end_ts, warmup_bars
     )
 
-    result = run_strategy(df_prepared, params, trade_start_idx)
+    result = S01TrailingMA.run(df_prepared, params.to_dict(), trade_start_idx)
     return result
 
 

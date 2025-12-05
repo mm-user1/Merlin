@@ -9,13 +9,9 @@ import sys
 
 sys.path.insert(0, str(Path(__file__).parent.parent / "src"))
 
-from core.backtest_engine import (
-    StrategyParams,
-    load_data,
-    prepare_dataset_with_warmup,
-    run_strategy,
-)
+from core.backtest_engine import load_data, prepare_dataset_with_warmup
 from indicators.ma import VALID_MA_TYPES
+from strategies.s01_trailing_ma.strategy import S01Params, S01TrailingMA
 
 
 def main() -> None:
@@ -64,9 +60,9 @@ def main() -> None:
             "atrPeriod": 14,
         }
 
-        params = StrategyParams.from_dict(payload)
+        params = S01Params.from_dict(payload)
         try:
-            result = run_strategy(df_prepared, params, trade_start_idx)
+            result = S01TrailingMA.run(df_prepared, params.to_dict(), trade_start_idx)
             results[ma_type] = {
                 "net_profit_pct": result.net_profit_pct,
                 "max_dd_pct": result.max_drawdown_pct,

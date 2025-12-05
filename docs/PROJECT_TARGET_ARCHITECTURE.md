@@ -339,7 +339,7 @@ src/strategies/
   simple_ma/
     config.json
     strategy.py
-  s01_trailing_ma_migrated/   # for migration period
+  s01_trailing_ma/            # primary S01 implementation
     config.json
     strategy.py
   ...
@@ -420,4 +420,4 @@ Target project architecture:
 - **Interface Layer**:
   - `server.py` + frontend (HTML/JS/CSS) + optional CLI.
 
-Data structures (`TradeRecord`, `StrategyResult`, `BasicMetrics`, etc.) are defined inside corresponding modules and reused through imports, without separate `types.py`. Simple test strategy and S_01_v2 (through temporary folder `s01_trailing_ma_migrated`) live in `strategies/` and use common architecture.
+Data structures (`TradeRecord`, `StrategyResult`, `BasicMetrics`, etc.) are defined inside corresponding modules and reused through imports, without separate `types.py`. Simple test strategies and the migrated S01 live in `strategies/` and use common architecture.

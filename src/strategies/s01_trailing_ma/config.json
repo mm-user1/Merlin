@@ -4,6 +4,10 @@
   "version": "v26",
   "description": "Moving Average crossover with trailing stops and ATR-based position sizing",
   "author": "",
+  "features": {
+    "requires_ma_selection": true,
+    "ma_groups": ["trend", "trail_long", "trail_short"]
+  },
   "parameters": {
     "maType": {
       "type": "select",

@@ -32,7 +32,7 @@ class WFConfig:
     is_pct: float = 70.0
     oos_pct: float = 30.0
     warmup_bars: int = 1000
-    strategy_id: str = "s01_trailing_ma"
+    strategy_id: str = ""
 
 
 @dataclass
@@ -89,7 +89,7 @@ class WFResult:
     wf_zone_end: int  # End bar of WF zone
     forward_start: int  # Start bar of Forward Reserve
     forward_end: int  # End bar of Forward Reserve
-    strategy_id: str = "s01_trailing_ma"
+    strategy_id: str = ""
     warmup_bars: int = 1000
 
 
@@ -810,7 +810,9 @@ def export_wfa_trades_history(
     from .backtest_engine import prepare_dataset_with_warmup
     from strategies import get_strategy
 
-    strategy_id = getattr(wf_result, 'strategy_id', 's01_trailing_ma')
+    strategy_id = getattr(wf_result, "strategy_id", "")
+    if not strategy_id:
+        strategy_id = getattr(wf_config, "strategy_id", "")
     try:
         strategy_class = get_strategy(strategy_id)
     except ValueError as e:  # noqa: BLE001

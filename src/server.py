@@ -10,6 +10,7 @@ from typing import Any, Dict, List, Optional, Tuple
 import pandas as pd
 from flask import Flask, jsonify, request, send_file, send_from_directory
 
+
 from core.backtest_engine import load_data, prepare_dataset_with_warmup
 from core.export import CSV_COLUMN_SPECS, export_optuna_results
 from core.optuna_engine import (
@@ -35,6 +36,81 @@ MA_TYPES: Tuple[str, ...] = (
     "VWMA",
     "VWAP",
 )
+
+
+def _normalize_ma_group_name(value: object) -> Optional[str]:
+    """Normalize MA group identifier to a canonical name."""
+
+    if value is None:
+        return None
+
+    normalized = str(value).strip().lower()
+    if not normalized:
+        return None
+
+    if "trend" in normalized:
+        return "trend"
+    if "trail" in normalized and "long" in normalized:
+        return "trail_long"
+    if "trail" in normalized and "short" in normalized:
+        return "trail_short"
+
+    return None
+
+
+def _get_strategy_features(strategy_id: Optional[str]) -> Dict[str, Any]:
+    """Return feature flags defined by a strategy configuration."""
+
+    default = {"requires_ma_selection": False, "ma_groups": []}
+    if not strategy_id:
+        return default
+
+    try:
+        from strategies import get_strategy_config
+
+        config = get_strategy_config(strategy_id)
+    except Exception:  # pragma: no cover - defensive
+        return default
+
+    raw_features = config.get("features") if isinstance(config, dict) else None
+    if not isinstance(raw_features, dict):
+        return default
+
+    requires_ma_selection = bool(raw_features.get("requires_ma_selection"))
+    raw_groups = raw_features.get("ma_groups", [])
+    ma_groups: List[str] = []
+    if isinstance(raw_groups, (list, tuple)):
+        for group in raw_groups:
+            normalized = _normalize_ma_group_name(group)
+            if normalized and normalized not in ma_groups:
+                ma_groups.append(normalized)
+
+    if requires_ma_selection and not ma_groups:
+        ma_groups = ["trend", "trail_long", "trail_short"]
+
+    return {
+        "requires_ma_selection": requires_ma_selection,
+        "ma_groups": ma_groups,
+    }
+
+
+def _resolve_strategy_id_from_request() -> Tuple[Optional[str], Optional[object]]:
+    from strategies import list_strategies
+
+    json_payload = request.get_json(silent=True) if request.is_json else None
+    strategy_id = request.form.get("strategy")
+
+    if not strategy_id and isinstance(json_payload, dict):
+        strategy_id = json_payload.get("strategy")
+
+    if strategy_id:
+        return strategy_id, None
+
+    available = list_strategies()
+    if available:
+        return available[0]["id"], None
+
+    return None, (jsonify({"error": "No strategies available."}), HTTPStatus.INTERNAL_SERVER_ERROR)
 
 
 @app.route("/static/<path:path>")
@@ -598,7 +674,9 @@ def run_walkforward_optimization() -> object:
             opened_file.close()
         return jsonify({"error": "Invalid optimization config JSON."}), HTTPStatus.BAD_REQUEST
 
-    strategy_id = request.form.get("strategy", "s01_trailing_ma")
+    strategy_id, error_response = _resolve_strategy_id_from_request()
+    if error_response:
+        return error_response
 
     warmup_bars_raw = data.get("warmupBars", "1000")
     try:
@@ -963,8 +1041,9 @@ def run_walkforward_optimization() -> object:
 def run_backtest() -> object:
     """Run single backtest with selected strategy"""
 
-    # Get strategy ID from form (default to S01)
-    strategy_id = request.form.get("strategy", "s01_trailing_ma")
+    strategy_id, error_response = _resolve_strategy_id_from_request()
+    if error_response:
+        return error_response
 
     # Get warmup bars
     warmup_bars_raw = request.form.get("warmupBars", "1000")
@@ -1005,6 +1084,8 @@ def run_backtest() -> object:
         payload = json.loads(payload_raw)
     except json.JSONDecodeError:
         return ("Invalid payload JSON.", HTTPStatus.BAD_REQUEST)
+
+    strategy_features = _get_strategy_features(strategy_id)
 
     # Load strategy
     from strategies import get_strategy
@@ -1058,6 +1139,31 @@ def run_backtest() -> object:
             app.logger.exception("Failed to prepare dataset with warmup")
             return ("Failed to prepare dataset.", HTTPStatus.INTERNAL_SERVER_ERROR)
 
+    if strategy_features.get("requires_ma_selection"):
+        required_groups = strategy_features.get("ma_groups", [])
+        missing_groups = []
+
+        group_to_field = {
+            "trend": "maType",
+            "trail_long": "trailLongType",
+            "trail_short": "trailShortType",
+        }
+
+        for group_name in required_groups:
+            field_name = group_to_field.get(group_name)
+            if not field_name:
+                continue
+            value = payload.get(field_name)
+            if value is None or (isinstance(value, str) and not value.strip()):
+                missing_groups.append(group_name)
+
+        if missing_groups:
+            missing_str = ", ".join(missing_groups)
+            return (
+                f"MA selection required for group(s): {missing_str}.",
+                HTTPStatus.BAD_REQUEST,
+            )
+
     # Run strategy
     try:
         result = strategy_class.run(df, payload, trade_start_idx)
@@ -1082,6 +1188,8 @@ def _build_optimization_config(
 ) -> OptimizationConfig:
     if not isinstance(payload, dict):
         raise ValueError("Invalid optimization config payload.")
+
+    from strategies import list_strategies
 
     def _parse_bool(value, default=False):
         if isinstance(value, bool):
@@ -1165,7 +1273,14 @@ def _build_optimization_config(
         return normalized
 
     if strategy_id is None:
-        strategy_id = "s01_trailing_ma"
+        strategy_id = payload.get("strategy")
+
+    if not strategy_id:
+        available_strategies = list_strategies()
+        if available_strategies:
+            strategy_id = available_strategies[0]["id"]
+        else:
+            raise ValueError("Strategy ID is required for optimization.")
 
     if warmup_bars is None:
         warmup_bars_raw = payload.get("warmup_bars")
@@ -1200,13 +1315,28 @@ def _build_optimization_config(
     if not isinstance(fixed_params, dict):
         raise ValueError("fixed_params must be a dictionary.")
 
-    is_s01_strategy = bool(strategy_id) and "s01" in str(strategy_id).lower()
+    strategy_features = _get_strategy_features(strategy_id)
+    ma_requires_selection = bool(strategy_features.get("requires_ma_selection"))
+    ma_groups = strategy_features.get("ma_groups", [])
+    strategy_param_types: Dict[str, str] = {}
+    try:
+        from strategies import get_strategy_config
+
+        strategy_config = get_strategy_config(strategy_id)
+        params_def = strategy_config.get("parameters", {}) if isinstance(strategy_config, dict) else {}
+        if isinstance(params_def, dict):
+            for name, definition in params_def.items():
+                p_type = definition.get("type") if isinstance(definition, dict) else None
+                if isinstance(p_type, str) and p_type.strip().lower() in {"int", "float"}:
+                    strategy_param_types[name] = p_type.strip().lower()
+    except Exception:
+        strategy_param_types = {}
     ma_types_trend: List[str] = []
     ma_types_trail_long: List[str] = []
     ma_types_trail_short: List[str] = []
     lock_trail_types = False
 
-    if is_s01_strategy:
+    if ma_requires_selection:
         ma_types_trend = payload.get("ma_types_trend") or payload.get("maTypesTrend") or []
         ma_types_trail_long = (
             payload.get("ma_types_trail_long")
@@ -1225,6 +1355,20 @@ def _build_optimization_config(
             or payload.get("trailLock")
         )
         lock_trail_types = _parse_bool(lock_trail_types_raw, False)
+
+        missing_groups = []
+        if "trend" in ma_groups and not ma_types_trend:
+            missing_groups.append("trend")
+        if "trail_long" in ma_groups and not ma_types_trail_long:
+            missing_groups.append("trail_long")
+        if "trail_short" in ma_groups and not ma_types_trail_short:
+            missing_groups.append("trail_short")
+
+        if missing_groups:
+            missing_str = ", ".join(missing_groups)
+            raise ValueError(
+                f"MA selection required for group(s): {missing_str}."
+            )
 
     risk_per_trade = payload.get("risk_per_trade_pct")
     if risk_per_trade is None:
@@ -1350,6 +1494,7 @@ def _build_optimization_config(
         enabled_params=enabled_params,
         param_ranges=param_ranges,
         fixed_params=fixed_params,
+        param_types=strategy_param_types,
         ma_types_trend=[str(ma).upper() for ma in ma_types_trend],
         ma_types_trail_long=[str(ma).upper() for ma in ma_types_trail_long],
         ma_types_trail_short=[str(ma).upper() for ma in ma_types_trail_short],
@@ -1512,7 +1657,11 @@ def run_optimization_endpoint() -> object:
     except json.JSONDecodeError:
         return ("Invalid optimization config JSON.", HTTPStatus.BAD_REQUEST)
 
-    strategy_id = request.form.get("strategy", "s01_trailing_ma")
+    strategy_id, error_response = _resolve_strategy_id_from_request()
+    if error_response:
+        if opened_file:
+            opened_file.close()
+        return error_response
 
     warmup_bars_raw = request.form.get("warmupBars", "1000")
     try:

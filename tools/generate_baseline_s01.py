@@ -1,7 +1,7 @@
 """
 Generate baseline results for S01 Trailing MA strategy.
 
-This script runs the current (legacy) S01 strategy with fixed parameters
+This script runs the current S01 strategy with fixed parameters
 and saves the results for regression testing purposes.
 
 The baseline includes:
@@ -21,14 +21,10 @@ from datetime import datetime
 # Add src to path
 sys.path.insert(0, str(Path(__file__).parent.parent / "src"))
 
-import pandas as pd
 import numpy as np
-from core.backtest_engine import (
-    StrategyParams,
-    load_data,
-    prepare_dataset_with_warmup,
-    run_strategy,
-)
+import pandas as pd
+from core.backtest_engine import load_data, prepare_dataset_with_warmup
+from strategies.s01_trailing_ma.strategy import S01Params, S01TrailingMA
 
 
 # Fixed parameters for baseline (from user requirements)
@@ -97,7 +93,7 @@ def run_baseline():
 
     # Parse parameters
     print("\nParsing strategy parameters...")
-    params = StrategyParams.from_dict(BASELINE_PARAMS)
+    params = S01Params.from_dict(BASELINE_PARAMS)
     print(f"MA Type: {params.ma_type}")
     print(f"MA Length: {params.ma_length}")
     print(f"Close Count Long: {params.close_count_long}")
@@ -118,7 +114,7 @@ def run_baseline():
 
     # Run strategy
     print("\nRunning backtest...")
-    result = run_strategy(df_prepared, params, trade_start_idx)
+    result = S01TrailingMA.run(df_prepared, params.to_dict(), trade_start_idx)
 
     # Display results
     print("\n" + "=" * 80)
