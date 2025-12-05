@@ -11,12 +11,12 @@ sys.path.insert(0, str(SRC_PATH))
 from core.backtest_engine import load_data, prepare_dataset_with_warmup
 from strategies.s01_trailing_ma.strategy import S01Params, S01TrailingMA
 
-DATA_PATH = "data/raw/OKX_LINKUSDT.P, 15 2025.05.01-2025.11.20.csv"
+DATA_PATH = str(Path("data") / "raw" / "OKX_LINKUSDT.P, 15 2025.05.01-2025.11.20.csv")
 
 
 @pytest.fixture(scope="module")
 def baseline_metrics():
-    baseline_path = Path("data/baseline/s01_metrics.json")
+    baseline_path = Path("data") / "baseline" / "s01_metrics.json"
     with open(baseline_path) as f:
         return json.load(f)
 
