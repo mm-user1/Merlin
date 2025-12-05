@@ -1215,12 +1215,12 @@
 
       const maTypeContainer = getMaTypeContainer();
       if (maTypeContainer) {
-        if (isS01Strategy()) {
+        if (strategyUsesMaSelection()) {
           maTypeContainer.style.display = 'block';
-          console.log('MA type selectors enabled for S01 strategy');
+          console.log('MA type selectors enabled for selected strategy');
         } else {
           maTypeContainer.style.display = 'none';
-          console.log('MA type selectors hidden for non-S01 strategy');
+          console.log('MA type selectors hidden for selected strategy');
         }
       }
 
@@ -1391,8 +1391,55 @@
       'VWAP'
     ];
 
-    function isS01Strategy(strategyId = currentStrategyId) {
-      return typeof strategyId === 'string' && strategyId.toLowerCase().includes('s01');
+    const DEFAULT_MA_GROUPS = ['trend', 'trailLong', 'trailShort'];
+
+    function normalizeMaGroupName(value) {
+      const normalized = String(value || '').toLowerCase();
+      if (!normalized) {
+        return null;
+      }
+      if (normalized.includes('trend')) {
+        return 'trend';
+      }
+      if (normalized.includes('trail') && normalized.includes('long')) {
+        return 'trailLong';
+      }
+      if (normalized.includes('trail') && normalized.includes('short')) {
+        return 'trailShort';
+      }
+      return null;
+    }
+
+    function getMaSelectionFeatures(config = currentStrategyConfig) {
+      const features = (config && config.features && typeof config.features === 'object') ? config.features : {};
+      const requiresMaSelection = Boolean(features.requires_ma_selection);
+      const rawGroups = Array.isArray(features.ma_groups) ? features.ma_groups : [];
+      const groups = [];
+
+      rawGroups.forEach((group) => {
+        const normalized = normalizeMaGroupName(group);
+        if (normalized && !groups.includes(normalized)) {
+          groups.push(normalized);
+        }
+      });
+
+      const strategyId = config?.id || currentStrategyId;
+      const legacyMaStrategy = !requiresMaSelection
+        && typeof strategyId === 'string'
+        && strategyId.toLowerCase().includes('s01');
+
+      const enabled = requiresMaSelection || legacyMaStrategy;
+      const normalizedGroups = enabled ? (groups.length ? groups : [...DEFAULT_MA_GROUPS]) : [];
+
+      return { enabled, groups: normalizedGroups };
+    }
+
+    function strategyUsesMaSelection() {
+      return getMaSelectionFeatures().enabled;
+    }
+
+    function getRequiredMaGroups() {
+      return getMaSelectionFeatures().groups;
     }
 
     function getMaTypeContainer() {
@@ -2613,9 +2660,9 @@
         const trailLongTypes = [];
         const trailShortTypes = [];
         let lockTrailTypes = false;
-        const isS01 = isS01Strategy();
+        const maSelectionEnabled = strategyUsesMaSelection();
 
-        if (isS01 && isMaSelectorVisible()) {
+        if (maSelectionEnabled && isMaSelectorVisible()) {
           const selectedTrendTypes = collectSelectedTypes('trend');
           const selectedTrailLongTypes = collectSelectedTypes('trailLong');
           const selectedTrailShortTypes = collectSelectedTypes('trailShort');
@@ -2652,7 +2699,7 @@
         return {
           start,
           end,
-          isS01,
+          maSelectionEnabled,
           trendTypes,
           trailLongTypes,
           trailShortTypes,
@@ -2670,11 +2717,14 @@
 
       function formatResultBlock(index, total, payload, data) {
         const metrics = data.metrics || {};
+        const trendLabel = payload.maType ? payload.maType : 'N/A';
+        const trailLongLabel = payload.trailLongType ? payload.trailLongType : 'N/A';
+        const trailShortLabel = payload.trailShortType ? payload.trailShortType : 'N/A';
         return [
           `#${index}/${total}`,
-          `Trend MA: ${payload.maType}`,
-          `Trail MA Long: ${payload.trailLongType}`,
-          `Trail MA Short: ${payload.trailShortType}`,
+          `Trend MA: ${trendLabel}`,
+          `Trail MA Long: ${trailLongLabel}`,
+          `Trail MA Short: ${trailShortLabel}`,
           `Net Profit %: ${formatMetric(metrics.net_profit_pct)}`,
           `Max Drawdown %: ${formatMetric(metrics.max_drawdown_pct)}`,
           `Total Trades: ${metrics.total_trades ?? '—'}`
@@ -2929,7 +2979,8 @@
           }
         });
 
-        if (isS01Strategy() && isMaSelectorVisible()) {
+        const maFeatures = getMaSelectionFeatures();
+        if (maFeatures.enabled && isMaSelectorVisible()) {
           const trendCount = collectSelectedTypes('trend').length;
           const trailLongCount = collectSelectedTypes('trailLong').length;
           const lockEl = document.getElementById('opt-lockTrailTypes') || document.getElementById('trailLock');
@@ -2938,8 +2989,19 @@
             ? trailLongCount
             : collectSelectedTypes('trailShort').length;
 
-          if (trendCount > 0 && trailLongCount > 0 && trailShortCount > 0) {
-            total *= trendCount * trailLongCount * trailShortCount;
+          const requireTrend = maFeatures.groups.includes('trend');
+          const requireTrailLong = maFeatures.groups.includes('trailLong');
+          const requireTrailShort = maFeatures.groups.includes('trailShort');
+
+          const hasTrend = !requireTrend || trendCount > 0;
+          const hasTrailLong = !requireTrailLong || trailLongCount > 0;
+          const hasTrailShort = !requireTrailShort || trailShortCount > 0;
+
+          if (hasTrend && hasTrailLong && hasTrailShort) {
+            const trendMultiplier = requireTrend ? trendCount : 1;
+            const trailLongMultiplier = requireTrailLong ? trailLongCount : 1;
+            const trailShortMultiplier = requireTrailShort ? trailShortCount : 1;
+            total *= trendMultiplier * trailLongMultiplier * trailShortMultiplier;
           } else {
             valid = false;
           }
@@ -3059,10 +3121,10 @@
         });
 
         const workerProcesses = getWorkerProcessesValue();
-        const maTypesTrend = state.isS01 ? state.trendTypes : [];
-        const maTypesTrailLong = state.isS01 ? state.trailLongTypes : [];
-        const maTypesTrailShort = state.isS01 ? state.trailShortTypes : [];
-        const lockTrail = state.isS01 ? Boolean(state.lockTrailTypes) : false;
+        const maTypesTrend = state.maSelectionEnabled ? state.trendTypes : [];
+        const maTypesTrailLong = state.maSelectionEnabled ? state.trailLongTypes : [];
+        const maTypesTrailShort = state.maSelectionEnabled ? state.trailShortTypes : [];
+        const lockTrail = state.maSelectionEnabled ? Boolean(state.lockTrailTypes) : false;
 
         const riskPerTrade = getBacktestParamValue('riskPerTrade', paramsDef.riskPerTrade, dynamicParams) || 0;
         const contractSize = getBacktestParamValue('contractSize', paramsDef.contractSize, dynamicParams) || 0;
@@ -3423,7 +3485,7 @@
           return;
         }
 
-        const requireMaTypes = state.isS01 && isMaSelectorVisible();
+        const requireMaTypes = state.maSelectionEnabled && isMaSelectorVisible();
         if (requireMaTypes && (!state.trendTypes.length || !state.trailLongTypes.length || !state.trailShortTypes.length)) {
           optimizerResultsEl.textContent = 'Select at least one MA type in each group for optimization.';
           optimizerResultsEl.classList.remove('ready');
@@ -3786,49 +3848,55 @@
           return;
         }
 
-        if (!state.trendTypes.length || !state.trailLongTypes.length || !state.trailShortTypes.length) {
-          errorEl.textContent = 'Пожалуйста, выберите хотя бы один MA в каждой группе.';
-          errorEl.style.display = 'block';
-          return;
-        }
-
         if (!currentStrategyId) {
           errorEl.textContent = 'Пожалуйста, выберите стратегию перед запуском расчёта.';
           errorEl.style.display = 'block';
           return;
         }
 
+        const requiresMaSelection = state.maSelectionEnabled && isMaSelectorVisible();
         const combinations = [];
-        const useLock = Boolean(state.lockTrailTypes);
 
-        if (useLock) {
-          // Lock ON: парное связывание Trail Long/Short по одному типу
-          const shortLookup = new Map();
-          state.trailShortTypes.forEach((type) => {
-            const key = type.toUpperCase();
-            if (!shortLookup.has(key)) {
-              shortLookup.set(key, type);
-            }
-          });
+        if (requiresMaSelection) {
+          if (!state.trendTypes.length || !state.trailLongTypes.length || !state.trailShortTypes.length) {
+            errorEl.textContent = 'Пожалуйста, выберите хотя бы один MA в каждой группе.';
+            errorEl.style.display = 'block';
+            return;
+          }
 
-          state.trailLongTypes.forEach((trailLongType) => {
-            const matchedShort = shortLookup.get(trailLongType.toUpperCase());
-            if (!matchedShort) {
-              return;
-            }
-            state.trendTypes.forEach((trendType) => {
-              combinations.push({ trendType, trailLongType, trailShortType: matchedShort });
+          const useLock = Boolean(state.lockTrailTypes);
+
+          if (useLock) {
+            // Lock ON: парное связывание Trail Long/Short по одному типу
+            const shortLookup = new Map();
+            state.trailShortTypes.forEach((type) => {
+              const key = type.toUpperCase();
+              if (!shortLookup.has(key)) {
+                shortLookup.set(key, type);
+              }
             });
-          });
-        } else {
-          // Lock OFF: полное декартово произведение всех типов
-          state.trendTypes.forEach((trendType) => {
+
             state.trailLongTypes.forEach((trailLongType) => {
-              state.trailShortTypes.forEach((trailShortType) => {
-                combinations.push({ trendType, trailLongType, trailShortType });
+              const matchedShort = shortLookup.get(trailLongType.toUpperCase());
+              if (!matchedShort) {
+                return;
+              }
+              state.trendTypes.forEach((trendType) => {
+                combinations.push({ trendType, trailLongType, trailShortType: matchedShort });
               });
             });
-          });
+          } else {
+            // Lock OFF: полное декартово произведение всех типов
+            state.trendTypes.forEach((trendType) => {
+              state.trailLongTypes.forEach((trailLongType) => {
+                state.trailShortTypes.forEach((trailShortType) => {
+                  combinations.push({ trendType, trailLongType, trailShortType });
+                });
+              });
+            });
+          }
+        } else {
+          combinations.push({});
         }
 
         if (!combinations.length) {
@@ -3850,12 +3918,13 @@
 
         for (let index = 0; index < combinations.length; index += 1) {
           const combo = combinations[index];
-          const payload = {
-            ...state.payload,
-            maType: combo.trendType,
-            trailLongType: combo.trailLongType,
-            trailShortType: combo.trailShortType
-          };
+          const payload = { ...state.payload };
+
+          if (requiresMaSelection) {
+            payload.maType = combo.trendType;
+            payload.trailLongType = combo.trailLongType;
+            payload.trailShortType = combo.trailShortType;
+          }
 
           const formData = new FormData();
           formData.append('strategy', currentStrategyId);
