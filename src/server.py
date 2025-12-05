@@ -1816,6 +1816,7 @@ def run_optimization_endpoint() -> object:
         filter_min_profit=optimization_config.filter_min_profit,
         min_profit_threshold=optimization_config.min_profit_threshold,
         optimization_metadata=optimization_metadata,
+        strategy_id=optimization_config.strategy_id,
     )
     buffer = io.BytesIO(csv_content.encode("utf-8"))
     filename = generate_output_filename(source_name, optimization_config)

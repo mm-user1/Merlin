@@ -72,6 +72,8 @@ CSV_COLUMN_SPECS: List[Tuple[str, Optional[str], str, Optional[str]]] = [
 def _format_csv_value(value: Any, formatter: Optional[str]) -> str:
     """Format a single value for CSV output."""
 
+    if value in (None, ""):
+        return ""
     if formatter == "percent":
         return f"{float(value):.2f}%"
     if formatter == "float":
@@ -95,6 +97,63 @@ def _format_fixed_param_value(value: Any) -> str:
     return str(value)
 
 
+def _build_column_specs_for_strategy(
+    strategy_id: str,
+) -> List[Tuple[str, Optional[str], str, Optional[str]]]:
+    """Build CSV column specifications based on strategy configuration."""
+
+    from strategies import get_strategy_config
+
+    if strategy_id == "s01_trailing_ma":
+        return CSV_COLUMN_SPECS
+
+    try:
+        config = get_strategy_config(strategy_id)
+    except Exception:  # pragma: no cover - defensive fallback
+        return CSV_COLUMN_SPECS
+
+    parameters = config.get("parameters", {})
+    if not isinstance(parameters, dict):
+        return CSV_COLUMN_SPECS
+
+    specs: List[Tuple[str, Optional[str], str, Optional[str]]] = []
+
+    for frontend_name, param_spec in parameters.items():
+        if not isinstance(param_spec, dict):
+            continue
+
+        param_type = param_spec.get("type", "float")
+        label = param_spec.get("label", frontend_name)
+        internal_name = frontend_name
+
+        if param_type == "int":
+            formatter: Optional[str] = None
+        elif param_type == "float":
+            formatter = "float1"
+        elif param_type == "select":
+            formatter = None
+        else:
+            formatter = None
+
+        specs.append((label, frontend_name, internal_name, formatter))
+
+    metric_specs = [
+        ("Net Profit%", None, "net_profit_pct", "percent"),
+        ("Max DD%", None, "max_drawdown_pct", "percent"),
+        ("Trades", None, "total_trades", None),
+        ("Score", None, "score", "float"),
+        ("RoMaD", None, "romad", "optional_float"),
+        ("Sharpe", None, "sharpe_ratio", "optional_float"),
+        ("PF", None, "profit_factor", "optional_float"),
+        ("Ulcer", None, "ulcer_index", "optional_float"),
+        ("Recover", None, "recovery_factor", "optional_float"),
+        ("Consist", None, "consistency_score", "optional_float"),
+    ]
+
+    specs.extend(metric_specs)
+    return specs
+
+
 def export_optuna_results(
     results: List[OptimizationResult],
     fixed_params: Union[Mapping[str, Any], Iterable[Tuple[str, Any]]],
@@ -102,6 +161,7 @@ def export_optuna_results(
     filter_min_profit: bool = False,
     min_profit_threshold: float = 0.0,
     optimization_metadata: Optional[Dict[str, Any]] = None,
+    strategy_id: str = "s01_trailing_ma",
 ) -> str:
     """
     Export Optuna optimization results to CSV format string.
@@ -155,8 +215,10 @@ def export_optuna_results(
         output.write(f"{name},{formatted_value}\n")
     output.write("\n")
 
+    column_specs = _build_column_specs_for_strategy(strategy_id)
+
     filtered_columns = [
-        spec for spec in CSV_COLUMN_SPECS if spec[1] is None or spec[1] not in fixed_lookup
+        spec for spec in column_specs if spec[1] is None or spec[1] not in fixed_lookup
     ]
 
     header_line = ",".join(column[0] for column in filtered_columns)
@@ -173,7 +235,7 @@ def export_optuna_results(
     for item in filtered_results:
         row_values = []
         for _, frontend_name, attr_name, formatter in filtered_columns:
-            value = getattr(item, attr_name)
+            value = getattr(item, attr_name, "")
             row_values.append(_format_csv_value(value, formatter))
         output.write(",".join(row_values) + "\n")
 
