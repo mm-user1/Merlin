@@ -43,6 +43,7 @@ class OptimizationConfig:
     ma_types_trail_short: List[str]
     lock_trail_types: bool
     fixed_params: Dict[str, Any]
+    param_types: Optional[Dict[str, str]] = None
     score_config: Optional[Dict[str, Any]] = None
 
     strategy_id: str = ""
@@ -431,6 +432,7 @@ class OptunaOptimizer:
         self.pruned_trials: int = 0
         self.study: Optional[optuna.Study] = None
         self.pruner: Optional[optuna.pruners.BasePruner] = None
+        self.effective_param_map: Dict[str, Tuple[str, bool]] = dict(PARAMETER_MAP)
 
     # ------------------------------------------------------------------
     # Search space handling
@@ -440,7 +442,15 @@ class OptunaOptimizer:
 
         space: Dict[str, Dict[str, Any]] = {}
 
-        for frontend_name, (internal_name, is_int) in PARAMETER_MAP.items():
+        param_map: Dict[str, Tuple[str, bool]] = dict(PARAMETER_MAP)
+        for name, param_type in (self.base_config.param_types or {}).items():
+            if name not in param_map:
+                is_int = str(param_type).lower() == "int"
+                param_map[name] = (name, is_int)
+
+        self.effective_param_map = param_map
+
+        for frontend_name, (internal_name, is_int) in param_map.items():
             if not self.base_config.enabled_params.get(frontend_name):
                 continue
 
@@ -639,7 +649,7 @@ class OptunaOptimizer:
             if trail_type is not None:
                 params_dict["trail_ma_short_type"] = trail_type
 
-        for frontend_name, (internal_name, is_int) in PARAMETER_MAP.items():
+        for frontend_name, (internal_name, is_int) in self.effective_param_map.items():
             if self.base_config.enabled_params.get(frontend_name):
                 continue
             value = self.base_config.fixed_params.get(frontend_name)

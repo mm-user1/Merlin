@@ -1318,6 +1318,19 @@ def _build_optimization_config(
     strategy_features = _get_strategy_features(strategy_id)
     ma_requires_selection = bool(strategy_features.get("requires_ma_selection"))
     ma_groups = strategy_features.get("ma_groups", [])
+    strategy_param_types: Dict[str, str] = {}
+    try:
+        from strategies import get_strategy_config
+
+        strategy_config = get_strategy_config(strategy_id)
+        params_def = strategy_config.get("parameters", {}) if isinstance(strategy_config, dict) else {}
+        if isinstance(params_def, dict):
+            for name, definition in params_def.items():
+                p_type = definition.get("type") if isinstance(definition, dict) else None
+                if isinstance(p_type, str) and p_type.strip().lower() in {"int", "float"}:
+                    strategy_param_types[name] = p_type.strip().lower()
+    except Exception:
+        strategy_param_types = {}
     ma_types_trend: List[str] = []
     ma_types_trail_long: List[str] = []
     ma_types_trail_short: List[str] = []
@@ -1481,6 +1494,7 @@ def _build_optimization_config(
         enabled_params=enabled_params,
         param_ranges=param_ranges,
         fixed_params=fixed_params,
+        param_types=strategy_param_types,
         ma_types_trend=[str(ma).upper() for ma in ma_types_trend],
         ma_types_trail_long=[str(ma).upper() for ma in ma_types_trail_long],
         ma_types_trail_short=[str(ma).upper() for ma in ma_types_trail_short],
