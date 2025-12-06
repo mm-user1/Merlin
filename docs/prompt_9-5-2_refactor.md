@@ -1,29 +1,34 @@
-# Phase 9-5-2: Application Layer Refactoring - Server, UI & Testing
+# Phase 9-5-2: Server Layer Cleanup - Remove S01-Specific Defaults & Dual Naming
 
 **Target Agent**: GPT 5.1 Codex
 **Project**: S_01 Trailing MA Backtesting Platform
-**Task**: Phase 9-5-2 - Refactor Server/UI Layer & Complete Testing
-**Complexity**: High (Multi-phase architectural refactoring)
-**Priority**: Critical (Completion of Phase 9-5 refactoring)
+**Task**: Phase 9-5-2 - Server Layer Refactoring
+**Complexity**: High (Backend architectural refactoring)
+**Priority**: Critical (Continuation of Phase 9-5 refactoring)
 **Prerequisite**: Phase 9-5-1 must be completed first
 
 ---
 
 ## Executive Summary
 
-This is **Phase 9-5-2**, the second and final part of the comprehensive refactoring to eliminate S01/S04 architecture inconsistencies.
+This is **Phase 9-5-2**, the second phase in the comprehensive refactoring series to eliminate S01/S04 architecture inconsistencies.
 
 **Phase 9-5-1 (Completed)** standardized:
 - Parameter naming to camelCase throughout
 - OptimizationResult to generic dict-based structure
 - CSV export system to be config-driven
 
-**Phase 9-5-2 (This Phase)** will complete the refactoring by:
-1. Cleaning up server defaults and removing dual naming support
-2. Implementing generic parameter type system for UI rendering
-3. Updating all tests and documentation
+**Phase 9-5-2 (This Phase)** focuses on **server layer cleanup**:
+- Remove S01-specific defaults from DEFAULT_PRESET
+- Eliminate dual naming fallbacks (camelCase vs snake_case)
+- Implement generic parameter type loading from config.json
+- Remove all hardcoded S01 parameter handling
 
-**Success Metric**: After Phase 9-5-2, adding a new strategy requires only `config.json` + `strategy.py` with no changes to core modules, server, or frontend.
+**Success Metric**: After Phase 9-5-2, server.py contains zero hardcoded S01 parameter names and loads all parameter metadata from strategy config.json files.
+
+**Next Phases**:
+- Phase 9-5-3 will handle frontend UI refactoring
+- Phase 9-5-4 will update tests and documentation
 
 ---
 
@@ -31,13 +36,11 @@ This is **Phase 9-5-2**, the second and final part of the comprehensive refactor
 
 1. [Project Context](#project-context)
 2. [Phase 9-5-1 Recap](#phase-9-5-1-recap)
-3. [Implementation Plan - 3 Phases](#implementation-plan)
-   - [Phase 4: Clean Up Server Defaults](#phase-4-clean-up-server-defaults)
-   - [Phase 5: Generic Parameter Type System](#phase-5-generic-parameter-type-system--ui-rendering)
-   - [Phase 6: Tests & Documentation](#phase-6-update-tests-and-documentation)
-4. [Testing Requirements](#testing-requirements)
-5. [Code Quality Standards](#code-quality-standards)
-6. [File Reference Guide](#file-reference-guide)
+3. [Current Problems in Server Layer](#current-problems-in-server-layer)
+4. [Implementation Plan](#implementation-plan)
+5. [Testing Requirements](#testing-requirements)
+6. [Code Quality Standards](#code-quality-standards)
+7. [File Reference Guide](#file-reference-guide)
 
 ---
 
@@ -64,16 +67,20 @@ This is a **backtesting and optimization platform** for trading strategies:
    - **Strategies**: Typed dataclasses for type safety (e.g., `S01Params`, `S04Params`)
    - **Core modules**: Generic dicts `Dict[str, Any]` for strategy-agnostic operation
 
+### Pine Script Connection
+
+Strategies are originally written in **Pine Script** (TradingView's scripting language) and ported to Python. Parameter names in Pine Script use **camelCase** (e.g., `rsiLen`, `stochLen`, `maType`). The target architecture matches this convention throughout the entire pipeline.
+
 ---
 
 ## Phase 9-5-1 Recap
 
-Phase 9-5-1 completed the following:
+Phase 9-5-1 completed three major refactorings:
 
 ### ✓ Phase 1: Standardized to camelCase
-- Converted S01Params dataclass to camelCase
+- Converted S01Params dataclass to camelCase (24 parameters)
 - Simplified S01Params.from_dict() (direct mapping, no conversion)
-- Deleted S01Params.to_dict() method
+- Deleted S01Params.to_dict() method (now using `asdict()`)
 - Updated all S01 strategy logic to use camelCase
 - Verified S04Params consistency
 
@@ -95,32 +102,134 @@ Phase 9-5-1 completed the following:
 
 ---
 
-## Implementation Plan
+## Current Problems in Server Layer
 
-You will complete 3 phases sequentially. Each phase must be fully tested before proceeding to the next.
-
----
-
-## Phase 4: Clean Up Server Defaults
-
-**Goal**: Remove S01-specific defaults and dual naming support.
-
-### 4.1 Simplify DEFAULT_PRESET
+### Problem 1: S01-Specific DEFAULT_PRESET
 
 **File**: `src/server.py` (lines 156-211, approximate)
 
-**Current**:
+**Issue**: DEFAULT_PRESET contains 20+ hardcoded S01-specific parameters:
+
 ```python
 DEFAULT_PRESET = {
     "name": "Default",
+    "maType": "EMA",              # ← S01-specific
+    "maLength": 45,               # ← S01-specific
+    "closeCountLong": 7,          # ← S01-specific
+    "closeCountShort": 5,         # ← S01-specific
+    # ... 20+ more S01 parameters
+    "filterByProfit": False,
+    "minProfitThreshold": 0.0,
+}
+```
+
+**Why it's wrong**:
+- Breaks when user selects S04 strategy (different parameters)
+- Violates generic architecture principle
+- Strategy defaults should come from config.json, not server
+
+### Problem 2: Dual Naming Fallbacks
+
+**File**: `src/server.py` (lines 1182-1514, approximate)
+
+**Issue**: Code supports both camelCase and snake_case:
+
+```python
+# Dual naming support (legacy compatibility)
+ma_type = params.get("maType") or params.get("ma_type", "EMA")
+ma_length = params.get("maLength") or params.get("ma_length", 45)
+close_count_long = params.get("closeCountLong") or params.get("close_count_long", 7)
+# ... many more dual fallbacks
+```
+
+**Why it's wrong**:
+- After Phase 9-5-1, only camelCase exists
+- Fallback logic is dead code
+- Confuses maintenance ("which format is correct?")
+
+### Problem 3: S01-Specific Parameter Handling
+
+**File**: `src/server.py` (lines 1340-1350, approximate)
+
+**Issue**: Special handling for MA type mappings:
+
+```python
+# Special handling for MA types
+MA_TYPE_MAPPINGS = {"ema": "EMA", "sma": "SMA", ...}
+if "maType" in params:
+    params["maType"] = MA_TYPE_MAPPINGS.get(params["maType"], params["maType"])
+if "trailLongType" in params:
+    params["trailLongType"] = MA_TYPE_MAPPINGS.get(params["trailLongType"], params["trailLongType"])
+# ... more S01-specific logic
+```
+
+**Why it's wrong**:
+- Hardcoded parameter names (`maType`, `trailLongType`)
+- S04 doesn't have these parameters
+- Validation should be generic based on config.json
+
+### Problem 4: Hardcoded Parameter Types
+
+**File**: `src/server.py` (lines 1318-1333, approximate)
+
+**Issue**: Parameter types extracted via hardcoded dict:
+
+```python
+# Extract parameter types (S01-specific hardcoded)
+strategy_param_types = {
+    "maLength": "int",
+    "closeCountLong": "int",
+    "closeCountShort": "int",
+    # ... hardcoded for S01 only
+}
+```
+
+**Why it's wrong**:
+- Should load from strategy's config.json
+- Breaks for S04 and future strategies
+- Violates generic architecture
+
+---
+
+## Implementation Plan
+
+You will complete **4 major tasks** sequentially. Each task must be tested before proceeding.
+
+---
+
+## Task 1: Simplify DEFAULT_PRESET
+
+**Goal**: Remove all S01-specific parameters, keep only universal settings.
+
+### 1.1 Locate DEFAULT_PRESET
+
+**File**: `src/server.py` (search for `DEFAULT_PRESET =`)
+
+Find the current DEFAULT_PRESET definition. It should be around lines 156-211.
+
+### 1.2 Replace with Generic Version
+
+**Current** (approximate):
+```python
+DEFAULT_PRESET = {
+    "name": "Default",
+
+    # S01-specific parameters (DELETE ALL)
     "maType": "EMA",
     "maLength": 45,
     "closeCountLong": 7,
     "closeCountShort": 5,
-    # ... 20+ more S01-specific parameters
-    "filterByProfit": False,
-    "minProfitThreshold": 0.0,
-    # ... optimization settings
+    "stopLongX": 2.0,
+    "stopLongRR": 3.0,
+    # ... 18+ more S01 parameters
+
+    # Universal settings
+    "dateFilter": True,
+    "start": None,
+    "end": None,
+    "optimizationMode": "optuna",
+    "nTrials": 100,
+    # ... optimization/scoring settings
 }
 ```
 
@@ -160,69 +269,124 @@ DEFAULT_PRESET = {
 }
 ```
 
-**Rationale**: Strategy-specific defaults come from config.json, not server defaults.
+**Rationale**: Strategy-specific defaults come from config.json when user selects a strategy.
 
-**Action Items**:
-1. Remove all S01-specific parameter defaults
-2. Keep only universal settings (dates, optimization, scoring, filtering)
-3. Document that strategy defaults loaded from config.json
+### 1.3 Add Comment Documentation
 
-### 4.2 Remove Dual Naming Fallbacks
+Add docstring comment above DEFAULT_PRESET:
 
-**File**: `src/server.py` (lines 1182-1514, approximate)
-
-**Current**:
 ```python
-# Dual naming support
+# Default preset containing only universal settings (not strategy-specific).
+# Strategy parameter defaults are loaded from each strategy's config.json.
+DEFAULT_PRESET = {
+    # ...
+}
+```
+
+### Task 1 Verification
+
+**Checklist**:
+- [ ] DEFAULT_PRESET contains zero strategy-specific parameters
+- [ ] Only universal settings remain (dates, optimization, scoring, filtering)
+- [ ] Docstring comment added explaining design
+- [ ] Server starts without errors
+- [ ] Default preset can be loaded via API
+
+**Test Command**:
+```bash
+cd src
+python server.py
+
+# In another terminal
+curl http://localhost:8000/api/presets
+# Verify "Default" preset exists and has no strategy params
+```
+
+---
+
+## Task 2: Remove Dual Naming Fallbacks
+
+**Goal**: Eliminate all `params.get("camelCase") or params.get("snake_case")` patterns.
+
+### 2.1 Identify Dual Naming Patterns
+
+**File**: `src/server.py`
+
+Search for dual naming patterns:
+```bash
+grep -n "params.get.*or params.get" src/server.py
+```
+
+Typical pattern:
+```python
+ma_type = params.get("maType") or params.get("ma_type", "EMA")
+```
+
+### 2.2 Replace with camelCase Only
+
+**Pattern to find**:
+```python
+<variable> = params.get("<camelCase>") or params.get("<snake_case>", <default>)
+```
+
+**Replace with**:
+```python
+<variable> = params.get("<camelCase>", <default>)
+```
+
+**Examples**:
+
+**Before**:
+```python
 ma_type = params.get("maType") or params.get("ma_type", "EMA")
 ma_length = params.get("maLength") or params.get("ma_length", 45)
 close_count_long = params.get("closeCountLong") or params.get("close_count_long", 7)
-# ... many more dual fallbacks
+close_count_short = params.get("closeCountShort") or params.get("close_count_short", 5)
+stop_long_atr = params.get("stopLongX") or params.get("stop_long_atr", 2.0)
 ```
 
-**Target**:
+**After**:
 ```python
-# camelCase only (no fallbacks)
 ma_type = params.get("maType", "EMA")
 ma_length = params.get("maLength", 45)
 close_count_long = params.get("closeCountLong", 7)
-# ... clean camelCase access
+close_count_short = params.get("closeCountShort", 5)
+stop_long_atr = params.get("stopLongX", 2.0)
 ```
 
-**Action Items**:
-1. Find all `params.get("camelCase") or params.get("snake_case")` patterns
-2. Remove snake_case fallback
-3. Keep only camelCase access
+### 2.3 Search/Replace Guide
 
-### 4.3 Remove S01-Specific Parameter Handling
+Use your editor's search/replace with regex:
 
-**File**: `src/server.py` (lines 1340-1350, approximate)
-
-**Current**:
-```python
-# Special handling for MA types
-if "maType" in params:
-    params["maType"] = MA_TYPE_MAPPINGS.get(params["maType"], params["maType"])
-if "trailLongType" in params:
-    params["trailLongType"] = MA_TYPE_MAPPINGS.get(params["trailLongType"], params["trailLongType"])
-# ... more S01-specific logic
+**Search pattern** (regex):
+```
+params\.get\("([^"]+)"\)\s+or\s+params\.get\("([^"]+)",\s*([^)]+)\)
 ```
 
-**Target**: **DELETE** - All parameters handled generically.
+**Replace pattern**:
+```
+params.get("$1", $3)
+```
 
-### 4.4 Simplify _sanitize_score_config()
+This removes the snake_case fallback and keeps only the camelCase version.
 
-**File**: `src/server.py` (lines 1207-1273, approximate)
+### 2.4 Check Score Config Dual Naming
 
-**Current**:
+**File**: `src/server.py` (function `_sanitize_score_config`)
+
+**Before**:
 ```python
 def _sanitize_score_config(score_config: Dict[str, Any]) -> Dict[str, Any]:
-    # ... dual naming fallbacks
+    # Dual naming fallbacks
     weights = score_config.get("weights") or score_config.get("score_weights", {})
-    # ... more snake_case fallbacks
+    enabled_metrics = score_config.get("enabledMetrics") or score_config.get("enabled_metrics", {})
+    invert_metrics = score_config.get("invertMetrics") or score_config.get("invert_metrics", {})
+    normalization_method = score_config.get("normalizationMethod") or score_config.get("normalization_method", "percentile")
+    filter_enabled = score_config.get("filterEnabled") or score_config.get("filter_enabled", False)
+    min_score_threshold = score_config.get("minScoreThreshold") or score_config.get("min_score_threshold", 0.0)
 ```
 
-**Target**:
+**After**:
 ```python
 def _sanitize_score_config(score_config: Dict[str, Any]) -> Dict[str, Any]:
     """Sanitize score configuration - camelCase only."""
@@ -243,30 +407,150 @@ def _sanitize_score_config(score_config: Dict[str, Any]) -> Dict[str, Any]:
     }
 ```
 
-**Action Items**:
-1. Remove all snake_case fallbacks
-2. Use camelCase parameter names only
-3. Provide sensible defaults
+### Task 2 Verification
 
-### 4.5 Remove strategy_param_types Extraction
+**Checklist**:
+- [ ] All dual naming fallbacks removed
+- [ ] Only camelCase `.get()` calls remain
+- [ ] _sanitize_score_config() simplified
+- [ ] No references to snake_case parameter names
+- [ ] Server starts without errors
+- [ ] API endpoints accept camelCase parameters
 
-**File**: `src/server.py` (lines 1318-1333, approximate)
+**Test Command**:
+```bash
+# Search for any remaining dual fallbacks
+grep -n "or params.get" src/server.py
+# Should return no results
 
-**Current**:
+# Test backtest endpoint
+curl -X POST http://localhost:8000/api/backtest \
+  -H "Content-Type: application/json" \
+  -d '{"strategy": "s01_trailing_ma", "params": {"maType": "EMA", "maLength": 45}}'
+```
+
+---
+
+## Task 3: Remove S01-Specific Parameter Handling
+
+**Goal**: Delete hardcoded MA type mappings and S01-specific validation.
+
+### 3.1 Locate MA_TYPE_MAPPINGS
+
+**File**: `src/server.py`
+
+Search for `MA_TYPE_MAPPINGS` or similar constants:
+
 ```python
-# Extract parameter types (S01-specific hardcoded)
-strategy_param_types = {
-    "maLength": "int",
-    "closeCountLong": "int",
-    # ... hardcoded types
+MA_TYPE_MAPPINGS = {
+    "ema": "EMA",
+    "sma": "SMA",
+    "hma": "HMA",
+    # ... more mappings
 }
 ```
 
-**Target**: Load from strategy's config.json:
+**Action**: **DELETE** this constant entirely.
+
+### 3.2 Remove MA Type Normalization Logic
+
+Search for code that uses MA_TYPE_MAPPINGS:
+
+```python
+if "maType" in params:
+    params["maType"] = MA_TYPE_MAPPINGS.get(params["maType"], params["maType"])
+if "trailLongType" in params:
+    params["trailLongType"] = MA_TYPE_MAPPINGS.get(params["trailLongType"], params["trailLongType"])
+if "trailShortType" in params:
+    params["trailShortType"] = MA_TYPE_MAPPINGS.get(params["trailShortType"], params["trailShortType"])
+```
+
+**Action**: **DELETE** all of this code.
+
+**Rationale**: Frontend sends correct values; server shouldn't normalize.
+
+### 3.3 Remove Other S01-Specific Parameter Logic
+
+Search for any other hardcoded parameter names in server.py:
+
+```python
+# Example patterns to search for
+"maType"
+"maLength"
+"closeCountLong"
+"closeCountShort"
+"trailLongType"
+"trailShortType"
+```
+
+For each occurrence:
+- If it's **hardcoded parameter handling** → DELETE
+- If it's **generic parameter passing** → KEEP (camelCase dict access is fine)
+
+**Examples**:
+
+**DELETE this** (hardcoded validation):
+```python
+if params.get("maType") not in MA_TYPES:
+    raise ValueError("Invalid maType")
+```
+
+**KEEP this** (generic pass-through):
+```python
+strategy_params = {
+    "maType": params.get("maType"),
+    "maLength": params.get("maLength"),
+    # ... generic dict building
+}
+```
+
+### Task 3 Verification
+
+**Checklist**:
+- [ ] MA_TYPE_MAPPINGS constant deleted
+- [ ] All MA type normalization code removed
+- [ ] No hardcoded S01 parameter validation
+- [ ] Generic parameter passing preserved
+- [ ] Server starts without errors
+- [ ] S01 backtest works with various MA types
+
+**Test Command**:
+```bash
+# Search for hardcoded S01 parameter names
+grep -n "maType\|trailLongType\|closeCountLong" src/server.py
+# Review each result - should only be generic dict access
+
+# Test S01 with different MA types
+curl -X POST http://localhost:8000/api/backtest \
+  -H "Content-Type: application/json" \
+  -d '{"strategy": "s01_trailing_ma", "params": {"maType": "HMA", "maLength": 50}}'
+```
+
+---
+
+## Task 4: Implement Generic Parameter Type Loading
+
+**Goal**: Load parameter types from config.json instead of hardcoded dicts.
+
+### 4.1 Create Helper Function
+
+**File**: `src/server.py`
+
+**Add this function** (place near other helper functions):
 
 ```python
 def _get_parameter_types(strategy_id: str) -> Dict[str, str]:
-    """Load parameter types from strategy config."""
+    """Load parameter types from strategy configuration.
+
+    Args:
+        strategy_id: Strategy identifier (e.g., "s01_trailing_ma")
+
+    Returns:
+        Dict mapping parameter name to type (e.g., {"maLength": "int", "obLevel": "float"})
+
+    Raises:
+        Exception if strategy config cannot be loaded
+    """
     from strategies import get_strategy_config
 
     config = get_strategy_config(strategy_id)
@@ -274,237 +558,102 @@ def _get_parameter_types(strategy_id: str) -> Dict[str, str]:
 
     param_types = {}
     for param_name, param_spec in parameters.items():
+        if not isinstance(param_spec, dict):
+            continue
         param_types[param_name] = param_spec.get("type", "float")
 
     return param_types
 ```
 
-**Action Items**:
-1. Delete hardcoded strategy_param_types
-2. Load parameter types from config.json
-3. Use in validation and type conversions
+### 4.2 Replace Hardcoded strategy_param_types
 
-### 4.6 Update _build_optimization_config()
+**Find code like this** (approximate location):
 
-**File**: `src/server.py` (function that builds OptimizationConfig)
-
-**Action Items**:
-1. Load parameter metadata from strategy's config.json
-2. No hardcoded parameter knowledge
-3. Build config generically based on strategy ID
-
-### Phase 4 Verification
-
-**Test Checklist**:
-- [ ] DEFAULT_PRESET contains only universal settings
-- [ ] No S01-specific parameters in DEFAULT_PRESET
-- [ ] All dual naming fallbacks removed
-- [ ] S01-specific parameter handling deleted
-- [ ] _sanitize_score_config() uses camelCase only
-- [ ] Parameter types loaded from config.json
-- [ ] Start server - verify default preset loads correctly
-- [ ] Test backtest endpoint with S01
-- [ ] Test backtest endpoint with S04
-- [ ] Test optimize endpoint with S01
-- [ ] Test optimize endpoint with S04
-
-**Test Command**:
-```bash
-cd src
-python server.py
-
-# In another terminal
-curl -X POST http://localhost:8000/api/backtest \
-  -H "Content-Type: application/json" \
-  -d '{"strategy": "s01_trailing_ma", "params": {...}}'
-```
-
----
-
-## Phase 5: Generic Parameter Type System & UI Rendering
-
-**Goal**: Make frontend render parameters based on type from config.json, remove hardcoded MA selection.
-
-### 5.1 Remove requires_ma_selection Feature Flag
-
-**File**: `src/strategies/s01_trailing_ma/config.json` (lines 7-10)
-
-**Current**:
-```json
-{
-  "features": {
-    "requires_ma_selection": true,
-    "ma_groups": ["trend", "trail_long", "trail_short"]
-  }
+```python
+# Extract parameter types (S01-specific hardcoded)
+strategy_param_types = {
+    "maLength": "int",
+    "closeCountLong": "int",
+    "closeCountShort": "int",
+    "stopLongLP": "int",
+    # ... 15+ more hardcoded entries
 }
 ```
 
-**Target**: **DELETE** features section entirely.
+**Replace with**:
 
-**Rationale**: Generic parameter type system renders dropdowns automatically for any `type: "select"` parameter.
-
-### 5.2 Verify Parameter Types in S01 Config
-
-**File**: `src/strategies/s01_trailing_ma/config.json`
-
-**Verify**:
-- All MA type parameters use `"type": "select"`
-- All length parameters use `"type": "int"`
-- All float parameters use `"type": "float"`
-
-**Example**:
-```json
-{
-  "parameters": {
-    "maType": {
-      "type": "select",
-      "label": "Trend MA Type",
-      "default": "EMA",
-      "options": ["EMA", "SMA", "HMA", "WMA", "ALMA", "KAMA", "TMA", "T3", "DEMA", "VWMA", "VWAP"]
-    },
-    "maLength": {
-      "type": "int",
-      "label": "MA Length",
-      "default": 45,
-      "min": 0,
-      "max": 500
-    },
-    "trailLongType": {
-      "type": "select",
-      "label": "Trail MA Long Type",
-      "default": "SMA",
-      "options": ["EMA", "SMA", "HMA", "WMA", "ALMA", "KAMA", "TMA", "T3", "DEMA", "VWMA", "VWAP"]
-    }
-  }
-}
+```python
+# Load parameter types from strategy config
+try:
+    strategy_param_types = _get_parameter_types(strategy_id)
+except Exception as e:
+    logger.warning(f"Could not load parameter types for {strategy_id}: {e}")
+    strategy_param_types = {}  # Fallback to empty dict
 ```
 
-### 5.3 Update Frontend Parameter Rendering
+### 4.3 Update _build_optimization_config()
 
-**File**: `index.html` (or `src/ui/static/js/main.js` if separated)
+**Find function** that builds OptimizationConfig (might be inline in endpoint handler).
 
-**Current** (hardcoded):
-```javascript
-if (config.features && config.features.requires_ma_selection) {
-    // Hardcoded parameter names
-    renderMATypeDropdown("maType", config.parameters.maType);
-    renderMATypeDropdown("trailLongType", config.parameters.trailLongType);
-    renderMATypeDropdown("trailShortType", config.parameters.trailShortType);
-}
+**Before** (hardcoded parameter knowledge):
+```python
+def _build_optimization_config(payload: Dict[str, Any]) -> OptimizationConfig:
+    # Hardcoded parameter ranges
+    config = OptimizationConfig(
+        strategy_id=payload.get("strategy"),
+        # ... hardcoded S01 knowledge
+    )
 ```
 
-**Target** (generic):
-```javascript
-function renderParameters(config) {
-    const parametersContainer = document.getElementById("parameters");
-    parametersContainer.innerHTML = "";  // Clear
+**After** (generic, config-driven):
+```python
+def _build_optimization_config(payload: Dict[str, Any]) -> OptimizationConfig:
+    """Build optimization config from request payload.
 
-    const parameters = config.parameters || {};
+    Loads parameter metadata from strategy's config.json.
+    """
+    strategy_id = payload.get("strategy")
 
-    // Generic rendering based on parameter type
-    for (const [paramName, paramConfig] of Object.entries(parameters)) {
-        const paramElement = renderParameter(paramName, paramConfig);
-        parametersContainer.appendChild(paramElement);
-    }
-}
+    # Load parameter types and metadata from strategy config
+    param_types = _get_parameter_types(strategy_id)
 
-function renderParameter(paramName, paramConfig) {
-    const container = document.createElement("div");
-    container.className = "parameter-row";
+    config = OptimizationConfig(
+        strategy_id=strategy_id,
+        # ... build generically using param_types
+    )
 
-    const label = document.createElement("label");
-    label.textContent = paramConfig.label || paramName;
-    label.htmlFor = `param-${paramName}`;
-    container.appendChild(label);
-
-    let input;
-
-    switch (paramConfig.type) {
-        case "int":
-        case "float":
-            input = renderNumberInput(paramName, paramConfig);
-            break;
-        case "select":
-        case "options":  // Support both names
-            input = renderDropdown(paramName, paramConfig);
-            break;
-        case "bool":
-            input = renderCheckbox(paramName, paramConfig);
-            break;
-        default:
-            console.warn(`Unknown parameter type: ${paramConfig.type}`);
-            input = renderNumberInput(paramName, paramConfig);  // Fallback
-    }
-
-    container.appendChild(input);
-    return container;
-}
-
-function renderNumberInput(paramName, paramConfig) {
-    const input = document.createElement("input");
-    input.type = "number";
-    input.id = `param-${paramName}`;
-    input.name = paramName;
-    input.value = paramConfig.default || 0;
-    input.min = paramConfig.min || 0;
-    input.max = paramConfig.max || 1000;
-    input.step = paramConfig.step || (paramConfig.type === "int" ? 1 : 0.1);
-    return input;
-}
-
-function renderDropdown(paramName, paramConfig) {
-    const select = document.createElement("select");
-    select.id = `param-${paramName}`;
-    select.name = paramName;
-
-    const options = paramConfig.options || [];
-    options.forEach(optionValue => {
-        const option = document.createElement("option");
-        option.value = optionValue;
-        option.textContent = optionValue;
-        if (optionValue === paramConfig.default) {
-            option.selected = true;
-        }
-        select.appendChild(option);
-    });
-
-    return select;
-}
-
-function renderCheckbox(paramName, paramConfig) {
-    const input = document.createElement("input");
-    input.type = "checkbox";
-    input.id = `param-${paramName}`;
-    input.name = paramName;
-    input.checked = paramConfig.default || false;
-    return input;
-}
+    return config
 ```
 
-**Action Items**:
-1. Remove hardcoded parameter names (`maType`, `trailLongType`, `trailShortType`)
-2. Remove `requires_ma_selection` feature flag check
-3. Loop through config.parameters and render generically
-4. Render dropdowns for **any** `type: "select"` parameter
-5. Support `type: "int"`, `"float"`, `"select"`, `"bool"`
+### 4.4 Add Generic Parameter Validation
 
-### 5.4 Update Server Validation
+**Add this function** (optional but recommended):
 
-**File**: `src/server.py` (validation logic)
-
-**Add Generic Validation**:
 ```python
 def _validate_strategy_params(strategy_id: str, params: Dict[str, Any]) -> None:
-    """Generic parameter validation based on config.json."""
+    """Generic parameter validation based on config.json.
+
+    Args:
+        strategy_id: Strategy identifier
+        params: Parameter dictionary to validate
+
+    Raises:
+        ValueError: If parameter validation fails
+    """
     from strategies import get_strategy_config
 
-    config = get_strategy_config(strategy_id)
+    try:
+        config = get_strategy_config(strategy_id)
+    except Exception:
+        # If config unavailable, skip validation
+        return
+
     parameters = config.get("parameters", {})
 
     for param_name, param_config in parameters.items():
         value = params.get(param_name)
         if value is None:
-            continue  # Use default
+            continue  # Use default from config
 
         param_type = param_config.get("type", "float")
 
@@ -525,584 +674,174 @@ def _validate_strategy_params(strategy_id: str, params: Dict[str, Any]) -> None:
 
         elif param_type in ["select", "options"]:
             options = param_config.get("options", [])
-            if value not in options:
+            if options and value not in options:
                 raise ValueError(f"{param_name} must be one of {options}, got {value}")
 
         elif param_type == "bool":
             if not isinstance(value, bool):
                 params[param_name] = bool(value)
 
-        # Range validation
+        # Range validation (for int/float)
         if param_type in ["int", "float"]:
             min_val = param_config.get("min")
             max_val = param_config.get("max")
-            if min_val is not None and value < min_val:
+            numeric_value = params[param_name]
+
+            if min_val is not None and numeric_value < min_val:
                 raise ValueError(f"{param_name} must be >= {min_val}")
-            if max_val is not None and value > max_val:
+            if max_val is not None and numeric_value > max_val:
                 raise ValueError(f"{param_name} must be <= {max_val}")
 ```
 
-**Action Items**:
-1. Remove hardcoded MA type validation
-2. Add generic type validation for int/float/select/bool
-3. Add generic range validation
-4. Load validation rules from config.json
+**Usage** (in API endpoint handlers):
 
-### 5.5 Verify S04 Config Types
+```python
+@app.route("/api/backtest", methods=["POST"])
+def backtest():
+    payload = request.get_json()
+    strategy_id = payload.get("strategy")
+    params = payload.get("params", {})
 
-**File**: `src/strategies/s04_stochrsi/config.json`
+    # Generic validation
+    _validate_strategy_params(strategy_id, params)
 
-**Verify**:
-```json
-{
-  "parameters": {
-    "rsiLen": {
-      "type": "int",
-      "label": "RSI Length",
-      "default": 16,
-      "min": 1,
-      "max": 200
-    },
-    "obLevel": {
-      "type": "float",
-      "label": "Overbought Level",
-      "default": 75.0,
-      "min": 0.0,
-      "max": 100.0
-    }
-  }
-}
+    # ... rest of backtest logic
 ```
 
-**Action Items**:
-1. Verify all parameter types are correct
-2. Ensure consistency with S01 pattern
-3. No feature flags needed
+### Task 4 Verification
 
-### Phase 5 Verification
-
-**Test Checklist**:
-- [ ] `requires_ma_selection` feature flag removed from S01 config.json
-- [ ] S01 config.json uses `type: "select"` for MA type parameters
-- [ ] Frontend renders parameters generically based on type
-- [ ] MA type dropdowns render correctly for S01
-- [ ] Number inputs render correctly for S04
-- [ ] Server validation works generically for both strategies
-- [ ] Load S01 in frontend - verify all parameters render correctly
-- [ ] Load S04 in frontend - verify all parameters render correctly
-- [ ] Submit backtest request - verify parameters validated correctly
+**Checklist**:
+- [ ] _get_parameter_types() helper added
+- [ ] Hardcoded strategy_param_types replaced with dynamic loading
+- [ ] _build_optimization_config() uses generic loading
+- [ ] _validate_strategy_params() added (optional)
+- [ ] Validation works for both S01 and S04
+- [ ] Server starts without errors
+- [ ] Type validation catches invalid inputs
 
 **Test Command**:
 ```bash
-# Start server
-cd src
-python server.py
-
-# Open browser: http://localhost:8000
-# Select S01 strategy - verify maType, trailLongType, trailShortType show as dropdowns
-# Select S04 strategy - verify rsiLen, stochLen show as number inputs
-```
-
----
-
-## Phase 6: Update Tests and Documentation
-
-**Goal**: Ensure all tests pass and documentation reflects new architecture.
-
-### 6.1 Update Test Fixtures
-
-**Files**: All test files in `tests/`
-
-**Action Items**:
-1. Find all test data with parameters
-2. Convert snake_case parameter names to camelCase
-3. Update expected outputs
-
-**Example**:
-```python
-# OLD
-test_params = {
-    "ma_type": "EMA",
-    "ma_length": 45,
-    "close_count_long": 7,
-}
-
-# NEW
-test_params = {
-    "maType": "EMA",
-    "maLength": 45,
-    "closeCountLong": 7,
-}
-```
-
-### 6.2 Update Regression Tests
-
-**File**: `tests/test_regression_s01.py`
-
-**Action Items**:
-1. Update parameter dictionaries to use camelCase
-2. Verify baseline comparisons still pass
-3. Update any hardcoded parameter references
-
-### 6.3 Update Unit Tests
-
-**Files**:
-- `tests/test_optuna_engine.py`
-- `tests/test_export.py`
-
-**Action Items**:
-1. Update tests for generic OptimizationResult (params as dict)
-2. Update tests for dynamic CSV column building
-3. Add tests for parameter type system
-
-### 6.4 Add Naming Consistency Tests
-
-**File**: `tests/test_naming_consistency.py` (NEW)
-
-**Create**:
-```python
-"""Test naming consistency across the codebase."""
-import pytest
-from dataclasses import fields
-from strategies.s01_trailing_ma.strategy import S01Params, S01Strategy
-from strategies.s04_stochrsi.strategy import S04Params, S04Strategy
-from strategies import get_strategy_config
-
-
-def test_s01_params_use_camelCase():
-    """Verify all S01Params fields use camelCase."""
-    for field in fields(S01Params):
-        # Skip internal control parameters
-        if field.name in ["use_backtester", "use_date_filter", "start", "end"]:
-            continue
-
-        # Check no underscores (camelCase has no underscores)
-        assert "_" not in field.name, f"S01Params field {field.name} uses snake_case"
-
-
-def test_s04_params_use_camelCase():
-    """Verify all S04Params fields use camelCase."""
-    for field in fields(S04Params):
-        # Skip internal control parameters
-        if field.name in ["use_backtester", "use_date_filter", "start", "end"]:
-            continue
-
-        assert "_" not in field.name, f"S04Params field {field.name} uses snake_case"
-
-
-def test_config_matches_params_s01():
-    """Verify S01 config.json parameter names match Params dataclass."""
-    config = get_strategy_config("s01_trailing_ma")
-    config_params = set(config["parameters"].keys())
-
-    dataclass_params = {
-        f.name for f in fields(S01Params)
-        if f.name not in ["use_backtester", "use_date_filter", "start", "end"]
-    }
-
-    # All config params should exist in dataclass
-    for param_name in config_params:
-        assert param_name in dataclass_params, \
-            f"Config param {param_name} not in S01Params dataclass"
-
-
-def test_config_matches_params_s04():
-    """Verify S04 config.json parameter names match Params dataclass."""
-    config = get_strategy_config("s04_stochrsi")
-    config_params = set(config["parameters"].keys())
-
-    dataclass_params = {
-        f.name for f in fields(S04Params)
-        if f.name not in ["use_backtester", "use_date_filter", "start", "end"]
-    }
-
-    for param_name in config_params:
-        assert param_name in dataclass_params, \
-            f"Config param {param_name} not in S04Params dataclass"
-
-
-def test_no_conversion_code():
-    """Verify no snake_case ↔ camelCase conversion exists."""
-    import inspect
-
-    # Check S01Params.from_dict has no conversion
-    source = inspect.getsource(S01Params.from_dict)
-    assert "ma_type" not in source, "S01Params.from_dict still has snake_case conversion"
-    assert "ma_length" not in source, "S01Params.from_dict still has snake_case conversion"
-
-    # Check S01Params has no to_dict method
-    assert not hasattr(S01Params, "to_dict"), "S01Params.to_dict should be deleted"
-
-
-def test_parameter_types_valid():
-    """Verify all strategies use valid parameter types."""
-    valid_types = {"int", "float", "select", "options", "bool"}
-
-    for strategy_id in ["s01_trailing_ma", "s04_stochrsi"]:
-        config = get_strategy_config(strategy_id)
-        parameters = config.get("parameters", {})
-
-        for param_name, param_spec in parameters.items():
-            param_type = param_spec.get("type")
-            assert param_type in valid_types, \
-                f"{strategy_id} param {param_name} has invalid type {param_type}"
-```
-
-### 6.5 Update CLAUDE.md
-
-**File**: `CLAUDE.md`
-
-**Add Section**:
-```markdown
-## Naming Convention: camelCase Throughout
-
-**Critical Rule**: All parameters MUST use camelCase matching Pine Script conventions.
-
-### Parameter Flow (No Conversions)
-
-Pine Script (camelCase) → config.json (camelCase) → Python (camelCase) → CSV (camelCase)
-
-Example:
-- Pine Script: `input.int(16, "RSI Length")` → variable `rsiLen`
-- config.json: `"rsiLen": {"type": "int", "default": 16}`
-- Python Params: `rsiLen: int = 16`
-- CSV export: column `rsiLen`
-
-### Parameter Type System
-
-Match Pine Script input types:
-
-| Pine Script | config.json | Frontend | Python |
-|-------------|-------------|----------|--------|
-| `input.int()` | `"type": "int"` | Number input | `int` |
-| `input.float()` | `"type": "float"` | Number input | `float` |
-| `input.string(options=[...])` | `"type": "select"` | Dropdown | `str` |
-| `input.bool()` | `"type": "bool"` | Checkbox | `bool` |
-
-### Adding New Strategies
-
-1. **Parameter names**: Use camelCase (e.g., `rsiLen`, not `rsi_len`)
-2. **Params dataclass**: Typed fields with camelCase names
-3. **from_dict()**: Direct mapping, no conversion
-4. **No to_dict()**: Use `asdict(params)` from dataclasses module
-5. **config.json**: Use correct parameter types (int/float/select/bool)
-
-### Hybrid Architecture Pattern
-
-**Strategy Level** (Type Safety):
-```python
-@dataclass
-class S05Params:
-    rsiLen: int = 16  # ← camelCase, typed
-```
-
-**Core Modules** (Generic):
-```python
-def optimize(params: Dict[str, Any]):  # ← Generic dict
-    result.params = params  # ← Store as-is
-```
-
-### Performance Note
-
-The multiprocessing cache architecture MUST be preserved. When modifying optimization logic, respect the caching pattern in `_init_worker()`.
-```
-
-### 6.6 Update PROJECT_TARGET_ARCHITECTURE.md
-
-**File**: `docs/PROJECT_TARGET_ARCHITECTURE.md`
-
-**Add Section**:
-```markdown
-## Naming Convention and Parameter Flow
-
-### camelCase Throughout
-
-All parameters use camelCase matching Pine Script conventions. No conversion layers exist.
-
-**Parameter Flow**:
-```
-Pine Script (rsiLen) → config.json (rsiLen) → Python (rsiLen) → CSV (rsiLen)
-```
-
-**Benefits**:
-- No conversion code needed
-- Parameter names identical across entire pipeline
-- Easier debugging (same name everywhere)
-- Matches Pine Script source
-
-### Hybrid Architecture: Typed Strategies + Generic Core
-
-**Strategy Level** (Type Safety):
-- Strategies define typed Params dataclasses
-- Fields use camelCase matching config.json
-- IDE autocomplete and type hints work
-- Example: `S04Params.rsiLen: int = 16`
-
-**Core Level** (Generic):
-- Core modules work with `Dict[str, Any]`
-- No hardcoded parameter knowledge
-- Strategy-agnostic operation
-- Example: `OptimizationResult.params: Dict[str, Any]`
-
-**Conversion**:
-- Happens once inside strategy: `self.params = S04Params.from_dict(params_dict)`
-- Core modules pass dicts, strategies convert to typed dataclasses
-```
-
-### 6.7 Create Strategy Development Guide
-
-**File**: `docs/ADDING_NEW_STRATEGY.md` (NEW)
-
-**Create**:
-```markdown
-# Adding a New Strategy
-
-## Step 1: Create Strategy Directory
-
-```bash
-mkdir -p src/strategies/s05_mystrategy
-touch src/strategies/s05_mystrategy/__init__.py
-touch src/strategies/s05_mystrategy/strategy.py
-touch src/strategies/s05_mystrategy/config.json
-```
-
-## Step 2: Define config.json
-
-Use camelCase parameter names matching your Pine Script source.
-
-```json
-{
-  "id": "s05_mystrategy",
-  "name": "S05 My Strategy",
-  "version": "v01",
-  "description": "Brief description",
-  "parameters": {
-    "rsiLen": {
-      "type": "int",
-      "label": "RSI Length",
-      "default": 14,
-      "min": 2,
-      "max": 100,
-      "step": 1,
-      "group": "Indicators",
-      "optimize": {
-        "enabled": true,
-        "min": 5,
-        "max": 50,
-        "step": 1
-      }
-    },
-    "maType": {
-      "type": "select",
-      "label": "MA Type",
-      "default": "EMA",
-      "options": ["SMA", "EMA", "HMA"],
-      "group": "Indicators",
-      "optimize": {
-        "enabled": false
-      }
-    },
-    "threshold": {
-      "type": "float",
-      "label": "Entry Threshold",
-      "default": 0.5,
-      "min": 0.0,
-      "max": 1.0,
-      "step": 0.1,
-      "group": "Entry",
-      "optimize": {
-        "enabled": true,
-        "min": 0.1,
-        "max": 0.9,
-        "step": 0.1
-      }
-    }
-  }
-}
-```
-
-**Parameter Type Reference**:
-- `"int"` - Integer values (Pine: `input.int()`)
-- `"float"` - Decimal values (Pine: `input.float()`)
-- `"select"` - Dropdown options (Pine: `input.string(options=[...])`)
-- `"bool"` - True/False (Pine: `input.bool()`)
-
-## Step 3: Define Params Dataclass
-
-Use camelCase field names matching config.json.
-
-```python
-from dataclasses import dataclass
-from typing import Dict, Any
-
-@dataclass
-class S05Params:
-    """S05 strategy parameters - camelCase matching Pine Script."""
-    rsiLen: int = 14
-    maType: str = "EMA"
-    threshold: float = 0.5
-
-    @classmethod
-    def from_dict(cls, d: Dict[str, Any]) -> "S05Params":
-        """Direct mapping - no conversion."""
-        return cls(
-            rsiLen=int(d.get("rsiLen", 14)),
-            maType=str(d.get("maType", "EMA")),
-            threshold=float(d.get("threshold", 0.5)),
-        )
-```
-
-**Rules**:
-- ✅ Use camelCase (e.g., `rsiLen`, `maType`)
-- ❌ Do NOT use snake_case (e.g., `rsi_len`, `ma_type`)
-- ✅ Direct mapping in from_dict() (no conversion)
-- ❌ Do NOT create to_dict() method (use `asdict()` instead)
-
-## Step 4: Implement Strategy
-
-```python
-from core.backtest_engine import StrategyResult, TradeRecord
-from strategies.base import BaseStrategy
-
-class S05Strategy(BaseStrategy):
-    def __init__(self, params_dict: Dict[str, Any]):
-        # Hybrid: convert dict to typed dataclass
-        self.params = S05Params.from_dict(params_dict)
-
-    def run(self, df: pd.DataFrame, warmup_bars: int = 0) -> StrategyResult:
-        """Execute strategy and return results."""
-        p = self.params
-
-        # Calculate indicators (use camelCase params)
-        rsi = calculate_rsi(df["close"], p.rsiLen)
-        ma = get_ma(df["close"], p.maType, p.rsiLen)
-
-        # Trading logic
-        trades = []
-        position = None
-
-        for i in range(warmup_bars, len(df)):
-            # Entry logic
-            if position is None and rsi[i] < 30:
-                position = {
-                    "entry_idx": i,
-                    "entry_price": df["close"].iloc[i],
-                    "direction": "long",
-                }
-
-            # Exit logic
-            elif position is not None and rsi[i] > 70:
-                trade = TradeRecord(
-                    entry_time=df.index[position["entry_idx"]],
-                    exit_time=df.index[i],
-                    entry_price=position["entry_price"],
-                    exit_price=df["close"].iloc[i],
-                    size=1.0,
-                    direction=position["direction"],
-                    pnl=(df["close"].iloc[i] - position["entry_price"]) * 1.0,
-                    commission=0.0,
-                )
-                trades.append(trade)
-                position = None
-
-        return StrategyResult(trades=trades)
-```
-
-## Step 5: Register Strategy
-
-Add to `src/strategies/__init__.py`:
-
-```python
-from .s05_mystrategy.strategy import S05Strategy
-
-STRATEGY_REGISTRY = {
-    "s01_trailing_ma": S01Strategy,
-    "s04_stochrsi": S04Strategy,
-    "s05_mystrategy": S05Strategy,  # ← Add here
-}
-```
-
-## Step 6: Test
-
-```bash
-cd src
-python run_backtest.py --strategy s05_mystrategy --csv ../data/sample.csv
-```
-
-## Common Mistakes to Avoid
-
-1. ❌ Using snake_case parameter names
-2. ❌ Creating conversion code in from_dict()
-3. ❌ Hardcoding strategy logic in core modules
-4. ❌ Using invalid parameter types in config.json
-5. ❌ Forgetting to add strategy to STRATEGY_REGISTRY
-
-## Architecture Guarantees
-
-After following this guide:
-- ✅ Frontend renders your parameters automatically based on type
-- ✅ Optimization works without core module changes
-- ✅ CSV export includes your parameters automatically
-- ✅ Parameter validation works generically
-- ✅ Your strategy is treated identically to S01 and S04
-```
-
-### Phase 6 Verification
-
-**Test Checklist**:
-- [ ] All test fixtures use camelCase parameters
-- [ ] Regression tests pass with camelCase
-- [ ] Unit tests updated for generic OptimizationResult
-- [ ] Naming consistency tests added and passing
-- [ ] CLAUDE.md documents camelCase convention
-- [ ] PROJECT_TARGET_ARCHITECTURE.md documents Hybrid approach
-- [ ] ADDING_NEW_STRATEGY.md created with clear guide
-- [ ] All existing tests pass
-- [ ] New tests pass
-
-**Test Command**:
-```bash
-cd tests
-pytest -v
-pytest test_naming_consistency.py -v
+# Test S01 validation
+curl -X POST http://localhost:8000/api/backtest \
+  -H "Content-Type: application/json" \
+  -d '{"strategy": "s01_trailing_ma", "params": {"maLength": "invalid"}}'
+# Should return validation error
+
+# Test S04 validation
+curl -X POST http://localhost:8000/api/backtest \
+  -H "Content-Type: application/json" \
+  -d '{"strategy": "s04_stochrsi", "params": {"rsiLen": 16, "obLevel": 150.0}}'
+# Should return validation error (obLevel > 100)
 ```
 
 ---
 
 ## Testing Requirements
 
+### Regression Testing
+
+After completing all tasks, run comprehensive tests:
+
+1. **Server Startup**:
+   - Server starts without errors
+   - Default preset loads correctly
+   - No warnings about missing parameters
+
+2. **S01 Backtest**:
+   - Submit backtest with camelCase parameters
+   - Verify results returned
+   - Check trade count and metrics
+
+3. **S04 Backtest**:
+   - Submit backtest with S04 parameters
+   - Verify results returned
+   - Verify different parameter set works
+
+4. **Optimization**:
+   - Run small optimization (10 trials) for S01
+   - Run small optimization (10 trials) for S04
+   - Verify both complete without errors
+   - Check CSV export format
+
+5. **Parameter Validation**:
+   - Test invalid parameter types (string for int)
+   - Test out-of-range values
+   - Test invalid select options
+   - Verify appropriate errors returned
+
 ### Integration Testing
 
-After ALL phases complete:
+**Test Workflow**:
+```bash
+# 1. Start server
+cd src
+python server.py
 
-1. **End-to-End S01 Test**:
-   - Load S01 in frontend
-   - Verify all parameters render correctly
-   - Submit backtest request
-   - Verify results displayed
-   - Submit optimization request
-   - Verify CSV export correct
+# 2. In another terminal, test endpoints
 
-2. **End-to-End S04 Test**:
-   - Repeat above for S04 strategy
+# Test default preset
+curl http://localhost:8000/api/presets
 
-3. **Cross-Strategy Test**:
-   - Switch between S01 and S04 in frontend
-   - Verify parameter forms update correctly
-   - Verify no parameter name conflicts
+# Test S01 backtest
+curl -X POST http://localhost:8000/api/backtest \
+  -H "Content-Type: application/json" \
+  -d @test_s01_backtest.json
+
+# Test S04 backtest
+curl -X POST http://localhost:8000/api/backtest \
+  -H "Content-Type: application/json" \
+  -d @test_s04_backtest.json
+
+# Test optimization
+curl -X POST http://localhost:8000/api/optimize \
+  -H "Content-Type: application/json" \
+  -d @test_s01_optimize.json
+```
+
+**Sample test_s01_backtest.json**:
+```json
+{
+  "strategy": "s01_trailing_ma",
+  "params": {
+    "maType": "EMA",
+    "maLength": 45,
+    "closeCountLong": 7,
+    "closeCountShort": 5,
+    "riskPerTrade": 2.0
+  },
+  "csvFile": "../data/OKX_LINKUSDT.P, 15...csv"
+}
+```
+
+**Sample test_s04_backtest.json**:
+```json
+{
+  "strategy": "s04_stochrsi",
+  "params": {
+    "rsiLen": 16,
+    "stochLen": 16,
+    "kLen": 3,
+    "dLen": 3,
+    "obLevel": 75.0,
+    "osLevel": 15.0
+  },
+  "csvFile": "../data/OKX_LINKUSDT.P, 15...csv"
+}
+```
 
 ### Performance Testing
 
 Verify no performance regression:
 
-1. **Benchmark Optimization Speed**:
+1. **Benchmark Request Latency**:
+   - Measure backtest API response time before refactoring
+   - Measure backtest API response time after refactoring
+   - Verify within 5% tolerance
+
+2. **Optimization Throughput**:
    - Run 100-trial optimization before refactoring
    - Run 100-trial optimization after refactoring
-   - Verify throughput within 5% (caching architecture preserved)
-
-2. **Memory Usage**:
-   - Monitor memory during optimization
-   - Verify no memory leaks or excessive growth
+   - Verify throughput preserved (trials/second)
 
 ---
 
@@ -1111,143 +850,162 @@ Verify no performance regression:
 ### Style Guidelines
 
 1. **Type Hints**: Use type hints for all function signatures
+   ```python
+   def _get_parameter_types(strategy_id: str) -> Dict[str, str]:
+   ```
+
 2. **Docstrings**: Document all public functions with Google-style docstrings
-3. **Naming**: Follow PEP 8 for function/variable names (snake_case), camelCase for parameters matching Pine Script
-4. **Line Length**: Max 100 characters (relaxed from PEP 8's 79 for readability)
+   ```python
+   def _validate_strategy_params(strategy_id: str, params: Dict[str, Any]) -> None:
+       """Generic parameter validation based on config.json.
+
+       Args:
+           strategy_id: Strategy identifier
+           params: Parameter dictionary to validate
+
+       Raises:
+           ValueError: If parameter validation fails
+       """
+   ```
+
+3. **Naming**: Follow PEP 8 for function/variable names (snake_case)
+4. **Line Length**: Max 100 characters
 
 ### Error Handling
 
 1. **Validation**: Validate all inputs at API boundaries
 2. **Logging**: Use logging module, not print statements
+   ```python
+   import logging
+   logger = logging.getLogger(__name__)
+   logger.warning(f"Could not load config for {strategy_id}: {e}")
+   ```
+
 3. **Exceptions**: Raise specific exceptions with clear messages
+   ```python
+   raise ValueError(f"{param_name} must be >= {min_val}")
+   ```
+
 4. **Graceful Degradation**: Fallback to sensible defaults when possible
 
 ### Comments
 
 1. **WHY not WHAT**: Explain rationale, not obvious operations
-2. **TODOs**: Include author and date for any TODO comments
-3. **Complex Logic**: Document non-obvious algorithms or edge cases
+   ```python
+   # Load from config.json instead of hardcoded dict for strategy-agnostic operation
+   param_types = _get_parameter_types(strategy_id)
+   ```
+
+2. **TODOs**: Include author and date
+   ```python
+   # TODO(codex, 2025-01-15): Consider caching parameter types for performance
+   ```
+
+3. **Complex Logic**: Document non-obvious algorithms
 
 ### Git Commits
 
 1. **Atomic Commits**: One logical change per commit
 2. **Commit Messages**:
-   - Format: `[Phase 9-5-2.X] Brief description`
-   - Example: `[Phase 9-5-2.1] Remove S01-specific server defaults`
+   - Format: `[Phase 9-5-2] Brief description`
+   - Examples:
+     - `[Phase 9-5-2] Remove S01-specific defaults from DEFAULT_PRESET`
+     - `[Phase 9-5-2] Eliminate dual naming fallbacks in server.py`
+     - `[Phase 9-5-2] Implement generic parameter type loading`
+
 3. **Testing**: Ensure tests pass before committing
 
 ---
 
 ## File Reference Guide
 
-### Server
+### Server File
 
-**Server**:
-- `src/server.py` - Flask API server (~1600 lines)
-  - Lines 156-211: DEFAULT_PRESET (REFACTOR)
-  - Lines 1182-1514: Dual naming fallbacks (REFACTOR)
-  - Lines 1207-1273: _sanitize_score_config (REFACTOR)
-  - Lines 1318-1333: strategy_param_types extraction (DELETE)
-  - Lines 1340-1350: S01-specific parameter handling (DELETE)
+**Primary File**:
+- `src/server.py` - Flask API server (~1922 lines)
 
-### Frontend
+**Key Sections to Modify**:
+- DEFAULT_PRESET definition (search for `DEFAULT_PRESET =`)
+- Dual naming fallbacks (search for `params.get.*or params.get`)
+- _sanitize_score_config function (search for `def _sanitize_score_config`)
+- MA_TYPE_MAPPINGS (search for `MA_TYPE_MAPPINGS`)
+- Hardcoded parameter types (search for `strategy_param_types`)
+- Optimization config building (search for `OptimizationConfig`)
 
-**UI**:
-- `index.html` - Main HTML page (~1200 lines)
-  - Hardcoded MA type selection (REFACTOR to generic)
-  - Parameter rendering (REFACTOR)
+### Strategy Files (Reference Only)
 
-### Tests
+**S01 Trailing MA**:
+- `src/strategies/s01_trailing_ma/config.json` - Parameter definitions (412 lines)
+- `src/strategies/s01_trailing_ma/strategy.py` - Strategy implementation (465 lines)
 
-**Test Files**:
-- `tests/test_regression_s01.py` - S01 regression tests (UPDATE)
-- `tests/test_optuna_engine.py` - Optuna engine unit tests (UPDATE)
-- `tests/test_export.py` - Export utilities unit tests (UPDATE)
-- `tests/test_naming_consistency.py` - Naming consistency tests (NEW)
+**S04 StochRSI**:
+- `src/strategies/s04_stochrsi/config.json` - Parameter definitions (134 lines)
+- `src/strategies/s04_stochrsi/strategy.py` - Strategy implementation
 
-### Documentation
-
-- `CLAUDE.md` - Project guidelines for Claude Code (UPDATE)
-- `docs/PROJECT_TARGET_ARCHITECTURE.md` - Target architecture (UPDATE)
-- `docs/PROJECT_STRUCTURE.md` - Directory structure
-- `docs/ADDING_NEW_STRATEGY.md` - Strategy development guide (NEW)
+**Strategies Module**:
+- `src/strategies/__init__.py` - Contains `get_strategy_config()` function
 
 ---
 
-## Success Criteria (Phase 9-5-2 & Overall Checklist)
+## Success Criteria
 
-After completing all 3 phases of 9-5-2, verify:
+After completing Phase 9-5-2, verify:
 
-- [ ] **No hardcoded parameter names** in server.py
-- [ ] **DEFAULT_PRESET contains only universal settings**
-- [ ] **All dual naming fallbacks removed**
+- [ ] **DEFAULT_PRESET contains zero S01-specific parameters**
+- [ ] **Only universal settings** in DEFAULT_PRESET (dates, optimization, scoring)
+- [ ] **All dual naming fallbacks removed** from server.py
+- [ ] **No snake_case parameter references** remain
+- [ ] **MA_TYPE_MAPPINGS deleted**
 - [ ] **S01-specific parameter handling deleted**
+- [ ] **_get_parameter_types() function added**
 - [ ] **Parameter types loaded from config.json**
-- [ ] **Frontend renders parameters generically** based on type
-- [ ] **requires_ma_selection feature flag removed**
-- [ ] **MA type dropdowns work** for S01 (via generic "select" type rendering)
-- [ ] **Generic parameter validation** in server
-- [ ] **All tests updated** to use camelCase
-- [ ] **Naming consistency tests pass**
-- [ ] **Documentation updated** (CLAUDE.md, architecture docs, new guide)
-
-### Overall Phase 9-5 Success (Both 9-5-1 and 9-5-2)
-
-- [ ] **No hardcoded parameter names** in core modules (optuna_engine, export, server)
-- [ ] **Single naming convention** (camelCase) throughout entire system
-- [ ] **No strategy-specific conditionals** (`if strategy_id == "s01"`) in core modules
-- [ ] **No conversion code** between naming conventions (snake_case ↔ camelCase)
-- [ ] **S01 and S04 treated identically** by core system
-- [ ] **Adding new strategy requires only** config.json + strategy.py (no core changes)
-- [ ] **All existing tests pass** (regression, unit, integration)
-- [ ] **CSV export works correctly** for both S01 and S04
-- [ ] **Optimization completes** without errors for both strategies
-- [ ] **Performance preserved** (no regression in optimization speed)
-- [ ] **Parameter flow verified**: Pine → JSON → Python → CSV (same names throughout)
+- [ ] **Generic parameter validation implemented**
+- [ ] **Server starts without errors**
+- [ ] **S01 backtest works** via API
+- [ ] **S04 backtest works** via API
+- [ ] **Optimization works** for both strategies
+- [ ] **Parameter validation works** for both strategies
+- [ ] **No performance regression** (request latency within 5%)
 
 ---
 
 ## Critical Preservation
 
 **DO NOT MODIFY**:
-1. Multiprocessing cache architecture (`_init_worker()` in optuna_engine.py)
-2. Performance-critical indicator calculations
-3. Metrics calculation logic (unless fixing bugs)
-4. Trade simulation core logic in backtest_engine.py
+1. Multiprocessing cache architecture (not in server.py)
+2. Performance-critical indicator calculations (not in server.py)
+3. Metrics calculation logic (not in server.py)
+4. Trade simulation core logic (not in server.py)
+
+**ONLY MODIFY**:
+- `src/server.py` (Flask API server)
+- No other files should be changed in this phase
 
 ---
 
-## Breaking Changes
+## Next Steps
 
-This refactoring includes **breaking changes**:
-- Existing CSV exports with snake_case headers become invalid
-- Saved presets with snake_case parameters won't load
-- API clients must update to camelCase parameters
+After completing Phase 9-5-2:
 
-**Mitigation**: Provide migration script or one-time conversion logic if needed.
-
----
-
-## Future-Proofing
-
-After this refactoring:
-- Adding S05, S06, ... strategies is trivial (config.json + strategy.py)
-- Parameter types can be extended (e.g., add "string" type)
-- Frontend automatically adapts to new strategies
-- No core module maintenance needed for new strategies
+1. **Commit all changes** with clear commit messages
+2. **Run full test suite** to ensure no regressions
+3. **Document any issues** encountered during implementation
+4. **Proceed to Phase 9-5-3** which will:
+   - Remove `requires_ma_selection` feature flag from config.json
+   - Implement generic parameter rendering in frontend
+   - Update UI to handle any strategy's parameters dynamically
 
 ---
 
 ## Questions or Issues
 
 If you encounter ambiguity or issues:
+
 1. **Preserve existing behavior** - Refactoring should not change functionality
 2. **Ask for clarification** - Don't guess on critical decisions
 3. **Document assumptions** - Add comments explaining non-obvious choices
-4. **Test incrementally** - Verify each change before moving to next
+4. **Test incrementally** - Verify each task before moving to next
 
 ---
 
 **END OF PHASE 9-5-2 PROMPT**
-
-This completes the Phase 9-5 refactoring. After successful completion of both Phase 9-5-1 and Phase 9-5-2, the codebase will have a clean, generic architecture where S01 and S04 (and future strategies) are treated identically by the core system.
