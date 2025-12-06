@@ -1,5 +1,6 @@
 """Simple benchmark for metrics calculation overhead (Phase 4)."""
 import time
+from dataclasses import asdict
 from pathlib import Path
 import sys
 
@@ -26,7 +27,7 @@ def main() -> None:
     start = time.time()
 
     for _ in range(runs):
-        result = S01TrailingMA.run(df_prepared, params.to_dict(), trade_start_idx)
+        result = S01TrailingMA.run(df_prepared, asdict(params), trade_start_idx)
         _ = calculate_basic(result)
         _ = calculate_advanced(result)
 

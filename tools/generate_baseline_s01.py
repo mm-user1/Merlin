@@ -15,6 +15,7 @@ Usage:
 
 import sys
 import json
+from dataclasses import asdict
 from pathlib import Path
 from datetime import datetime
 
@@ -114,7 +115,7 @@ def run_baseline():
 
     # Run strategy
     print("\nRunning backtest...")
-    result = S01TrailingMA.run(df_prepared, params.to_dict(), trade_start_idx)
+    result = S01TrailingMA.run(df_prepared, asdict(params), trade_start_idx)
 
     # Display results
     print("\n" + "=" * 80)

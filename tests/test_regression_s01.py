@@ -22,6 +22,7 @@ Tolerance Configuration:
 import pytest
 import json
 import sys
+from dataclasses import asdict
 from pathlib import Path
 from typing import Dict, Any
 
@@ -102,7 +103,7 @@ def current_result(baseline_metrics, test_data):
     )
 
     # Run strategy
-    result = S01TrailingMA.run(df_prepared, params.to_dict(), trade_start_idx)
+    result = S01TrailingMA.run(df_prepared, asdict(params), trade_start_idx)
 
     return result
 
@@ -319,8 +320,8 @@ class TestS01RegressionConsistency:
         )
 
         # Run strategy twice
-        result1 = S01TrailingMA.run(df_prepared, params.to_dict(), trade_start_idx)
-        result2 = S01TrailingMA.run(df_prepared, params.to_dict(), trade_start_idx)
+        result1 = S01TrailingMA.run(df_prepared, asdict(params), trade_start_idx)
+        result2 = S01TrailingMA.run(df_prepared, asdict(params), trade_start_idx)
 
         # Results should be identical
         assert result1.net_profit_pct == result2.net_profit_pct

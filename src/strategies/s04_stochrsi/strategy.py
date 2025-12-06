@@ -28,6 +28,9 @@ class S04Params:
     startDate: Optional[pd.Timestamp] = None
     endDate: Optional[pd.Timestamp] = None
 
+    # Note: The to_dict() method was removed in Phase 9-5-1.
+    # Use dataclasses.asdict(params) to convert instances to dictionaries.
+
     @staticmethod
     def _parse_timestamp(value: Any) -> Optional[pd.Timestamp]:
         if value in (None, ""):
@@ -58,24 +61,6 @@ class S04Params:
             startDate=cls._parse_timestamp(payload.get("startDate")),
             endDate=cls._parse_timestamp(payload.get("endDate")),
         )
-
-    def to_dict(self) -> Dict[str, Any]:
-        return {
-            "rsiLen": self.rsiLen,
-            "stochLen": self.stochLen,
-            "kLen": self.kLen,
-            "dLen": self.dLen,
-            "obLevel": self.obLevel,
-            "osLevel": self.osLevel,
-            "extLookback": self.extLookback,
-            "confirmBars": self.confirmBars,
-            "riskPerTrade": self.riskPerTrade,
-            "contractSize": self.contractSize,
-            "initialCapital": self.initialCapital,
-            "commissionPct": self.commissionPct,
-            "startDate": self.startDate.isoformat() if self.startDate is not None else None,
-            "endDate": self.endDate.isoformat() if self.endDate is not None else None,
-        }
 
 
 class S04StochRSI(BaseStrategy):

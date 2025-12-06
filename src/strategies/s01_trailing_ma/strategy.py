@@ -51,6 +51,9 @@ class S01Params:
     commissionRate: float = 0.0005
     atrPeriod: int = 14
 
+    # Note: The to_dict() method was removed in Phase 9-5-1.
+    # Use dataclasses.asdict(params) to convert instances to dictionaries.
+
     @classmethod
     def from_dict(cls, payload: Optional[Dict[str, Any]]) -> "S01Params":
         """Parse S01 parameters - direct mapping, no conversion."""
