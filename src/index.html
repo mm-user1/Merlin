@@ -675,194 +675,6 @@
                   </div>
                 </div>
 
-                <div
-                  id="maTypeSelectorContainer"
-                  class="section"
-                  style="display: none; margin-top: 24px;"
-                >
-                  <div
-                    class="card"
-                    style="background-color: #f9f9f9; padding: 20px; border-radius: 8px; border: 1px solid #dfe3e8;"
-                  >
-                    <h3 style="margin-top: 0; color: #4a90e2;">MA Type Selection (for Optimization)</h3>
-                    <p style="font-size: 13px; color: #666; margin-bottom: 20px;">
-                      Select which Moving Average types to test during optimization. The optimizer will create
-                      combinations of these types.
-                    </p>
-
-                    <div class="ma-type-section">
-                      <h4 style="color: #4a90e2; font-size: 14px; margin-bottom: 10px;">Trend MA Types</h4>
-                      <div class="checkbox-grid" style="display: grid; grid-template-columns: repeat(auto-fill, minmax(90px, 1fr)); gap: 8px;">
-                        <label style="display: flex; align-items: center; gap: 6px; font-size: 13px;">
-                          <input type="checkbox" class="opt-ma-type" data-group="trend" data-type="ALL" />
-                          <span>All</span>
-                        </label>
-                        <label style="display: flex; align-items: center; gap: 6px; font-size: 13px;">
-                          <input type="checkbox" class="opt-ma-type" data-group="trend" data-type="SMA" />
-                          <span>SMA</span>
-                        </label>
-                        <label style="display: flex; align-items: center; gap: 6px; font-size: 13px;">
-                          <input type="checkbox" class="opt-ma-type" data-group="trend" data-type="EMA" />
-                          <span>EMA</span>
-                        </label>
-                        <label style="display: flex; align-items: center; gap: 6px; font-size: 13px;">
-                          <input type="checkbox" class="opt-ma-type" data-group="trend" data-type="HMA" checked />
-                          <span>HMA</span>
-                        </label>
-                        <label style="display: flex; align-items: center; gap: 6px; font-size: 13px;">
-                          <input type="checkbox" class="opt-ma-type" data-group="trend" data-type="ALMA" />
-                          <span>ALMA</span>
-                        </label>
-                        <label style="display: flex; align-items: center; gap: 6px; font-size: 13px;">
-                          <input type="checkbox" class="opt-ma-type" data-group="trend" data-type="KAMA" />
-                          <span>KAMA</span>
-                        </label>
-                        <label style="display: flex; align-items: center; gap: 6px; font-size: 13px;">
-                          <input type="checkbox" class="opt-ma-type" data-group="trend" data-type="WMA" />
-                          <span>WMA</span>
-                        </label>
-                        <label style="display: flex; align-items: center; gap: 6px; font-size: 13px;">
-                          <input type="checkbox" class="opt-ma-type" data-group="trend" data-type="TMA" />
-                          <span>TMA</span>
-                        </label>
-                        <label style="display: flex; align-items: center; gap: 6px; font-size: 13px;">
-                          <input type="checkbox" class="opt-ma-type" data-group="trend" data-type="T3" />
-                          <span>T3</span>
-                        </label>
-                        <label style="display: flex; align-items: center; gap: 6px; font-size: 13px;">
-                          <input type="checkbox" class="opt-ma-type" data-group="trend" data-type="DEMA" />
-                          <span>DEMA</span>
-                        </label>
-                        <label style="display: flex; align-items: center; gap: 6px; font-size: 13px;">
-                          <input type="checkbox" class="opt-ma-type" data-group="trend" data-type="VWMA" />
-                          <span>VWMA</span>
-                        </label>
-                        <label style="display: flex; align-items: center; gap: 6px; font-size: 13px;">
-                          <input type="checkbox" class="opt-ma-type" data-group="trend" data-type="VWAP" />
-                          <span>VWAP</span>
-                        </label>
-                      </div>
-                    </div>
-
-                    <div class="ma-type-section" style="margin-top: 20px;">
-                      <h4 style="color: #4a90e2; font-size: 14px; margin-bottom: 10px;">Trail Long MA Types</h4>
-                      <div class="checkbox-grid" style="display: grid; grid-template-columns: repeat(auto-fill, minmax(90px, 1fr)); gap: 8px;">
-                        <label style="display: flex; align-items: center; gap: 6px; font-size: 13px;">
-                          <input type="checkbox" class="opt-ma-type" data-group="trailLong" data-type="ALL" />
-                          <span>All</span>
-                        </label>
-                        <label style="display: flex; align-items: center; gap: 6px; font-size: 13px;">
-                          <input type="checkbox" class="opt-ma-type" data-group="trailLong" data-type="SMA" />
-                          <span>SMA</span>
-                        </label>
-                        <label style="display: flex; align-items: center; gap: 6px; font-size: 13px;">
-                          <input type="checkbox" class="opt-ma-type" data-group="trailLong" data-type="EMA" />
-                          <span>EMA</span>
-                        </label>
-                        <label style="display: flex; align-items: center; gap: 6px; font-size: 13px;">
-                          <input type="checkbox" class="opt-ma-type" data-group="trailLong" data-type="HMA" checked />
-                          <span>HMA</span>
-                        </label>
-                        <label style="display: flex; align-items: center; gap: 6px; font-size: 13px;">
-                          <input type="checkbox" class="opt-ma-type" data-group="trailLong" data-type="ALMA" />
-                          <span>ALMA</span>
-                        </label>
-                        <label style="display: flex; align-items: center; gap: 6px; font-size: 13px;">
-                          <input type="checkbox" class="opt-ma-type" data-group="trailLong" data-type="KAMA" />
-                          <span>KAMA</span>
-                        </label>
-                        <label style="display: flex; align-items: center; gap: 6px; font-size: 13px;">
-                          <input type="checkbox" class="opt-ma-type" data-group="trailLong" data-type="WMA" />
-                          <span>WMA</span>
-                        </label>
-                        <label style="display: flex; align-items: center; gap: 6px; font-size: 13px;">
-                          <input type="checkbox" class="opt-ma-type" data-group="trailLong" data-type="TMA" />
-                          <span>TMA</span>
-                        </label>
-                        <label style="display: flex; align-items: center; gap: 6px; font-size: 13px;">
-                          <input type="checkbox" class="opt-ma-type" data-group="trailLong" data-type="T3" />
-                          <span>T3</span>
-                        </label>
-                        <label style="display: flex; align-items: center; gap: 6px; font-size: 13px;">
-                          <input type="checkbox" class="opt-ma-type" data-group="trailLong" data-type="DEMA" />
-                          <span>DEMA</span>
-                        </label>
-                        <label style="display: flex; align-items: center; gap: 6px; font-size: 13px;">
-                          <input type="checkbox" class="opt-ma-type" data-group="trailLong" data-type="VWMA" />
-                          <span>VWMA</span>
-                        </label>
-                        <label style="display: flex; align-items: center; gap: 6px; font-size: 13px;">
-                          <input type="checkbox" class="opt-ma-type" data-group="trailLong" data-type="VWAP" />
-                          <span>VWAP</span>
-                        </label>
-                      </div>
-                    </div>
-
-                    <div class="ma-type-section" style="margin-top: 20px;">
-                      <h4 style="color: #4a90e2; font-size: 14px; margin-bottom: 10px;">Trail Short MA Types</h4>
-                      <div class="checkbox-grid" style="display: grid; grid-template-columns: repeat(auto-fill, minmax(90px, 1fr)); gap: 8px;">
-                        <label style="display: flex; align-items: center; gap: 6px; font-size: 13px;">
-                          <input type="checkbox" class="opt-ma-type" data-group="trailShort" data-type="ALL" />
-                          <span>All</span>
-                        </label>
-                        <label style="display: flex; align-items: center; gap: 6px; font-size: 13px;">
-                          <input type="checkbox" class="opt-ma-type" data-group="trailShort" data-type="SMA" />
-                          <span>SMA</span>
-                        </label>
-                        <label style="display: flex; align-items: center; gap: 6px; font-size: 13px;">
-                          <input type="checkbox" class="opt-ma-type" data-group="trailShort" data-type="EMA" />
-                          <span>EMA</span>
-                        </label>
-                        <label style="display: flex; align-items: center; gap: 6px; font-size: 13px;">
-                          <input type="checkbox" class="opt-ma-type" data-group="trailShort" data-type="HMA" checked />
-                          <span>HMA</span>
-                        </label>
-                        <label style="display: flex; align-items: center; gap: 6px; font-size: 13px;">
-                          <input type="checkbox" class="opt-ma-type" data-group="trailShort" data-type="ALMA" />
-                          <span>ALMA</span>
-                        </label>
-                        <label style="display: flex; align-items: center; gap: 6px; font-size: 13px;">
-                          <input type="checkbox" class="opt-ma-type" data-group="trailShort" data-type="KAMA" />
-                          <span>KAMA</span>
-                        </label>
-                        <label style="display: flex; align-items: center; gap: 6px; font-size: 13px;">
-                          <input type="checkbox" class="opt-ma-type" data-group="trailShort" data-type="WMA" />
-                          <span>WMA</span>
-                        </label>
-                        <label style="display: flex; align-items: center; gap: 6px; font-size: 13px;">
-                          <input type="checkbox" class="opt-ma-type" data-group="trailShort" data-type="TMA" />
-                          <span>TMA</span>
-                        </label>
-                        <label style="display: flex; align-items: center; gap: 6px; font-size: 13px;">
-                          <input type="checkbox" class="opt-ma-type" data-group="trailShort" data-type="T3" />
-                          <span>T3</span>
-                        </label>
-                        <label style="display: flex; align-items: center; gap: 6px; font-size: 13px;">
-                          <input type="checkbox" class="opt-ma-type" data-group="trailShort" data-type="DEMA" />
-                          <span>DEMA</span>
-                        </label>
-                        <label style="display: flex; align-items: center; gap: 6px; font-size: 13px;">
-                          <input type="checkbox" class="opt-ma-type" data-group="trailShort" data-type="VWMA" />
-                          <span>VWMA</span>
-                        </label>
-                        <label style="display: flex; align-items: center; gap: 6px; font-size: 13px;">
-                          <input type="checkbox" class="opt-ma-type" data-group="trailShort" data-type="VWAP" />
-                          <span>VWAP</span>
-                        </label>
-                      </div>
-                    </div>
-
-                    <div style="margin-top: 20px; padding: 15px; background-color: white; border-radius: 5px;">
-                      <label style="display: flex; align-items: center; font-size: 14px; gap: 8px;">
-                        <input type="checkbox" id="opt-lockTrailTypes" />
-                        <span>Lock Trail MA Types (use same types for Long and Short)</span>
-                      </label>
-                      <p style="font-size: 12px; color: #666; margin: 5px 0 0 25px;">
-                        When enabled, Trail Short types will match Trail Long types during optimization.
-                      </p>
-                    </div>
-                  </div>
-                </div>
               </form>
             </div>
           </div>
@@ -1048,7 +860,7 @@
      */
     async function loadStrategyConfig(strategyId) {
       try {
-        const response = await fetch(`/api/strategies/${strategyId}/config`);
+        const response = await fetch(`/api/strategy/${strategyId}/config`);
 
         if (!response.ok) {
           throw new Error(`Server returned ${response.status}: ${response.statusText}`);
@@ -1391,80 +1203,24 @@
       'VWAP'
     ];
 
-    const DEFAULT_MA_GROUPS = ['trend', 'trailLong', 'trailShort'];
-
-    function normalizeMaGroupName(value) {
-      const normalized = String(value || '').toLowerCase();
-      if (!normalized) {
-        return null;
-      }
-      if (normalized.includes('trend')) {
-        return 'trend';
-      }
-      if (normalized.includes('trail') && normalized.includes('long')) {
-        return 'trailLong';
-      }
-      if (normalized.includes('trail') && normalized.includes('short')) {
-        return 'trailShort';
-      }
-      return null;
-    }
-
-    function getMaSelectionFeatures(config = currentStrategyConfig) {
-      const features = (config && config.features && typeof config.features === 'object') ? config.features : {};
-      const requiresMaSelection = Boolean(features.requires_ma_selection);
-      const rawGroups = Array.isArray(features.ma_groups) ? features.ma_groups : [];
-      const groups = [];
-
-      rawGroups.forEach((group) => {
-        const normalized = normalizeMaGroupName(group);
-        if (normalized && !groups.includes(normalized)) {
-          groups.push(normalized);
-        }
-      });
-
-      const strategyId = config?.id || currentStrategyId;
-      const legacyMaStrategy = !requiresMaSelection
-        && typeof strategyId === 'string'
-        && strategyId.toLowerCase().includes('s01');
-
-      const enabled = requiresMaSelection || legacyMaStrategy;
-      const normalizedGroups = enabled ? (groups.length ? groups : [...DEFAULT_MA_GROUPS]) : [];
-
-      return { enabled, groups: normalizedGroups };
-    }
-
     function strategyUsesMaSelection() {
-      return getMaSelectionFeatures().enabled;
+      return false;
     }
 
     function getRequiredMaGroups() {
-      return getMaSelectionFeatures().groups;
+      return [];
     }
 
     function getMaTypeContainer() {
-      return document.getElementById('maTypeSelectorContainer');
+      return null;
     }
 
     function isMaSelectorVisible() {
-      const container = getMaTypeContainer();
-      if (!container) {
-        return false;
-      }
-      const style = window.getComputedStyle(container);
-      return style.display !== 'none';
+      return false;
     }
 
-    function getMaTypeCheckboxes(group) {
-      const container = getMaTypeContainer();
-      if (!container) {
-        return { allCheckbox: null, checkboxes: [] };
-      }
-      const allCheckbox = container.querySelector(`input.opt-ma-type[data-group="${group}"][data-type="ALL"]`);
-      const checkboxes = Array.from(
-        container.querySelectorAll(`input.opt-ma-type[data-group="${group}"]:not([data-type="ALL"])`)
-      );
-      return { allCheckbox, checkboxes };
+    function getMaTypeCheckboxes() {
+      return { allCheckbox: null, checkboxes: [] };
     }
 
     document.addEventListener('DOMContentLoaded', () => {
@@ -2656,37 +2412,6 @@
         );
 
         const dynamicParams = collectDynamicBacktestParams();
-        const trendTypes = [];
-        const trailLongTypes = [];
-        const trailShortTypes = [];
-        let lockTrailTypes = false;
-        const maSelectionEnabled = strategyUsesMaSelection();
-
-        if (maSelectionEnabled && isMaSelectorVisible()) {
-          const selectedTrendTypes = collectSelectedTypes('trend');
-          const selectedTrailLongTypes = collectSelectedTypes('trailLong');
-          const selectedTrailShortTypes = collectSelectedTypes('trailShort');
-          const lockInput = document.getElementById('opt-lockTrailTypes') || document.getElementById('trailLock');
-
-          trendTypes.push(...selectedTrendTypes);
-          trailLongTypes.push(...selectedTrailLongTypes);
-          trailShortTypes.push(...selectedTrailShortTypes);
-          lockTrailTypes = Boolean(lockInput?.checked);
-
-          if (lockTrailTypes && trailLongTypes.length && !trailShortTypes.length) {
-            trailShortTypes.push(...trailLongTypes);
-          }
-        }
-
-        if (!trendTypes.length && dynamicParams.maType) {
-          trendTypes.push(String(dynamicParams.maType));
-        }
-        if (!trailLongTypes.length && dynamicParams.trailLongType) {
-          trailLongTypes.push(String(dynamicParams.trailLongType));
-        }
-        if (!trailShortTypes.length && dynamicParams.trailShortType) {
-          trailShortTypes.push(String(dynamicParams.trailShortType));
-        }
 
         const payload = {
           ...dynamicParams,
@@ -2699,11 +2424,11 @@
         return {
           start,
           end,
-          maSelectionEnabled,
-          trendTypes,
-          trailLongTypes,
-          trailShortTypes,
-          lockTrailTypes,
+          maSelectionEnabled: false,
+          trendTypes: [],
+          trailLongTypes: [],
+          trailShortTypes: [],
+          lockTrailTypes: false,
           payload
         };
       }
@@ -3121,10 +2846,10 @@
         });
 
         const workerProcesses = getWorkerProcessesValue();
-        const maTypesTrend = state.maSelectionEnabled ? state.trendTypes : [];
-        const maTypesTrailLong = state.maSelectionEnabled ? state.trailLongTypes : [];
-        const maTypesTrailShort = state.maSelectionEnabled ? state.trailShortTypes : [];
-        const lockTrail = state.maSelectionEnabled ? Boolean(state.lockTrailTypes) : false;
+        const maTypesTrend = [];
+        const maTypesTrailLong = [];
+        const maTypesTrailShort = [];
+        const lockTrail = false;
 
         const riskPerTrade = getBacktestParamValue('riskPerTrade', paramsDef.riskPerTrade, dynamicParams) || 0;
         const contractSize = getBacktestParamValue('contractSize', paramsDef.contractSize, dynamicParams) || 0;
@@ -3485,14 +3210,6 @@
           return;
         }
 
-        const requireMaTypes = state.maSelectionEnabled && isMaSelectorVisible();
-        if (requireMaTypes && (!state.trendTypes.length || !state.trailLongTypes.length || !state.trailShortTypes.length)) {
-          optimizerResultsEl.textContent = 'Select at least one MA type in each group for optimization.';
-          optimizerResultsEl.classList.remove('ready');
-          optimizerResultsEl.style.display = 'block';
-          return;
-        }
-
         if (wfEnabled) {
           clearWFResults();
           await runWalkForward({ sources, state });
@@ -3716,21 +3433,6 @@
         if (lockEl) {
           lockEl.removeEventListener('change', calculateTotalCombinations);
           lockEl.addEventListener('change', calculateTotalCombinations);
-        }
-
-        const maCheckboxes = document.querySelectorAll('#maTypeSelectorContainer input.opt-ma-type');
-        if (maCheckboxes && maCheckboxes.length) {
-          maCheckboxes.forEach((checkbox) => {
-            checkbox.removeEventListener('change', calculateTotalCombinations);
-            checkbox.addEventListener('change', () => {
-              if (checkbox.dataset.type === 'ALL') {
-                setCheckboxGroup(checkbox.dataset.group, checkbox.checked ? [...MA_TYPES] : []);
-              } else {
-                syncAllToggle(checkbox.dataset.group);
-              }
-              calculateTotalCombinations();
-            });
-          });
         }
 
         calculateTotalCombinations();

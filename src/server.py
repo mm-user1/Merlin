@@ -1840,6 +1840,35 @@ def get_strategy_config_endpoint(strategy_id: str) -> object:
         return (str(e), HTTPStatus.NOT_FOUND)
 
 
+@app.route("/api/strategy/<strategy_id>/config", methods=["GET"])
+def get_strategy_config_single(strategy_id: str):
+    """Return strategy configuration for frontend rendering.
+
+    Args:
+        strategy_id: Strategy identifier (e.g., "s01_trailing_ma")
+
+    Returns:
+        JSON response with strategy configuration
+    """
+    try:
+        from strategies import get_strategy_config
+
+        config = get_strategy_config(strategy_id)
+        return jsonify(config), HTTPStatus.OK
+
+    except FileNotFoundError:
+        return (
+            jsonify({"error": f"Strategy '{strategy_id}' not found"}),
+            HTTPStatus.NOT_FOUND,
+        )
+    except Exception as exc:  # noqa: BLE001
+        logger.exception("Failed to load config for %s", strategy_id)
+        return (
+            jsonify({"error": f"Failed to load strategy config: {str(exc)}"}),
+            HTTPStatus.INTERNAL_SERVER_ERROR,
+        )
+
+
 @app.get("/api/strategies/<string:strategy_id>")
 def get_strategy_metadata_endpoint(strategy_id: str) -> object:
     """
