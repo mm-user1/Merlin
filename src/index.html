@@ -1213,17 +1213,6 @@
         container.appendChild(groupDiv);
       }
 
-      const maTypeContainer = getMaTypeContainer();
-      if (maTypeContainer) {
-        if (strategyUsesMaSelection()) {
-          maTypeContainer.style.display = 'block';
-          console.log('MA type selectors enabled for selected strategy');
-        } else {
-          maTypeContainer.style.display = 'none';
-          console.log('MA type selectors hidden for selected strategy');
-        }
-      }
-
       bindOptimizerInputs();
       calculateTotalCombinations();
 
@@ -1375,96 +1364,6 @@
       }
 
       return formGroup;
-    }
-
-    const MA_TYPES = [
-      'EMA',
-      'SMA',
-      'HMA',
-      'WMA',
-      'ALMA',
-      'KAMA',
-      'TMA',
-      'T3',
-      'DEMA',
-      'VWMA',
-      'VWAP'
-    ];
-
-    const DEFAULT_MA_GROUPS = ['trend', 'trailLong', 'trailShort'];
-
-    function normalizeMaGroupName(value) {
-      const normalized = String(value || '').toLowerCase();
-      if (!normalized) {
-        return null;
-      }
-      if (normalized.includes('trend')) {
-        return 'trend';
-      }
-      if (normalized.includes('trail') && normalized.includes('long')) {
-        return 'trailLong';
-      }
-      if (normalized.includes('trail') && normalized.includes('short')) {
-        return 'trailShort';
-      }
-      return null;
-    }
-
-    function getMaSelectionFeatures(config = currentStrategyConfig) {
-      const features = (config && config.features && typeof config.features === 'object') ? config.features : {};
-      const requiresMaSelection = Boolean(features.requires_ma_selection);
-      const rawGroups = Array.isArray(features.ma_groups) ? features.ma_groups : [];
-      const groups = [];
-
-      rawGroups.forEach((group) => {
-        const normalized = normalizeMaGroupName(group);
-        if (normalized && !groups.includes(normalized)) {
-          groups.push(normalized);
-        }
-      });
-
-      const strategyId = config?.id || currentStrategyId;
-      const legacyMaStrategy = !requiresMaSelection
-        && typeof strategyId === 'string'
-        && strategyId.toLowerCase().includes('s01');
-
-      const enabled = requiresMaSelection || legacyMaStrategy;
-      const normalizedGroups = enabled ? (groups.length ? groups : [...DEFAULT_MA_GROUPS]) : [];
-
-      return { enabled, groups: normalizedGroups };
-    }
-
-    function strategyUsesMaSelection() {
-      return getMaSelectionFeatures().enabled;
-    }
-
-    function getRequiredMaGroups() {
-      return getMaSelectionFeatures().groups;
-    }
-
-    function getMaTypeContainer() {
-      return document.getElementById('maTypeSelectorContainer');
-    }
-
-    function isMaSelectorVisible() {
-      const container = getMaTypeContainer();
-      if (!container) {
-        return false;
-      }
-      const style = window.getComputedStyle(container);
-      return style.display !== 'none';
-    }
-
-    function getMaTypeCheckboxes(group) {
-      const container = getMaTypeContainer();
-      if (!container) {
-        return { allCheckbox: null, checkboxes: [] };
-      }
-      const allCheckbox = container.querySelector(`input.opt-ma-type[data-group="${group}"][data-type="ALL"]`);
-      const checkboxes = Array.from(
-        container.querySelectorAll(`input.opt-ma-type[data-group="${group}"]:not([data-type="ALL"])`)
-      );
-      return { allCheckbox, checkboxes };
     }
 
     document.addEventListener('DOMContentLoaded', () => {
@@ -2656,37 +2555,6 @@
         );
 
         const dynamicParams = collectDynamicBacktestParams();
-        const trendTypes = [];
-        const trailLongTypes = [];
-        const trailShortTypes = [];
-        let lockTrailTypes = false;
-        const maSelectionEnabled = strategyUsesMaSelection();
-
-        if (maSelectionEnabled && isMaSelectorVisible()) {
-          const selectedTrendTypes = collectSelectedTypes('trend');
-          const selectedTrailLongTypes = collectSelectedTypes('trailLong');
-          const selectedTrailShortTypes = collectSelectedTypes('trailShort');
-          const lockInput = document.getElementById('opt-lockTrailTypes') || document.getElementById('trailLock');
-
-          trendTypes.push(...selectedTrendTypes);
-          trailLongTypes.push(...selectedTrailLongTypes);
-          trailShortTypes.push(...selectedTrailShortTypes);
-          lockTrailTypes = Boolean(lockInput?.checked);
-
-          if (lockTrailTypes && trailLongTypes.length && !trailShortTypes.length) {
-            trailShortTypes.push(...trailLongTypes);
-          }
-        }
-
-        if (!trendTypes.length && dynamicParams.maType) {
-          trendTypes.push(String(dynamicParams.maType));
-        }
-        if (!trailLongTypes.length && dynamicParams.trailLongType) {
-          trailLongTypes.push(String(dynamicParams.trailLongType));
-        }
-        if (!trailShortTypes.length && dynamicParams.trailShortType) {
-          trailShortTypes.push(String(dynamicParams.trailShortType));
-        }
 
         const payload = {
           ...dynamicParams,
@@ -2699,11 +2567,6 @@
         return {
           start,
           end,
-          maSelectionEnabled,
-          trendTypes,
-          trailLongTypes,
-          trailShortTypes,
-          lockTrailTypes,
           payload
         };
       }
@@ -2978,34 +2841,6 @@
             }
           }
         });
-
-        const maFeatures = getMaSelectionFeatures();
-        if (maFeatures.enabled && isMaSelectorVisible()) {
-          const trendCount = collectSelectedTypes('trend').length;
-          const trailLongCount = collectSelectedTypes('trailLong').length;
-          const lockEl = document.getElementById('opt-lockTrailTypes') || document.getElementById('trailLock');
-          const lockTrailTypes = Boolean(lockEl?.checked);
-          const trailShortCount = lockTrailTypes
-            ? trailLongCount
-            : collectSelectedTypes('trailShort').length;
-
-          const requireTrend = maFeatures.groups.includes('trend');
-          const requireTrailLong = maFeatures.groups.includes('trailLong');
-          const requireTrailShort = maFeatures.groups.includes('trailShort');
-
-          const hasTrend = !requireTrend || trendCount > 0;
-          const hasTrailLong = !requireTrailLong || trailLongCount > 0;
-          const hasTrailShort = !requireTrailShort || trailShortCount > 0;
-
-          if (hasTrend && hasTrailLong && hasTrailShort) {
-            const trendMultiplier = requireTrend ? trendCount : 1;
-            const trailLongMultiplier = requireTrailLong ? trailLongCount : 1;
-            const trailShortMultiplier = requireTrailShort ? trailShortCount : 1;
-            total *= trendMultiplier * trailLongMultiplier * trailShortMultiplier;
-          } else {
-            valid = false;
-          }
-        }
 
         if (!valid || !Number.isFinite(total)) {
           if (canDisplay) {
@@ -3485,14 +3320,6 @@
           return;
         }
 
-        const requireMaTypes = state.maSelectionEnabled && isMaSelectorVisible();
-        if (requireMaTypes && (!state.trendTypes.length || !state.trailLongTypes.length || !state.trailShortTypes.length)) {
-          optimizerResultsEl.textContent = 'Select at least one MA type in each group for optimization.';
-          optimizerResultsEl.classList.remove('ready');
-          optimizerResultsEl.style.display = 'block';
-          return;
-        }
-
         if (wfEnabled) {
           clearWFResults();
           await runWalkForward({ sources, state });
@@ -3854,56 +3681,7 @@
           return;
         }
 
-        const requiresMaSelection = state.maSelectionEnabled && isMaSelectorVisible();
-        const combinations = [];
-
-        if (requiresMaSelection) {
-          if (!state.trendTypes.length || !state.trailLongTypes.length || !state.trailShortTypes.length) {
-            errorEl.textContent = 'Пожалуйста, выберите хотя бы один MA в каждой группе.';
-            errorEl.style.display = 'block';
-            return;
-          }
-
-          const useLock = Boolean(state.lockTrailTypes);
-
-          if (useLock) {
-            // Lock ON: парное связывание Trail Long/Short по одному типу
-            const shortLookup = new Map();
-            state.trailShortTypes.forEach((type) => {
-              const key = type.toUpperCase();
-              if (!shortLookup.has(key)) {
-                shortLookup.set(key, type);
-              }
-            });
-
-            state.trailLongTypes.forEach((trailLongType) => {
-              const matchedShort = shortLookup.get(trailLongType.toUpperCase());
-              if (!matchedShort) {
-                return;
-              }
-              state.trendTypes.forEach((trendType) => {
-                combinations.push({ trendType, trailLongType, trailShortType: matchedShort });
-              });
-            });
-          } else {
-            // Lock OFF: полное декартово произведение всех типов
-            state.trendTypes.forEach((trendType) => {
-              state.trailLongTypes.forEach((trailLongType) => {
-                state.trailShortTypes.forEach((trailShortType) => {
-                  combinations.push({ trendType, trailLongType, trailShortType });
-                });
-              });
-            });
-          }
-        } else {
-          combinations.push({});
-        }
-
-        if (!combinations.length) {
-          errorEl.textContent = 'Нет комбинаций для запуска.';
-          errorEl.style.display = 'block';
-          return;
-        }
+        const combinations = [{}];
 
         resultsEl.textContent = 'Выполняется расчёт…';
         resultsEl.classList.add('loading');
@@ -3919,12 +3697,6 @@
         for (let index = 0; index < combinations.length; index += 1) {
           const combo = combinations[index];
           const payload = { ...state.payload };
-
-          if (requiresMaSelection) {
-            payload.maType = combo.trendType;
-            payload.trailLongType = combo.trailLongType;
-            payload.trailShortType = combo.trailShortType;
-          }
 
           const formData = new FormData();
           formData.append('strategy', currentStrategyId);

@@ -4,10 +4,6 @@
   "version": "v02",
   "description": "StochRSI swing strategy with swing-based stops",
   "author": "",
-  "features": {
-    "requires_ma_selection": false,
-    "ma_groups": []
-  },
   "parameters": {
     "rsiLen": {
       "type": "int",

@@ -991,8 +991,6 @@ def run_backtest() -> object:
     except json.JSONDecodeError:
         return ("Invalid payload JSON.", HTTPStatus.BAD_REQUEST)
 
-    strategy_features = _get_strategy_features(strategy_id)
-
     # Load strategy
     from strategies import get_strategy
 
@@ -1045,31 +1043,6 @@ def run_backtest() -> object:
             app.logger.exception("Failed to prepare dataset with warmup")
             return ("Failed to prepare dataset.", HTTPStatus.INTERNAL_SERVER_ERROR)
 
-    if strategy_features.get("requires_ma_selection"):
-        required_groups = strategy_features.get("ma_groups", [])
-        missing_groups = []
-
-        group_to_field = {
-            "trend": "maType",
-            "trail_long": "trailLongType",
-            "trail_short": "trailShortType",
-        }
-
-        for group_name in required_groups:
-            field_name = group_to_field.get(group_name)
-            if not field_name:
-                continue
-            value = payload.get(field_name)
-            if value is None or (isinstance(value, str) and not value.strip()):
-                missing_groups.append(group_name)
-
-        if missing_groups:
-            missing_str = ", ".join(missing_groups)
-            return (
-                f"MA selection required for group(s): {missing_str}.",
-                HTTPStatus.BAD_REQUEST,
-            )
-
     # Run strategy
     try:
         result = strategy_class.run(df, payload, trade_start_idx)
@@ -1111,21 +1084,17 @@ def _build_optimization_config(
         return default
 
     def _sanitize_score_config(raw_config: Any) -> Dict[str, Any]:
+        """Sanitize score configuration - camelCase only."""
+
         source = raw_config if isinstance(raw_config, dict) else {}
         normalized = json.loads(json.dumps(DEFAULT_OPTIMIZER_SCORE_CONFIG))
 
-        filter_value = source.get("filter_enabled")
-        if filter_value is None:
-            filter_value = source.get("filterEnabled")
         normalized["filter_enabled"] = _parse_bool(
-            filter_value, normalized.get("filter_enabled", False)
+            source.get("filterEnabled"), normalized.get("filter_enabled", False)
         )
 
-        threshold_value = source.get("min_score_threshold")
-        if threshold_value is None:
-            threshold_value = source.get("minScoreThreshold")
         try:
-            threshold = float(threshold_value)
+            threshold = float(source.get("minScoreThreshold", normalized.get("min_score_threshold", 0.0)))
         except (TypeError, ValueError):
             threshold = normalized.get("min_score_threshold", 0.0)
         normalized["min_score_threshold"] = max(0.0, min(100.0, threshold))
@@ -1141,9 +1110,7 @@ def _build_optimization_config(
                 weights[key] = max(0.0, min(1.0, weight_value))
             normalized["weights"].update(weights)
 
-        enabled_raw = source.get("enabled_metrics")
-        if enabled_raw is None:
-            enabled_raw = source.get("enabledMetrics")
+        enabled_raw = source.get("enabledMetrics")
         if isinstance(enabled_raw, dict):
             enabled: Dict[str, bool] = {}
             for key in SCORE_METRIC_KEYS:
@@ -1153,9 +1120,7 @@ def _build_optimization_config(
                 )
             normalized["enabled_metrics"].update(enabled)
 
-        invert_raw = source.get("invert_metrics")
-        if invert_raw is None:
-            invert_raw = source.get("invertMetrics")
+        invert_raw = source.get("invertMetrics")
         invert_flags: Dict[str, bool] = {}
         if isinstance(invert_raw, dict):
             for key in SCORE_METRIC_KEYS:
@@ -1170,9 +1135,7 @@ def _build_optimization_config(
             key: value for key, value in invert_flags.items() if value
         }
 
-        normalization_value = source.get("normalization_method")
-        if normalization_value is None:
-            normalization_value = source.get("normalizationMethod")
+        normalization_value = source.get("normalizationMethod")
         if isinstance(normalization_value, str) and normalization_value.strip():
             normalized["normalization_method"] = normalization_value.strip().lower()
 
@@ -1189,9 +1152,7 @@ def _build_optimization_config(
             raise ValueError("Strategy ID is required for optimization.")
 
     if warmup_bars is None:
-        warmup_bars_raw = payload.get("warmup_bars")
-        if warmup_bars_raw is None:
-            warmup_bars_raw = payload.get("warmupBars", 1000)
+        warmup_bars_raw = payload.get("warmupBars", 1000)
         try:
             warmup_bars = int(warmup_bars_raw)
             warmup_bars = max(100, min(5000, warmup_bars))
@@ -1221,43 +1182,21 @@ def _build_optimization_config(
     if not isinstance(fixed_params, dict):
         raise ValueError("fixed_params must be a dictionary.")
 
-    ma_requires_selection = False
-    ma_groups: List[str] = []
     strategy_param_types = _get_parameter_types(str(strategy_id))
     ma_types_trend: List[str] = []
     ma_types_trail_long: List[str] = []
     ma_types_trail_short: List[str] = []
     lock_trail_types = False
 
-    if ma_requires_selection:
-        ma_types_trend = payload.get("maTypesTrend") or []
-        ma_types_trail_long = payload.get("maTypesTrailLong") or []
-        ma_types_trail_short = payload.get("maTypesTrailShort") or []
+    risk_per_trade = payload.get("riskPerTrade", 2.0)
+    contract_size = payload.get("contractSize", 0.01)
+    commission_rate = payload.get("commissionRate", 0.0005)
+    atr_period = payload.get("atrPeriod", 14)
 
-        lock_trail_types_raw = payload.get("lockTrailTypes")
-        lock_trail_types = _parse_bool(lock_trail_types_raw, False)
-
-    risk_per_trade = payload.get("risk_per_trade_pct")
-    if risk_per_trade is None:
-        risk_per_trade = payload.get("riskPerTrade", 2.0)
-    contract_size = payload.get("contract_size")
-    if contract_size is None:
-        contract_size = payload.get("contractSize", 0.01)
-    commission_rate = payload.get("commission_rate")
-    if commission_rate is None:
-        commission_rate = payload.get("commissionRate", 0.0005)
-    atr_period = payload.get("atr_period")
-    if atr_period is None:
-        atr_period = payload.get("atrPeriod", 14)
-
-    filter_min_profit_raw = payload.get("filter_min_profit")
-    if filter_min_profit_raw is None:
-        filter_min_profit_raw = payload.get("filterMinProfit")
+    filter_min_profit_raw = payload.get("filterMinProfit")
     filter_min_profit = _parse_bool(filter_min_profit_raw, False)
 
-    threshold_raw = payload.get("min_profit_threshold")
-    if threshold_raw is None:
-        threshold_raw = payload.get("minProfitThreshold", 0.0)
+    threshold_raw = payload.get("minProfitThreshold", 0.0)
     try:
         min_profit_threshold = float(threshold_raw)
     except (TypeError, ValueError):
@@ -1277,16 +1216,10 @@ def _build_optimization_config(
     elif worker_processes_value > 32:
         worker_processes_value = 32
 
-    score_config_payload = payload.get("score_config")
-    if score_config_payload is None:
-        score_config_payload = payload.get("scoreConfig")
+    score_config_payload = payload.get("scoreConfig")
     score_config = _sanitize_score_config(score_config_payload)
 
-    optimization_mode_raw = (
-        payload.get("optimization_mode")
-        or payload.get("optimizationMode")
-        or "optuna"
-    )
+    optimization_mode_raw = payload.get("optimizationMode", "optuna")
     optimization_mode = str(optimization_mode_raw).strip().lower() or "optuna"
     if optimization_mode != "optuna":
         raise ValueError("Grid Search has been removed. Use Optuna optimization only.")
