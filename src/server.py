@@ -12,13 +12,8 @@ from flask import Flask, jsonify, request, send_file, send_from_directory
 
 
 from core.backtest_engine import load_data, prepare_dataset_with_warmup
-from core.export import CSV_COLUMN_SPECS, export_optuna_results
-from core.optuna_engine import (
-    OptimizationConfig,
-    OptimizationResult,
-    PARAMETER_MAP,
-    run_optimization,
-)
+from core.export import export_optuna_results
+from core.optuna_engine import OptimizationConfig, OptimizationResult, run_optimization
 
 app = Flask(__name__, static_folder="static", static_url_path="/static")
 
@@ -1568,11 +1563,19 @@ def _unique_preserve_order(items):
     return result
 
 
-_PARAMETER_FRONTEND_ORDER = [
-    frontend_name
-    for _, frontend_name, _, _ in CSV_COLUMN_SPECS
-    if frontend_name is not None
-]
+def _get_frontend_param_order(strategy_id: str) -> List[str]:
+    """Return parameter order from strategy config for consistent CSV output."""
+
+    try:
+        from strategies import get_strategy_config
+
+        config = get_strategy_config(strategy_id)
+        parameters = config.get("parameters", {}) if isinstance(config, dict) else {}
+        if isinstance(parameters, dict):
+            return list(parameters.keys())
+    except Exception:  # pragma: no cover - defensive
+        return []
+    return []
 
 
 def generate_output_filename(csv_filename: str, config: OptimizationConfig, mode: str = None) -> str:
@@ -1785,7 +1788,7 @@ def run_optimization_endpoint() -> object:
     trail_long_types = _unique_preserve_order(optimization_config.ma_types_trail_long)
     trail_short_types = _unique_preserve_order(optimization_config.ma_types_trail_short)
 
-    for name in _PARAMETER_FRONTEND_ORDER:
+    for name in _get_frontend_param_order(optimization_config.strategy_id):
         if name == "maType":
             if len(trend_types) == 1:
                 fixed_parameters.append((name, trend_types[0]))
@@ -1804,10 +1807,8 @@ def run_optimization_endpoint() -> object:
 
         value = optimization_config.fixed_params.get(name)
         if value is None:
-            param_info = PARAMETER_MAP.get(name)
-            if param_info and results:
-                attr_name = param_info[0]
-                value = getattr(results[0], attr_name, None)
+            if results:
+                value = getattr(results[0], "params", {}).get(name)
         fixed_parameters.append((name, value))
 
     csv_content = export_optuna_results(

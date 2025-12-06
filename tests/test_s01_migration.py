@@ -3,6 +3,8 @@ import sys
 from pathlib import Path
 
 import pandas as pd
+from dataclasses import asdict
+
 import pytest
 
 SRC_PATH = Path(__file__).parent.parent / "src"
@@ -39,14 +41,14 @@ def baseline_warmup(baseline_metrics):
 class TestS01Strategy:
     def test_params_dataclass_from_dict(self, baseline_params):
         params = S01Params.from_dict(baseline_params)
-        assert params.ma_type == baseline_params["maType"]
-        assert params.ma_length == baseline_params["maLength"]
-        assert params.close_count_long == baseline_params["closeCountLong"]
-        assert params.close_count_short == baseline_params["closeCountShort"]
+        assert params.maType == baseline_params["maType"]
+        assert params.maLength == baseline_params["maLength"]
+        assert params.closeCountLong == baseline_params["closeCountLong"]
+        assert params.closeCountShort == baseline_params["closeCountShort"]
 
     def test_params_dataclass_to_dict(self, baseline_params):
         params = S01Params.from_dict(baseline_params)
-        params_dict = params.to_dict()
+        params_dict = asdict(params)
         assert params_dict["maType"] == baseline_params["maType"]
         assert params_dict["maLength"] == baseline_params["maLength"]
         assert params_dict["closeCountLong"] == baseline_params["closeCountLong"]
