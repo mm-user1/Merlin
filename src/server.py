@@ -33,62 +33,6 @@ MA_TYPES: Tuple[str, ...] = (
 )
 
 
-def _normalize_ma_group_name(value: object) -> Optional[str]:
-    """Normalize MA group identifier to a canonical name."""
-
-    if value is None:
-        return None
-
-    normalized = str(value).strip().lower()
-    if not normalized:
-        return None
-
-    if "trend" in normalized:
-        return "trend"
-    if "trail" in normalized and "long" in normalized:
-        return "trail_long"
-    if "trail" in normalized and "short" in normalized:
-        return "trail_short"
-
-    return None
-
-
-def _get_strategy_features(strategy_id: Optional[str]) -> Dict[str, Any]:
-    """Return feature flags defined by a strategy configuration."""
-
-    default = {"requires_ma_selection": False, "ma_groups": []}
-    if not strategy_id:
-        return default
-
-    try:
-        from strategies import get_strategy_config
-
-        config = get_strategy_config(strategy_id)
-    except Exception:  # pragma: no cover - defensive
-        return default
-
-    raw_features = config.get("features") if isinstance(config, dict) else None
-    if not isinstance(raw_features, dict):
-        return default
-
-    requires_ma_selection = bool(raw_features.get("requires_ma_selection"))
-    raw_groups = raw_features.get("ma_groups", [])
-    ma_groups: List[str] = []
-    if isinstance(raw_groups, (list, tuple)):
-        for group in raw_groups:
-            normalized = _normalize_ma_group_name(group)
-            if normalized and normalized not in ma_groups:
-                ma_groups.append(normalized)
-
-    if requires_ma_selection and not ma_groups:
-        ma_groups = ["trend", "trail_long", "trail_short"]
-
-    return {
-        "requires_ma_selection": requires_ma_selection,
-        "ma_groups": ma_groups,
-    }
-
-
 def _resolve_strategy_id_from_request() -> Tuple[Optional[str], Optional[object]]:
     from strategies import list_strategies
 
@@ -149,94 +93,61 @@ DEFAULT_PRESET_NAME = "defaults"
 VALID_PRESET_NAME_RE = re.compile(r"^[A-Za-z0-9 _\-]{1,64}$")
 
 DEFAULT_PRESET: Dict[str, Any] = {
+    "name": "Default",
     "dateFilter": True,
     "backtester": True,
-    "startDate": "2025-04-01",
-    "startTime": "00:00",
-    "endDate": "2025-09-01",
-    "endTime": "00:00",
-    "trendMATypes": list(MA_TYPES),
-    "maLength": 45,
-    "closeCountLong": 7,
-    "closeCountShort": 5,
-    "stopLongX": 2.0,
-    "stopLongRR": 3.0,
-    "stopLongLP": 2,
-    "stopShortX": 2.0,
-    "stopShortRR": 3.0,
-    "stopShortLP": 2,
-    "stopLongMaxPct": 3.0,
-    "stopShortMaxPct": 3.0,
-    "stopLongMaxDays": 2,
-    "stopShortMaxDays": 4,
-    "trailRRLong": 1.0,
-    "trailRRShort": 1.0,
-    "trailLongTypes": ["SMA"],
-    "trailLongLength": 160,
-    "trailLongOffset": -1.0,
-    "trailShortTypes": ["SMA"],
-    "trailLock": False,
-    "trailShortLength": 160,
-    "trailShortOffset": 1.0,
-    "riskPerTrade": 2.0,
-    "contractSize": 0.01,
+    "start": None,
+    "end": None,
+    "optimizationMode": "optuna",
+    "nTrials": 100,
+    "timeout": None,
+    "patience": None,
     "workerProcesses": 6,
-    "minProfitFilter": False,
+    "scoreConfig": {
+        "weights": {
+            "romad": 0.25,
+            "sharpe": 0.20,
+            "pf": 0.20,
+            "ulcer": 0.15,
+            "recovery": 0.10,
+            "consistency": 0.10,
+        },
+        "normalization_method": "percentile",
+    },
+    "filterByProfit": False,
     "minProfitThreshold": 0.0,
-    "scoreFilterEnabled": False,
-    "scoreThreshold": 60.0,
-    "scoreWeights": {
-        "romad": 0.25,
-        "sharpe": 0.20,
-        "pf": 0.20,
-        "ulcer": 0.15,
-        "recovery": 0.10,
-        "consistency": 0.10,
-    },
-    "scoreEnabledMetrics": {
-        "romad": True,
-        "sharpe": True,
-        "pf": True,
-        "ulcer": True,
-        "recovery": True,
-        "consistency": True,
-    },
-    "scoreInvertMetrics": {"ulcer": True},
-    "csvPath": "",
 }
-BOOL_FIELDS = {"dateFilter", "backtester", "trailLock", "minProfitFilter", "scoreFilterEnabled"}
-INT_FIELDS = {
-    "maLength",
-    "closeCountLong",
-    "closeCountShort",
-    "stopLongLP",
-    "stopShortLP",
-    "stopLongMaxDays",
-    "stopShortMaxDays",
-    "trailLongLength",
-    "trailShortLength",
-    "workerProcesses",
-}
-FLOAT_FIELDS = {
-    "stopLongX",
-    "stopLongRR",
-    "stopShortX",
-    "stopShortRR",
-    "stopLongMaxPct",
-    "stopShortMaxPct",
-    "trailRRLong",
-    "trailRRShort",
-    "trailLongOffset",
-    "trailShortOffset",
-    "riskPerTrade",
-    "contractSize",
-    "minProfitThreshold",
-    "scoreThreshold",
-}
+BOOL_FIELDS = {"dateFilter", "backtester", "filterByProfit"}
+INT_FIELDS = {"nTrials", "workerProcesses"}
+FLOAT_FIELDS = {"minProfitThreshold"}
 
-LIST_FIELDS = {"trendMATypes", "trailLongTypes", "trailShortTypes"}
-STRING_FIELDS = {"startDate", "startTime", "endDate", "endTime", "csvPath"}
+LIST_FIELDS: set = set()
+STRING_FIELDS = {"start", "end", "optimizationMode"}
 ALLOWED_PRESET_FIELDS = set(DEFAULT_PRESET.keys())
+
+
+def _get_parameter_types(strategy_id: str) -> Dict[str, str]:
+    """Load parameter types from strategy configuration."""
+
+    try:
+        from strategies import get_strategy_config
+
+        config = get_strategy_config(strategy_id)
+    except Exception:
+        return {}
+
+    parameters = config.get("parameters", {}) if isinstance(config, dict) else {}
+    if not isinstance(parameters, dict):
+        return {}
+
+    param_types: Dict[str, str] = {}
+    for name, param_spec in parameters.items():
+        if not isinstance(param_spec, dict):
+            continue
+        param_type = str(param_spec.get("type", "float")).lower()
+        param_types[name] = param_type
+
+    return param_types
 
 
 def _clone_default_template() -> Dict[str, Any]:
@@ -1310,60 +1221,21 @@ def _build_optimization_config(
     if not isinstance(fixed_params, dict):
         raise ValueError("fixed_params must be a dictionary.")
 
-    strategy_features = _get_strategy_features(strategy_id)
-    ma_requires_selection = bool(strategy_features.get("requires_ma_selection"))
-    ma_groups = strategy_features.get("ma_groups", [])
-    strategy_param_types: Dict[str, str] = {}
-    try:
-        from strategies import get_strategy_config
-
-        strategy_config = get_strategy_config(strategy_id)
-        params_def = strategy_config.get("parameters", {}) if isinstance(strategy_config, dict) else {}
-        if isinstance(params_def, dict):
-            for name, definition in params_def.items():
-                p_type = definition.get("type") if isinstance(definition, dict) else None
-                if isinstance(p_type, str) and p_type.strip().lower() in {"int", "float"}:
-                    strategy_param_types[name] = p_type.strip().lower()
-    except Exception:
-        strategy_param_types = {}
+    ma_requires_selection = False
+    ma_groups: List[str] = []
+    strategy_param_types = _get_parameter_types(str(strategy_id))
     ma_types_trend: List[str] = []
     ma_types_trail_long: List[str] = []
     ma_types_trail_short: List[str] = []
     lock_trail_types = False
 
     if ma_requires_selection:
-        ma_types_trend = payload.get("ma_types_trend") or payload.get("maTypesTrend") or []
-        ma_types_trail_long = (
-            payload.get("ma_types_trail_long")
-            or payload.get("maTypesTrailLong")
-            or []
-        )
-        ma_types_trail_short = (
-            payload.get("ma_types_trail_short")
-            or payload.get("maTypesTrailShort")
-            or []
-        )
+        ma_types_trend = payload.get("maTypesTrend") or []
+        ma_types_trail_long = payload.get("maTypesTrailLong") or []
+        ma_types_trail_short = payload.get("maTypesTrailShort") or []
 
-        lock_trail_types_raw = (
-            payload.get("lock_trail_types")
-            or payload.get("lockTrailTypes")
-            or payload.get("trailLock")
-        )
+        lock_trail_types_raw = payload.get("lockTrailTypes")
         lock_trail_types = _parse_bool(lock_trail_types_raw, False)
-
-        missing_groups = []
-        if "trend" in ma_groups and not ma_types_trend:
-            missing_groups.append("trend")
-        if "trail_long" in ma_groups and not ma_types_trail_long:
-            missing_groups.append("trail_long")
-        if "trail_short" in ma_groups and not ma_types_trail_short:
-            missing_groups.append("trail_short")
-
-        if missing_groups:
-            missing_str = ", ".join(missing_groups)
-            raise ValueError(
-                f"MA selection required for group(s): {missing_str}."
-            )
 
     risk_per_trade = payload.get("risk_per_trade_pct")
     if risk_per_trade is None:
