@@ -1816,30 +1816,6 @@ def list_strategies_endpoint() -> object:
     strategies = list_strategies()
     return jsonify({"strategies": strategies})
 
-
-@app.get("/api/strategies/<string:strategy_id>/config")
-def get_strategy_config_endpoint(strategy_id: str) -> object:
-    """
-    Get strategy configuration (from config.json).
-
-    Args:
-        strategy_id: Strategy identifier (e.g., 's01_trailing_ma')
-
-    Returns:
-        JSON: Full config.json content including parameters
-
-    Errors:
-        404: Strategy not found
-    """
-    from strategies import get_strategy_config
-
-    try:
-        config = get_strategy_config(strategy_id)
-        return jsonify(config)
-    except ValueError as e:
-        return (str(e), HTTPStatus.NOT_FOUND)
-
-
 @app.route("/api/strategy/<strategy_id>/config", methods=["GET"])
 def get_strategy_config_single(strategy_id: str):
     """Return strategy configuration for frontend rendering.

@@ -1000,10 +1000,6 @@
       const totalParams = Object.values(groups).reduce((sum, g) => sum + g.length, 0);
       if (totalParams === 0) {
         container.innerHTML = '<p class="warning">No optimizable parameters defined for this strategy.</p>';
-        const maTypeContainer = getMaTypeContainer();
-        if (maTypeContainer) {
-          maTypeContainer.style.display = 'none';
-        }
         bindOptimizerInputs();
         return;
       }
@@ -1023,17 +1019,6 @@
         });
 
         container.appendChild(groupDiv);
-      }
-
-      const maTypeContainer = getMaTypeContainer();
-      if (maTypeContainer) {
-        if (strategyUsesMaSelection()) {
-          maTypeContainer.style.display = 'block';
-          console.log('MA type selectors enabled for selected strategy');
-        } else {
-          maTypeContainer.style.display = 'none';
-          console.log('MA type selectors hidden for selected strategy');
-        }
       }
 
       bindOptimizerInputs();
@@ -1202,26 +1187,6 @@
       'VWMA',
       'VWAP'
     ];
-
-    function strategyUsesMaSelection() {
-      return false;
-    }
-
-    function getRequiredMaGroups() {
-      return [];
-    }
-
-    function getMaTypeContainer() {
-      return null;
-    }
-
-    function isMaSelectorVisible() {
-      return false;
-    }
-
-    function getMaTypeCheckboxes() {
-      return { allCheckbox: null, checkboxes: [] };
-    }
 
     document.addEventListener('DOMContentLoaded', () => {
 
@@ -1734,69 +1699,22 @@
       }
 
       function setCheckboxGroup(group, selectedTypes) {
-        const { allCheckbox, checkboxes } = getMaTypeCheckboxes(group);
-        if (!allCheckbox || !checkboxes.length) {
-          return;
-        }
-        const normalized = new Set(selectedTypes);
-        const shouldSelectAll = MA_TYPES.every((type) => normalized.has(type));
-        allCheckbox.checked = shouldSelectAll;
-        checkboxes.forEach((checkbox) => {
-          checkbox.checked = shouldSelectAll || normalized.has(checkbox.dataset.type);
-        });
+        // MA selector UI removed; keep stub for preset compatibility.
+        void group;
+        void selectedTypes;
       }
 
       function collectSelectedTypes(group) {
-        if (!isMaSelectorVisible()) {
-          return [];
-        }
-        const { allCheckbox, checkboxes } = getMaTypeCheckboxes(group);
-        if (!allCheckbox || !checkboxes.length) {
-          return [];
-        }
-        if (allCheckbox.checked) {
-          return [...MA_TYPES];
-        }
-        const chosen = checkboxes
-          .filter((checkbox) => checkbox.checked)
-          .map((checkbox) => checkbox.dataset.type);
-        return chosen;
+        void group;
+        return [];
       }
 
       function syncAllToggle(group) {
-        const { allCheckbox, checkboxes } = getMaTypeCheckboxes(group);
-        if (!allCheckbox || !checkboxes.length) {
-          return;
-        }
-        const allChecked = checkboxes.every((checkbox) => checkbox.checked);
-        allCheckbox.checked = allChecked;
+        void group;
       }
 
       function bindMASelectors() {
-        ['trend', 'trailLong', 'trailShort'].forEach((group) => {
-          const { allCheckbox, checkboxes } = getMaTypeCheckboxes(group);
-
-          if (!allCheckbox || !checkboxes.length) {
-            return;
-          }
-
-          allCheckbox.addEventListener('change', () => {
-            checkboxes.forEach((checkbox) => {
-              checkbox.checked = allCheckbox.checked;
-            });
-            calculateTotalCombinations();
-          });
-
-          checkboxes.forEach((checkbox) => {
-            checkbox.addEventListener('change', () => {
-              syncAllToggle(group);
-              calculateTotalCombinations();
-            });
-          });
-
-          // Синхронизируем состояние ALL при инициализации
-          syncAllToggle(group);
-        });
+        // MA selector UI removed; nothing to bind.
       }
 
       function applyPresetValues(values, { clearResults = false } = {}) {
@@ -1869,16 +1787,6 @@
           if (workerInput) {
             workerInput.value = values.workerProcesses;
           }
-        }
-
-        if (Object.prototype.hasOwnProperty.call(values, 'trendMATypes') && Array.isArray(values.trendMATypes)) {
-          setCheckboxGroup('trend', values.trendMATypes);
-        }
-        if (Object.prototype.hasOwnProperty.call(values, 'trailLongTypes') && Array.isArray(values.trailLongTypes)) {
-          setCheckboxGroup('trailLong', values.trailLongTypes);
-        }
-        if (Object.prototype.hasOwnProperty.call(values, 'trailShortTypes') && Array.isArray(values.trailShortTypes)) {
-          setCheckboxGroup('trailShort', values.trailShortTypes);
         }
 
         const { checkbox: minProfitCheckbox, input: minProfitInput } = getMinProfitElements();
@@ -2704,34 +2612,6 @@
           }
         });
 
-        const maFeatures = getMaSelectionFeatures();
-        if (maFeatures.enabled && isMaSelectorVisible()) {
-          const trendCount = collectSelectedTypes('trend').length;
-          const trailLongCount = collectSelectedTypes('trailLong').length;
-          const lockEl = document.getElementById('opt-lockTrailTypes') || document.getElementById('trailLock');
-          const lockTrailTypes = Boolean(lockEl?.checked);
-          const trailShortCount = lockTrailTypes
-            ? trailLongCount
-            : collectSelectedTypes('trailShort').length;
-
-          const requireTrend = maFeatures.groups.includes('trend');
-          const requireTrailLong = maFeatures.groups.includes('trailLong');
-          const requireTrailShort = maFeatures.groups.includes('trailShort');
-
-          const hasTrend = !requireTrend || trendCount > 0;
-          const hasTrailLong = !requireTrailLong || trailLongCount > 0;
-          const hasTrailShort = !requireTrailShort || trailShortCount > 0;
-
-          if (hasTrend && hasTrailLong && hasTrailShort) {
-            const trendMultiplier = requireTrend ? trendCount : 1;
-            const trailLongMultiplier = requireTrailLong ? trailLongCount : 1;
-            const trailShortMultiplier = requireTrailShort ? trailShortCount : 1;
-            total *= trendMultiplier * trailLongMultiplier * trailShortMultiplier;
-          } else {
-            valid = false;
-          }
-        }
-
         if (!valid || !Number.isFinite(total)) {
           if (canDisplay) {
             totalCombinationsEl.textContent = '0';
@@ -3556,50 +3436,8 @@
           return;
         }
 
-        const requiresMaSelection = state.maSelectionEnabled && isMaSelectorVisible();
-        const combinations = [];
-
-        if (requiresMaSelection) {
-          if (!state.trendTypes.length || !state.trailLongTypes.length || !state.trailShortTypes.length) {
-            errorEl.textContent = 'Пожалуйста, выберите хотя бы один MA в каждой группе.';
-            errorEl.style.display = 'block';
-            return;
-          }
-
-          const useLock = Boolean(state.lockTrailTypes);
-
-          if (useLock) {
-            // Lock ON: парное связывание Trail Long/Short по одному типу
-            const shortLookup = new Map();
-            state.trailShortTypes.forEach((type) => {
-              const key = type.toUpperCase();
-              if (!shortLookup.has(key)) {
-                shortLookup.set(key, type);
-              }
-            });
-
-            state.trailLongTypes.forEach((trailLongType) => {
-              const matchedShort = shortLookup.get(trailLongType.toUpperCase());
-              if (!matchedShort) {
-                return;
-              }
-              state.trendTypes.forEach((trendType) => {
-                combinations.push({ trendType, trailLongType, trailShortType: matchedShort });
-              });
-            });
-          } else {
-            // Lock OFF: полное декартово произведение всех типов
-            state.trendTypes.forEach((trendType) => {
-              state.trailLongTypes.forEach((trailLongType) => {
-                state.trailShortTypes.forEach((trailShortType) => {
-                  combinations.push({ trendType, trailLongType, trailShortType });
-                });
-              });
-            });
-          }
-        } else {
-          combinations.push({});
-        }
+        const requiresMaSelection = false;
+        const combinations = [{}];
 
         if (!combinations.length) {
           errorEl.textContent = 'Нет комбинаций для запуска.';
