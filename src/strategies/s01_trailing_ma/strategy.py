@@ -24,48 +24,39 @@ class S01Params:
     use_date_filter: bool = True
     start: Optional[pd.Timestamp] = None
     end: Optional[pd.Timestamp] = None
-    ma_type: str = "EMA"
-    ma_length: int = 45
-    close_count_long: int = 7
-    close_count_short: int = 5
-    stop_long_atr: float = 2.0
-    stop_long_rr: float = 3.0
-    stop_long_lp: int = 2
-    stop_short_atr: float = 2.0
-    stop_short_rr: float = 3.0
-    stop_short_lp: int = 2
-    stop_long_max_pct: float = 3.0
-    stop_short_max_pct: float = 3.0
-    stop_long_max_days: int = 2
-    stop_short_max_days: int = 4
-    trail_rr_long: float = 1.0
-    trail_rr_short: float = 1.0
-    trail_ma_long_type: str = "SMA"
-    trail_ma_long_length: int = 160
-    trail_ma_long_offset: float = -1.0
-    trail_ma_short_type: str = "SMA"
-    trail_ma_short_length: int = 160
-    trail_ma_short_offset: float = 1.0
-    risk_per_trade_pct: float = 2.0
-    contract_size: float = 0.01
-    commission_rate: float = 0.0005
-    atr_period: int = 14
+    maType: str = "EMA"
+    maLength: int = 45
+    closeCountLong: int = 7
+    closeCountShort: int = 5
+    stopLongX: float = 2.0
+    stopLongRR: float = 3.0
+    stopLongLP: int = 2
+    stopShortX: float = 2.0
+    stopShortRR: float = 3.0
+    stopShortLP: int = 2
+    stopLongMaxPct: float = 3.0
+    stopShortMaxPct: float = 3.0
+    stopLongMaxDays: int = 2
+    stopShortMaxDays: int = 4
+    trailRRLong: float = 1.0
+    trailRRShort: float = 1.0
+    trailLongType: str = "SMA"
+    trailLongLength: int = 160
+    trailLongOffset: float = -1.0
+    trailShortType: str = "SMA"
+    trailShortLength: int = 160
+    trailShortOffset: float = 1.0
+    riskPerTrade: float = 2.0
+    contractSize: float = 0.01
+    commissionRate: float = 0.0005
+    atrPeriod: int = 14
+
+    # Note: The to_dict() method was removed in Phase 9-5-1.
+    # Use dataclasses.asdict(params) to convert instances to dictionaries.
 
     @classmethod
     def from_dict(cls, payload: Optional[Dict[str, Any]]) -> "S01Params":
-        """
-        Parse S01 parameters from frontend/API payload.
-        Maps camelCase (frontend) to snake_case (Python).
-
-        This method directly parses the input dictionary without using
-        legacy StrategyParams, ensuring the strategy owns its parameters.
-
-        Args:
-            payload: Dictionary with camelCase parameter names from frontend
-
-        Returns:
-            S01Params instance with all parameters parsed
-        """
+        """Parse S01 parameters - direct mapping, no conversion."""
         d = payload or {}
 
         # Date handling (convert string to Timestamp if needed)
@@ -77,84 +68,37 @@ class S01Params:
             end = pd.Timestamp(end, tz="UTC")
 
         return cls(
-            # Backtester flags
             use_backtester=bool(d.get("backtester", True)),
             use_date_filter=bool(d.get("dateFilter", True)),
             start=start,
             end=end,
-
-            # Main MA parameters
-            ma_type=str(d.get("maType", "EMA")),
-            ma_length=int(d.get("maLength", 45)),
-
-            # Entry logic
-            close_count_long=int(d.get("closeCountLong", 7)),
-            close_count_short=int(d.get("closeCountShort", 5)),
-
-            # Stop parameters (ATR-based)
-            stop_long_atr=float(d.get("stopLongX", 2.0)),
-            stop_long_rr=float(d.get("stopLongRR", 3.0)),
-            stop_long_lp=int(d.get("stopLongLP", 2)),
-            stop_short_atr=float(d.get("stopShortX", 2.0)),
-            stop_short_rr=float(d.get("stopShortRR", 3.0)),
-            stop_short_lp=int(d.get("stopShortLP", 2)),
-
-            # Stop parameters (max % and max days)
-            stop_long_max_pct=float(d.get("stopLongMaxPct", 3.0)),
-            stop_short_max_pct=float(d.get("stopShortMaxPct", 3.0)),
-            stop_long_max_days=int(d.get("stopLongMaxDays", 2)),
-            stop_short_max_days=int(d.get("stopShortMaxDays", 4)),
-
-            # Trail parameters
-            trail_rr_long=float(d.get("trailRRLong", 1.0)),
-            trail_rr_short=float(d.get("trailRRShort", 1.0)),
-            trail_ma_long_type=str(d.get("trailLongType", "SMA")),
-            trail_ma_long_length=int(d.get("trailLongLength", 160)),
-            trail_ma_long_offset=float(d.get("trailLongOffset", -1.0)),
-            trail_ma_short_type=str(d.get("trailShortType", "SMA")),
-            trail_ma_short_length=int(d.get("trailShortLength", 160)),
-            trail_ma_short_offset=float(d.get("trailShortOffset", 1.0)),
-
-            # Risk parameters
-            risk_per_trade_pct=float(d.get("riskPerTrade", 2.0)),
-            contract_size=float(d.get("contractSize", 0.01)),
-            commission_rate=float(d.get("commissionRate", 0.0005)),
-            atr_period=int(d.get("atrPeriod", 14)),
+            maType=str(d.get("maType", cls.maType)),
+            maLength=int(d.get("maLength", cls.maLength)),
+            closeCountLong=int(d.get("closeCountLong", cls.closeCountLong)),
+            closeCountShort=int(d.get("closeCountShort", cls.closeCountShort)),
+            stopLongX=float(d.get("stopLongX", cls.stopLongX)),
+            stopLongRR=float(d.get("stopLongRR", cls.stopLongRR)),
+            stopLongLP=int(d.get("stopLongLP", cls.stopLongLP)),
+            stopShortX=float(d.get("stopShortX", cls.stopShortX)),
+            stopShortRR=float(d.get("stopShortRR", cls.stopShortRR)),
+            stopShortLP=int(d.get("stopShortLP", cls.stopShortLP)),
+            stopLongMaxPct=float(d.get("stopLongMaxPct", cls.stopLongMaxPct)),
+            stopShortMaxPct=float(d.get("stopShortMaxPct", cls.stopShortMaxPct)),
+            stopLongMaxDays=int(d.get("stopLongMaxDays", cls.stopLongMaxDays)),
+            stopShortMaxDays=int(d.get("stopShortMaxDays", cls.stopShortMaxDays)),
+            trailRRLong=float(d.get("trailRRLong", cls.trailRRLong)),
+            trailRRShort=float(d.get("trailRRShort", cls.trailRRShort)),
+            trailLongType=str(d.get("trailLongType", cls.trailLongType)),
+            trailLongLength=int(d.get("trailLongLength", cls.trailLongLength)),
+            trailLongOffset=float(d.get("trailLongOffset", cls.trailLongOffset)),
+            trailShortType=str(d.get("trailShortType", cls.trailShortType)),
+            trailShortLength=int(d.get("trailShortLength", cls.trailShortLength)),
+            trailShortOffset=float(d.get("trailShortOffset", cls.trailShortOffset)),
+            riskPerTrade=float(d.get("riskPerTrade", cls.riskPerTrade)),
+            contractSize=float(d.get("contractSize", cls.contractSize)),
+            commissionRate=float(d.get("commissionRate", cls.commissionRate)),
+            atrPeriod=int(d.get("atrPeriod", cls.atrPeriod)),
         )
-
-    def to_dict(self) -> Dict[str, Any]:
-        return {
-            "maType": self.ma_type,
-            "maLength": self.ma_length,
-            "closeCountLong": self.close_count_long,
-            "closeCountShort": self.close_count_short,
-            "stopLongX": self.stop_long_atr,
-            "stopLongRR": self.stop_long_rr,
-            "stopLongLP": self.stop_long_lp,
-            "stopShortX": self.stop_short_atr,
-            "stopShortRR": self.stop_short_rr,
-            "stopShortLP": self.stop_short_lp,
-            "stopLongMaxPct": self.stop_long_max_pct,
-            "stopShortMaxPct": self.stop_short_max_pct,
-            "stopLongMaxDays": self.stop_long_max_days,
-            "stopShortMaxDays": self.stop_short_max_days,
-            "trailRRLong": self.trail_rr_long,
-            "trailRRShort": self.trail_rr_short,
-            "trailLongType": self.trail_ma_long_type,
-            "trailLongLength": self.trail_ma_long_length,
-            "trailLongOffset": self.trail_ma_long_offset,
-            "trailShortType": self.trail_ma_short_type,
-            "trailShortLength": self.trail_ma_short_length,
-            "trailShortOffset": self.trail_ma_short_offset,
-            "riskPerTrade": self.risk_per_trade_pct,
-            "contractSize": self.contract_size,
-            "commissionRate": self.commission_rate,
-            "atrPeriod": self.atr_period,
-            "backtester": self.use_backtester,
-            "dateFilter": self.use_date_filter,
-            "start": self.start.isoformat() if self.start is not None else None,
-            "end": self.end.isoformat() if self.end is not None else None,
-        }
 
 
 class S01TrailingMA(BaseStrategy):
@@ -174,17 +118,17 @@ class S01TrailingMA(BaseStrategy):
         low = df["Low"]
         volume = df["Volume"]
 
-        ma_series = get_ma(close, p.ma_type, p.ma_length, volume, high, low)
-        atr_series = atr(high, low, close, p.atr_period)
-        lowest_long = low.rolling(p.stop_long_lp, min_periods=1).min()
-        highest_short = high.rolling(p.stop_short_lp, min_periods=1).max()
+        ma_series = get_ma(close, p.maType, p.maLength, volume, high, low)
+        atr_series = atr(high, low, close, p.atrPeriod)
+        lowest_long = low.rolling(p.stopLongLP, min_periods=1).min()
+        highest_short = high.rolling(p.stopShortLP, min_periods=1).max()
 
-        trail_ma_long = get_ma(close, p.trail_ma_long_type, p.trail_ma_long_length, volume, high, low)
-        trail_ma_short = get_ma(close, p.trail_ma_short_type, p.trail_ma_short_length, volume, high, low)
-        if p.trail_ma_long_length > 0:
-            trail_ma_long = trail_ma_long * (1 + p.trail_ma_long_offset / 100.0)
-        if p.trail_ma_short_length > 0:
-            trail_ma_short = trail_ma_short * (1 + p.trail_ma_short_offset / 100.0)
+        trail_ma_long = get_ma(close, p.trailLongType, p.trailLongLength, volume, high, low)
+        trail_ma_short = get_ma(close, p.trailShortType, p.trailShortLength, volume, high, low)
+        if p.trailLongLength > 0:
+            trail_ma_long = trail_ma_long * (1 + p.trailLongOffset / 100.0)
+        if p.trailShortLength > 0:
+            trail_ma_short = trail_ma_short * (1 + p.trailShortOffset / 100.0)
 
         times = df.index
         if p.use_date_filter:
@@ -251,7 +195,7 @@ class S01TrailingMA(BaseStrategy):
             exit_price: Optional[float] = None
             if position > 0:
                 if not trail_activated_long and not math.isnan(entry_price) and not math.isnan(stop_price):
-                    activation_price = entry_price + (entry_price - stop_price) * p.trail_rr_long
+                    activation_price = entry_price + (entry_price - stop_price) * p.trailRRLong
                     if h >= activation_price:
                         trail_activated_long = True
                         if math.isnan(trail_price_long):
@@ -267,13 +211,13 @@ class S01TrailingMA(BaseStrategy):
                         exit_price = stop_price
                     elif h >= target_price:
                         exit_price = target_price
-                if exit_price is None and entry_time_long is not None and p.stop_long_max_days > 0:
+                if exit_price is None and entry_time_long is not None and p.stopLongMaxDays > 0:
                     days_in_trade = int(math.floor((time - entry_time_long).total_seconds() / 86400))
-                    if days_in_trade >= p.stop_long_max_days:
+                    if days_in_trade >= p.stopLongMaxDays:
                         exit_price = c
                 if exit_price is not None:
                     gross_pnl = (exit_price - entry_price) * position_size
-                    exit_commission = exit_price * position_size * p.commission_rate
+                    exit_commission = exit_price * position_size * p.commissionRate
                     net_pnl = gross_pnl - exit_commission - entry_commission
                     realized_equity += gross_pnl - exit_commission
                     entry_value = entry_price * position_size
@@ -303,7 +247,7 @@ class S01TrailingMA(BaseStrategy):
 
             elif position < 0:
                 if not trail_activated_short and not math.isnan(entry_price) and not math.isnan(stop_price):
-                    activation_price = entry_price - (stop_price - entry_price) * p.trail_rr_short
+                    activation_price = entry_price - (stop_price - entry_price) * p.trailRRShort
                     if l <= activation_price:
                         trail_activated_short = True
                         if math.isnan(trail_price_short):
@@ -319,13 +263,13 @@ class S01TrailingMA(BaseStrategy):
                         exit_price = stop_price
                     elif l <= target_price:
                         exit_price = target_price
-                if exit_price is None and entry_time_short is not None and p.stop_short_max_days > 0:
+                if exit_price is None and entry_time_short is not None and p.stopShortMaxDays > 0:
                     days_in_trade = int(math.floor((time - entry_time_short).total_seconds() / 86400))
-                    if days_in_trade >= p.stop_short_max_days:
+                    if days_in_trade >= p.stopShortMaxDays:
                         exit_price = c
                 if exit_price is not None:
                     gross_pnl = (entry_price - exit_price) * position_size
-                    exit_commission = exit_price * position_size * p.commission_rate
+                    exit_commission = exit_price * position_size * p.commissionRate
                     net_pnl = gross_pnl - exit_commission - entry_commission
                     realized_equity += gross_pnl - exit_commission
                     entry_value = entry_price * position_size
@@ -353,8 +297,8 @@ class S01TrailingMA(BaseStrategy):
                     entry_time_short = None
                     entry_commission = 0.0
 
-            up_trend = counter_close_trend_long >= p.close_count_long and counter_trade_long == 0
-            down_trend = counter_close_trend_short >= p.close_count_short and counter_trade_short == 0
+            up_trend = counter_close_trend_long >= p.closeCountLong and counter_trade_long == 0
+            down_trend = counter_close_trend_short >= p.closeCountShort and counter_trade_short == 0
 
             can_open_long = (
                 up_trend
@@ -374,49 +318,49 @@ class S01TrailingMA(BaseStrategy):
             )
 
             if can_open_long:
-                stop_size = atr_value * p.stop_long_atr
+                stop_size = atr_value * p.stopLongX
                 long_stop_price = lowest_value - stop_size
                 long_stop_distance = c - long_stop_price
                 if long_stop_distance > 0:
                     long_stop_pct = (long_stop_distance / c) * 100
-                    if long_stop_pct <= p.stop_long_max_pct or p.stop_long_max_pct <= 0:
-                        risk_cash = realized_equity * (p.risk_per_trade_pct / 100)
+                    if long_stop_pct <= p.stopLongMaxPct or p.stopLongMaxPct <= 0:
+                        risk_cash = realized_equity * (p.riskPerTrade / 100)
                         qty = risk_cash / long_stop_distance if long_stop_distance != 0 else 0
-                        if p.contract_size > 0:
-                            qty = math.floor((qty / p.contract_size)) * p.contract_size
+                        if p.contractSize > 0:
+                            qty = math.floor((qty / p.contractSize)) * p.contractSize
                         if qty > 0:
                             position = 1
                             position_size = qty
                             entry_price = c
                             stop_price = long_stop_price
-                            target_price = c + long_stop_distance * p.stop_long_rr
+                            target_price = c + long_stop_distance * p.stopLongRR
                             trail_price_long = long_stop_price
                             trail_activated_long = False
                             entry_time_long = time
-                            entry_commission = entry_price * position_size * p.commission_rate
+                            entry_commission = entry_price * position_size * p.commissionRate
                             realized_equity -= entry_commission
 
             if can_open_short and position == 0:
-                stop_size = atr_value * p.stop_short_atr
+                stop_size = atr_value * p.stopShortX
                 short_stop_price = highest_value + stop_size
                 short_stop_distance = short_stop_price - c
                 if short_stop_distance > 0:
                     short_stop_pct = (short_stop_distance / c) * 100
-                    if short_stop_pct <= p.stop_short_max_pct or p.stop_short_max_pct <= 0:
-                        risk_cash = realized_equity * (p.risk_per_trade_pct / 100)
+                    if short_stop_pct <= p.stopShortMaxPct or p.stopShortMaxPct <= 0:
+                        risk_cash = realized_equity * (p.riskPerTrade / 100)
                         qty = risk_cash / short_stop_distance if short_stop_distance != 0 else 0
-                        if p.contract_size > 0:
-                            qty = math.floor((qty / p.contract_size)) * p.contract_size
+                        if p.contractSize > 0:
+                            qty = math.floor((qty / p.contractSize)) * p.contractSize
                         if qty > 0:
                             position = -1
                             position_size = qty
                             entry_price = c
                             stop_price = short_stop_price
-                            target_price = c - short_stop_distance * p.stop_short_rr
+                            target_price = c - short_stop_distance * p.stopShortRR
                             trail_price_short = short_stop_price
                             trail_activated_short = False
                             entry_time_short = time
-                            entry_commission = entry_price * position_size * p.commission_rate
+                            entry_commission = entry_price * position_size * p.commissionRate
                             realized_equity -= entry_commission
 
             mark_to_market = realized_equity

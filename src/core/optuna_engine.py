@@ -55,30 +55,9 @@ class OptimizationConfig:
 
 @dataclass
 class OptimizationResult:
-    """Represents a single optimization result row."""
+    """Generic optimization result for any strategy."""
 
-    ma_type: str
-    ma_length: int
-    close_count_long: int
-    close_count_short: int
-    stop_long_atr: float
-    stop_long_rr: float
-    stop_long_lp: int
-    stop_short_atr: float
-    stop_short_rr: float
-    stop_short_lp: int
-    stop_long_max_pct: float
-    stop_short_max_pct: float
-    stop_long_max_days: int
-    stop_short_max_days: int
-    trail_rr_long: float
-    trail_rr_short: float
-    trail_ma_long_type: str
-    trail_ma_long_length: int
-    trail_ma_long_offset: float
-    trail_ma_short_type: str
-    trail_ma_short_length: int
-    trail_ma_short_offset: float
+    params: Dict[str, Any]
     net_profit_pct: float
     max_drawdown_pct: float
     total_trades: int
@@ -112,45 +91,6 @@ DEFAULT_SCORE_CONFIG: Dict[str, Any] = {
     "filter_enabled": False,
     "min_score_threshold": 0.0,
 }
-
-
-PARAMETER_MAP: Dict[str, Tuple[str, bool]] = {
-    "maLength": ("ma_length", True),
-    "closeCountLong": ("close_count_long", True),
-    "closeCountShort": ("close_count_short", True),
-    "stopLongX": ("stop_long_atr", False),
-    "stopLongRR": ("stop_long_rr", False),
-    "stopLongLP": ("stop_long_lp", True),
-    "stopShortX": ("stop_short_atr", False),
-    "stopShortRR": ("stop_short_rr", False),
-    "stopShortLP": ("stop_short_lp", True),
-    "stopLongMaxPct": ("stop_long_max_pct", False),
-    "stopShortMaxPct": ("stop_short_max_pct", False),
-    "stopLongMaxDays": ("stop_long_max_days", True),
-    "stopShortMaxDays": ("stop_short_max_days", True),
-    "trailRRLong": ("trail_rr_long", False),
-    "trailRRShort": ("trail_rr_short", False),
-    "trailLongLength": ("trail_ma_long_length", True),
-    "trailLongOffset": ("trail_ma_long_offset", False),
-    "trailShortLength": ("trail_ma_short_length", True),
-    "trailShortOffset": ("trail_ma_short_offset", False),
-}
-
-# Reverse mapping: internal_name -> frontend_name
-INTERNAL_TO_FRONTEND_MAP: Dict[str, str] = {
-    internal: frontend for frontend, (internal, _) in PARAMETER_MAP.items()
-}
-INTERNAL_TO_FRONTEND_MAP.update(
-    {
-        "ma_type": "maType",
-        "trail_ma_long_type": "trailLongType",
-        "trail_ma_short_type": "trailShortType",
-        "risk_per_trade_pct": "riskPerTrade",
-        "contract_size": "contractSize",
-        "commission_rate": "commissionRate",
-        "atr_period": "atrPeriod",
-    }
-)
 
 
 # ============================================================================
@@ -228,42 +168,9 @@ def _run_single_combination(
 
     params_dict, df, trade_start_idx, strategy_class = args
 
-    def _as_int(key: str, default: int = 0) -> int:
-        try:
-            return int(float(params_dict.get(key, default)))
-        except (TypeError, ValueError):
-            return int(default)
-
-    def _as_float(key: str, default: float = 0.0) -> float:
-        try:
-            return float(params_dict.get(key, default))
-        except (TypeError, ValueError):
-            return float(default)
-
-    def _base_result() -> OptimizationResult:
+    def _base_result(params: Dict[str, Any]) -> OptimizationResult:
         return OptimizationResult(
-            ma_type=str(params_dict.get("ma_type", "")),
-            ma_length=_as_int("ma_length"),
-            close_count_long=_as_int("close_count_long"),
-            close_count_short=_as_int("close_count_short"),
-            stop_long_atr=_as_float("stop_long_atr"),
-            stop_long_rr=_as_float("stop_long_rr"),
-            stop_long_lp=max(1, _as_int("stop_long_lp", 1)),
-            stop_short_atr=_as_float("stop_short_atr"),
-            stop_short_rr=_as_float("stop_short_rr"),
-            stop_short_lp=max(1, _as_int("stop_short_lp", 1)),
-            stop_long_max_pct=_as_float("stop_long_max_pct"),
-            stop_short_max_pct=_as_float("stop_short_max_pct"),
-            stop_long_max_days=_as_int("stop_long_max_days"),
-            stop_short_max_days=_as_int("stop_short_max_days"),
-            trail_rr_long=_as_float("trail_rr_long"),
-            trail_rr_short=_as_float("trail_rr_short"),
-            trail_ma_long_type=str(params_dict.get("trail_ma_long_type", "")),
-            trail_ma_long_length=_as_int("trail_ma_long_length"),
-            trail_ma_long_offset=_as_float("trail_ma_long_offset"),
-            trail_ma_short_type=str(params_dict.get("trail_ma_short_type", "")),
-            trail_ma_short_length=_as_int("trail_ma_short_length"),
-            trail_ma_short_offset=_as_float("trail_ma_short_offset"),
+            params=params.copy(),
             net_profit_pct=0.0,
             max_drawdown_pct=0.0,
             total_trades=0,
@@ -276,32 +183,25 @@ def _run_single_combination(
         )
 
     try:
-        strategy_payload = {
-            INTERNAL_TO_FRONTEND_MAP.get(key, key): value
-            for key, value in params_dict.items()
-        }
-
-        result = strategy_class.run(df, strategy_payload, trade_start_idx)
+        result = strategy_class.run(df, params_dict, trade_start_idx)
 
         basic_metrics = metrics.calculate_basic(result)
         advanced_metrics = metrics.calculate_advanced(result)
 
-        opt_result = _base_result()
-        for key, value in params_dict.items():
-            if not hasattr(opt_result, key):
-                setattr(opt_result, key, value)
-        opt_result.net_profit_pct = basic_metrics.net_profit_pct
-        opt_result.max_drawdown_pct = basic_metrics.max_drawdown_pct
-        opt_result.total_trades = basic_metrics.total_trades
-        opt_result.sharpe_ratio = advanced_metrics.sharpe_ratio
-        opt_result.profit_factor = advanced_metrics.profit_factor
-        opt_result.romad = advanced_metrics.romad
-        opt_result.ulcer_index = advanced_metrics.ulcer_index
-        opt_result.recovery_factor = advanced_metrics.recovery_factor
-        opt_result.consistency_score = advanced_metrics.consistency_score
-        return opt_result
+        return OptimizationResult(
+            params=params_dict.copy(),
+            net_profit_pct=basic_metrics.net_profit_pct,
+            max_drawdown_pct=basic_metrics.max_drawdown_pct,
+            total_trades=basic_metrics.total_trades,
+            romad=advanced_metrics.romad,
+            sharpe_ratio=advanced_metrics.sharpe_ratio,
+            profit_factor=advanced_metrics.profit_factor,
+            ulcer_index=advanced_metrics.ulcer_index,
+            recovery_factor=advanced_metrics.recovery_factor,
+            consistency_score=advanced_metrics.consistency_score,
+        )
     except Exception:
-        return _base_result()
+        return _base_result(params_dict)
 
 
 def calculate_score(
@@ -435,87 +335,98 @@ class OptunaOptimizer:
         self.pruned_trials: int = 0
         self.study: Optional[optuna.Study] = None
         self.pruner: Optional[optuna.pruners.BasePruner] = None
-        self.effective_param_map: Dict[str, Tuple[str, bool]] = dict(PARAMETER_MAP)
+        self.param_type_map: Dict[str, str] = {}
 
     # ------------------------------------------------------------------
     # Search space handling
     # ------------------------------------------------------------------
     def _build_search_space(self) -> Dict[str, Dict[str, Any]]:
-        """Construct the Optuna search space from the optimiser configuration."""
+        """Construct the Optuna search space from strategy config metadata."""
+
+        from strategies import get_strategy_config
+
+        try:
+            strategy_config = get_strategy_config(self.base_config.strategy_id)
+        except Exception as exc:  # pragma: no cover - defensive
+            raise ValueError(f"Failed to load strategy config for {self.base_config.strategy_id}: {exc}")
+
+        parameters = strategy_config.get("parameters", {}) if isinstance(strategy_config, dict) else {}
+        if not isinstance(parameters, dict):
+            raise ValueError(f"Invalid parameters section in strategy config for {self.base_config.strategy_id}")
 
         space: Dict[str, Dict[str, Any]] = {}
+        self.param_type_map = {}
 
-        param_map: Dict[str, Tuple[str, bool]] = dict(PARAMETER_MAP)
-        for name, param_type in (self.base_config.param_types or {}).items():
-            if name not in param_map:
-                is_int = str(param_type).lower() == "int"
-                param_map[name] = (name, is_int)
+        ma_trend_options = [ma.upper() for ma in self.base_config.ma_types_trend]
+        trail_long_options = [ma.upper() for ma in self.base_config.ma_types_trail_long]
+        trail_short_options = [ma.upper() for ma in self.base_config.ma_types_trail_short]
 
-        self.effective_param_map = param_map
-
-        for frontend_name, (internal_name, is_int) in param_map.items():
-            if not self.base_config.enabled_params.get(frontend_name):
+        for param_name, param_spec in parameters.items():
+            if not isinstance(param_spec, dict):
                 continue
 
-            if frontend_name not in self.base_config.param_ranges:
-                raise ValueError(f"Missing range for parameter '{frontend_name}'.")
+            param_type = str(param_spec.get("type", "float")).lower()
+            self.param_type_map[param_name] = param_type
 
-            start, stop, step = self.base_config.param_ranges[frontend_name]
-            low = min(float(start), float(stop))
-            high = max(float(start), float(stop))
-            step_value = abs(float(step)) if step else 0.0
+            if not self.base_config.enabled_params.get(param_name, False):
+                continue
 
-            if is_int:
-                if low == high:
-                    low = high = round(low)
-                spec: Dict[str, Any] = {
+            optimize_spec = param_spec.get("optimize", {}) if isinstance(param_spec.get("optimize", {}), dict) else {}
+            override_range = self.base_config.param_ranges.get(param_name)
+
+            if param_type == "int":
+                min_val = optimize_spec.get("min", param_spec.get("min", 0))
+                max_val = optimize_spec.get("max", param_spec.get("max", 0))
+                step = optimize_spec.get("step", param_spec.get("step", 1))
+                if override_range:
+                    min_val, max_val, step = override_range
+                space[param_name] = {
                     "type": "int",
-                    "low": int(round(low)),
-                    "high": int(round(high)),
+                    "low": int(round(float(min_val))),
+                    "high": int(round(float(max_val))),
+                    "step": max(1, int(round(float(step)))) if step is not None else 1,
                 }
-                int_step = max(1, int(round(step_value))) if step_value else 1
-                spec["step"] = int_step
-            else:
-                spec = {
+            elif param_type == "float":
+                min_val = optimize_spec.get("min", param_spec.get("min", 0.0))
+                max_val = optimize_spec.get("max", param_spec.get("max", 0.0))
+                step = optimize_spec.get("step", param_spec.get("step"))
+                if override_range:
+                    min_val, max_val, step = override_range
+                spec: Dict[str, Any] = {
                     "type": "float",
-                    "low": float(low),
-                    "high": float(high),
+                    "low": float(min_val),
+                    "high": float(max_val),
                 }
-                if step_value:
-                    spec["step"] = float(step_value)
-                if low > 0 and high / max(low, 1e-9) > 100:
-                    spec["log"] = True
-
-            space[internal_name] = spec
-
-        trend_types = [ma.upper() for ma in self.base_config.ma_types_trend]
-        trail_long_types = [ma.upper() for ma in self.base_config.ma_types_trail_long]
-        trail_short_types = [ma.upper() for ma in self.base_config.ma_types_trail_short]
-
-        include_ma_types = bool(trend_types or trail_long_types or trail_short_types)
-
-        if include_ma_types:
-            if not trend_types or not trail_long_types:
-                raise ValueError("At least one MA type must be selected in each group.")
-
-            space["ma_type"] = {"type": "categorical", "choices": trend_types}
-
-            if self.base_config.lock_trail_types:
-                short_set = {ma.upper() for ma in trail_short_types}
-                paired = [ma for ma in trail_long_types if ma in short_set] or trail_long_types
-                space["trail_ma_long_type"] = {"type": "categorical", "choices": paired}
-            else:
-                if not trail_short_types:
-                    raise ValueError(
-                        "At least one trail short MA type must be selected when lock_trail_types is disabled."
-                    )
-                space["trail_ma_long_type"] = {
+                if step not in (None, 0, 0.0):
+                    spec["step"] = float(step)
+                space[param_name] = spec
+            elif param_type in {"select", "options", "bool"}:
+                options = param_spec.get("options", [])
+                if param_name == "maType" and ma_trend_options:
+                    options = ma_trend_options
+                if param_name == "trailLongType" and trail_long_options:
+                    options = trail_long_options
+                if param_name == "trailShortType" and trail_short_options:
+                    options = trail_short_options
+                if param_type == "bool" and not options:
+                    options = [True, False]
+                if not options:
+                    continue
+                space[param_name] = {
                     "type": "categorical",
-                    "choices": trail_long_types,
+                    "choices": list(options),
                 }
-                space["trail_ma_short_type"] = {
+
+        if self.base_config.lock_trail_types:
+            if "trailLongType" in space and "trailShortType" not in space:
+                space["trailShortType"] = {
                     "type": "categorical",
-                    "choices": trail_short_types,
+                    "choices": space["trailLongType"].get("choices", []),
+                }
+            if "trailShortType" in space and "trailLongType" not in space:
+                space["trailLongType"] = {
+                    "type": "categorical",
+                    "choices": space["trailShortType"].get("choices", []),
                 }
 
         return space
@@ -554,15 +465,6 @@ class OptunaOptimizer:
     # ------------------------------------------------------------------
     # Worker pool initialisation
     # ------------------------------------------------------------------
-    def _collect_lengths(self, frontend_key: str) -> Iterable[int]:
-        if self.base_config.enabled_params.get(frontend_key):
-            start, stop, step = self.base_config.param_ranges[frontend_key]
-            sequence = _generate_numeric_sequence(start, stop, step, True)
-        else:
-            value = self.base_config.fixed_params.get(frontend_key, 0)
-            sequence = [value]
-        return [int(round(val)) for val in sequence]
-
     def _setup_worker_pool(self) -> None:
         """Initialize the worker pool for Optuna optimization."""
 
@@ -609,6 +511,19 @@ class OptunaOptimizer:
         args = (params_dict, self.df, self.trade_start_idx, self.strategy_class)
         return self.pool.apply(_run_single_combination, (args,))
 
+    def _cast_param_value(self, name: str, value: Any) -> Any:
+        param_type = self.param_type_map.get(name, "").lower()
+        try:
+            if param_type == "int":
+                return int(float(value))
+            if param_type == "float":
+                return float(value)
+            if param_type == "bool":
+                return bool(value)
+        except (TypeError, ValueError):  # pragma: no cover - defensive
+            return value
+        return value
+
     def _prepare_trial_parameters(self, trial: optuna.Trial, search_space: Dict[str, Dict[str, Any]]) -> Dict[str, Any]:
         params_dict: Dict[str, Any] = {}
 
@@ -648,26 +563,19 @@ class OptunaOptimizer:
                 params_dict[key] = trial.suggest_categorical(key, list(spec["choices"]))
 
         if self.base_config.lock_trail_types:
-            trail_type = params_dict.get("trail_ma_long_type")
+            trail_type = params_dict.get("trailLongType")
             if trail_type is not None:
-                params_dict["trail_ma_short_type"] = trail_type
+                params_dict["trailShortType"] = trail_type
 
-        for frontend_name, (internal_name, is_int) in self.effective_param_map.items():
-            if self.base_config.enabled_params.get(frontend_name):
+        for key, value in (self.base_config.fixed_params or {}).items():
+            if value is None or key in params_dict:
                 continue
-            value = self.base_config.fixed_params.get(frontend_name)
-            if value is None:
-                continue
-            params_dict[internal_name] = int(round(float(value))) if is_int else float(value)
+            params_dict[key] = self._cast_param_value(key, value)
 
-        # Add global configuration parameters that are not in PARAMETER_MAP
-        # These are always fixed and must be passed to the strategy
-        params_dict.update({
-            "risk_per_trade_pct": self.base_config.risk_per_trade_pct,
-            "contract_size": self.base_config.contract_size,
-            "commission_rate": self.base_config.commission_rate,
-            "atr_period": self.base_config.atr_period,
-        })
+        params_dict.setdefault("riskPerTrade", float(self.base_config.risk_per_trade_pct))
+        params_dict.setdefault("contractSize", float(self.base_config.contract_size))
+        params_dict.setdefault("commissionRate", float(self.base_config.commission_rate))
+        params_dict.setdefault("atrPeriod", int(self.base_config.atr_period))
 
         return params_dict
 

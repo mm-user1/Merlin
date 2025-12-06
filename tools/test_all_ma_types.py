@@ -1,5 +1,6 @@
 """Test S01 with all 11 MA types to ensure indicators work."""
 
+from dataclasses import asdict
 from pathlib import Path
 
 import pandas as pd
@@ -62,7 +63,7 @@ def main() -> None:
 
         params = S01Params.from_dict(payload)
         try:
-            result = S01TrailingMA.run(df_prepared, params.to_dict(), trade_start_idx)
+            result = S01TrailingMA.run(df_prepared, asdict(params), trade_start_idx)
             results[ma_type] = {
                 "net_profit_pct": result.net_profit_pct,
                 "max_dd_pct": result.max_drawdown_pct,

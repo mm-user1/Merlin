@@ -15,28 +15,7 @@ from core.export import export_optuna_results, export_trades_csv, export_trades_
 
 @dataclass
 class MockResult:
-    ma_type: str = "HMA"
-    ma_length: int = 50
-    close_count_long: int = 9
-    close_count_short: int = 5
-    stop_long_atr: float = 2.0
-    stop_long_rr: float = 3.0
-    stop_long_lp: int = 2
-    stop_short_atr: float = 2.0
-    stop_short_rr: float = 3.0
-    stop_short_lp: int = 2
-    stop_long_max_pct: float = 3.0
-    stop_short_max_pct: float = 3.0
-    stop_long_max_days: int = 2
-    stop_short_max_days: int = 4
-    trail_rr_long: float = 1.0
-    trail_rr_short: float = 1.0
-    trail_ma_long_type: str = "SMA"
-    trail_ma_long_length: int = 160
-    trail_ma_long_offset: float = -1.0
-    trail_ma_short_type: str = "SMA"
-    trail_ma_short_length: int = 160
-    trail_ma_short_offset: float = 1.0
+    params: dict = None
     net_profit_pct: float = 230.75
     max_drawdown_pct: float = 20.03
     total_trades: int = 93
@@ -48,6 +27,37 @@ class MockResult:
     recovery_factor: float = 11.52
     consistency_score: float = 66.67
 
+    def __post_init__(self):
+        if self.params is None:
+            self.params = {
+                "maType": "HMA",
+                "maLength": 50,
+                "closeCountLong": 9,
+                "closeCountShort": 5,
+                "stopLongX": 2.0,
+                "stopLongRR": 3.0,
+                "stopLongLP": 2,
+                "stopShortX": 2.0,
+                "stopShortRR": 3.0,
+                "stopShortLP": 2,
+                "stopLongMaxPct": 3.0,
+                "stopShortMaxPct": 3.0,
+                "stopLongMaxDays": 2,
+                "stopShortMaxDays": 4,
+                "trailRRLong": 1.0,
+                "trailRRShort": 1.0,
+                "trailLongType": "SMA",
+                "trailLongLength": 160,
+                "trailLongOffset": -1.0,
+                "trailShortType": "SMA",
+                "trailShortLength": 160,
+                "trailShortOffset": 1.0,
+                "riskPerTrade": 2.0,
+                "contractSize": 0.01,
+                "commissionRate": 0.0005,
+                "atrPeriod": 14,
+            }
+
 
 class TestExportOptunaResults:
     def test_export_optuna_results_basic(self):
@@ -58,7 +68,7 @@ class TestExportOptunaResults:
 
         lines = csv_content.strip().splitlines()
         assert lines[0] == "Fixed Parameters"
-        assert "Net Profit%" in lines[-2]
+        assert any("Net Profit%" in line for line in lines)
         assert "230.75%" in csv_content
         assert "Fixed Parameters" in csv_content
 
@@ -100,7 +110,7 @@ class TestExportOptunaResults:
         lines = csv_content.strip().splitlines()
         # Only one data row should be present
         assert "-1.00%" not in csv_content
-        assert lines[-1].startswith("HMA,50,9,5")
+        assert "10.00%" in csv_content
 
 
 class TestExportTrades:

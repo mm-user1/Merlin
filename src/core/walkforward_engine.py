@@ -488,38 +488,17 @@ class WalkForwardEngine:
         return buffer
 
     def _result_to_params(self, result) -> Dict[str, Any]:
-        params = {
-            "backtester": True,
-            "dateFilter": False,
-            "start": None,
-            "end": None,
-            "maType": result.ma_type,
-            "maLength": int(result.ma_length),
-            "closeCountLong": int(result.close_count_long),
-            "closeCountShort": int(result.close_count_short),
-            "stopLongX": float(result.stop_long_atr),
-            "stopLongRR": float(result.stop_long_rr),
-            "stopLongLP": int(result.stop_long_lp),
-            "stopShortX": float(result.stop_short_atr),
-            "stopShortRR": float(result.stop_short_rr),
-            "stopShortLP": int(result.stop_short_lp),
-            "stopLongMaxPct": float(result.stop_long_max_pct),
-            "stopShortMaxPct": float(result.stop_short_max_pct),
-            "stopLongMaxDays": int(result.stop_long_max_days),
-            "stopShortMaxDays": int(result.stop_short_max_days),
-            "trailRRLong": float(result.trail_rr_long),
-            "trailRRShort": float(result.trail_rr_short),
-            "trailLongType": result.trail_ma_long_type,
-            "trailLongLength": int(result.trail_ma_long_length),
-            "trailLongOffset": float(result.trail_ma_long_offset),
-            "trailShortType": result.trail_ma_short_type,
-            "trailShortLength": int(result.trail_ma_short_length),
-            "trailShortOffset": float(result.trail_ma_short_offset),
-            "riskPerTrade": float(self.base_config_template["risk_per_trade_pct"]),
-            "contractSize": float(self.base_config_template["contract_size"]),
-            "commissionRate": float(self.base_config_template["commission_rate"]),
-            "atrPeriod": int(self.base_config_template["atr_period"]),
-        }
+        params = dict(getattr(result, "params", {}) or {})
+
+        params.setdefault("backtester", True)
+        params.setdefault("dateFilter", False)
+        params.setdefault("start", None)
+        params.setdefault("end", None)
+        params.setdefault("riskPerTrade", float(self.base_config_template["risk_per_trade_pct"]))
+        params.setdefault("contractSize", float(self.base_config_template["contract_size"]))
+        params.setdefault("commissionRate", float(self.base_config_template["commission_rate"]))
+        params.setdefault("atrPeriod", int(self.base_config_template["atr_period"]))
+
         return params
 
     def _aggregate_results(self, window_results: List[WindowResult]) -> List[AggregatedResult]:

@@ -15,32 +15,32 @@ def build_default_params() -> S01Params:
         use_date_filter=True,
         start=pd.Timestamp("2025-06-15", tz="UTC"),
         end=pd.Timestamp("2025-11-15", tz="UTC"),
-        ma_type="SMA",
-        ma_length=300,
-        close_count_long=9,
-        close_count_short=5,
-        stop_long_atr=2.0,
-        stop_long_rr=3.0,
-        stop_long_lp=2,
-        stop_short_atr=2.0,
-        stop_short_rr=3.0,
-        stop_short_lp=2,
-        stop_long_max_pct=7.0,
-        stop_short_max_pct=10.0,
-        stop_long_max_days=5,
-        stop_short_max_days=2,
-        trail_rr_long=1.0,
-        trail_rr_short=1.0,
-        trail_ma_long_type="EMA",
-        trail_ma_long_length=90,
-        trail_ma_long_offset=-0.5,
-        trail_ma_short_type="EMA",
-        trail_ma_short_length=190,
-        trail_ma_short_offset=2.0,
-        risk_per_trade_pct=2.0,
-        contract_size=0.01,
-        commission_rate=0.0005,
-        atr_period=14,
+        maType="SMA",
+        maLength=300,
+        closeCountLong=9,
+        closeCountShort=5,
+        stopLongX=2.0,
+        stopLongRR=3.0,
+        stopLongLP=2,
+        stopShortX=2.0,
+        stopShortRR=3.0,
+        stopShortLP=2,
+        stopLongMaxPct=7.0,
+        stopShortMaxPct=10.0,
+        stopLongMaxDays=5,
+        stopShortMaxDays=2,
+        trailRRLong=1.0,
+        trailRRShort=1.0,
+        trailLongType="EMA",
+        trailLongLength=90,
+        trailLongOffset=-0.5,
+        trailShortType="EMA",
+        trailShortLength=190,
+        trailShortOffset=2.0,
+        riskPerTrade=2.0,
+        contractSize=0.01,
+        commissionRate=0.0005,
+        atrPeriod=14,
     )
 
 
@@ -68,7 +68,7 @@ def main() -> None:
     )
 
     strategy_cls = get_strategy("s01_trailing_ma")
-    result = strategy_cls.run(df_prepared, params.to_dict(), trade_start_idx)
+    result = strategy_cls.run(df_prepared, params.__dict__, trade_start_idx)
 
     print(f"Net Profit %: {result.net_profit_pct:.2f}")
     print(f"Max Portfolio Drawdown %: {result.max_drawdown_pct:.2f}")

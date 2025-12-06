@@ -4,6 +4,7 @@ import pandas as pd
 import pytest
 
 import sys
+from dataclasses import asdict
 
 sys.path.insert(0, str(Path(__file__).parent.parent / "src"))
 
@@ -46,7 +47,7 @@ def test_stoch_rsi_calculation(test_data):
 
 
 def test_s04_basic_run(test_data):
-    params = S04Params(start_date=TRADING_START, end_date=TRADING_END).to_dict()
+    params = asdict(S04Params(startDate=TRADING_START, endDate=TRADING_END))
 
     result = S04StochRSI.run(test_data, params, trade_start_idx=0)
 

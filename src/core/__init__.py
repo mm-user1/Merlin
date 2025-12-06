@@ -38,7 +38,6 @@ from .walkforward_engine import (
 )
 
 from .export import (
-    CSV_COLUMN_SPECS,
     export_optuna_results,
     export_trades_csv,
     export_trades_zip,
@@ -77,7 +76,6 @@ __all__ = [
     "_extract_symbol_from_csv_filename",
 
     # export
-    "CSV_COLUMN_SPECS",
     "export_optuna_results",
     "export_trades_csv",
     "export_trades_zip",

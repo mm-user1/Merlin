@@ -25,47 +25,10 @@ from .backtest_engine import TradeRecord
 from .optuna_engine import OptimizationResult
 
 __all__ = [
-    "CSV_COLUMN_SPECS",
     "export_optuna_results",
     "export_wfa_summary",
     "export_trades_csv",
     "export_trades_zip",
-]
-
-
-CSV_COLUMN_SPECS: List[Tuple[str, Optional[str], str, Optional[str]]] = [
-    ("MA Type", "maType", "ma_type", None),
-    ("MA Length", "maLength", "ma_length", None),
-    ("CC L", "closeCountLong", "close_count_long", None),
-    ("CC S", "closeCountShort", "close_count_short", None),
-    ("St L X", "stopLongX", "stop_long_atr", "float1"),
-    ("Stop Long RR", "stopLongRR", "stop_long_rr", "float1"),
-    ("St L LP", "stopLongLP", "stop_long_lp", None),
-    ("St S X", "stopShortX", "stop_short_atr", "float1"),
-    ("Stop Short RR", "stopShortRR", "stop_short_rr", "float1"),
-    ("St S LP", "stopShortLP", "stop_short_lp", None),
-    ("St L Max %", "stopLongMaxPct", "stop_long_max_pct", "float1"),
-    ("St S Max %", "stopShortMaxPct", "stop_short_max_pct", "float1"),
-    ("St L Max D", "stopLongMaxDays", "stop_long_max_days", None),
-    ("St S Max D", "stopShortMaxDays", "stop_short_max_days", None),
-    ("Trail RR Long", "trailRRLong", "trail_rr_long", "float1"),
-    ("Trail RR Short", "trailRRShort", "trail_rr_short", "float1"),
-    ("Tr L Type", "trailLongType", "trail_ma_long_type", None),
-    ("Tr L Len", "trailLongLength", "trail_ma_long_length", None),
-    ("Tr L Off", "trailLongOffset", "trail_ma_long_offset", "float1"),
-    ("Tr S Type", "trailShortType", "trail_ma_short_type", None),
-    ("Tr S Len", "trailShortLength", "trail_ma_short_length", None),
-    ("Tr S Off", "trailShortOffset", "trail_ma_short_offset", "float1"),
-    ("Net Profit%", None, "net_profit_pct", "percent"),
-    ("Max DD%", None, "max_drawdown_pct", "percent"),
-    ("Trades", None, "total_trades", None),
-    ("Score", None, "score", "float"),
-    ("RoMaD", None, "romad", "optional_float"),
-    ("Sharpe", None, "sharpe_ratio", "optional_float"),
-    ("PF", None, "profit_factor", "optional_float"),
-    ("Ulcer", None, "ulcer_index", "optional_float"),
-    ("Recover", None, "recovery_factor", "optional_float"),
-    ("Consist", None, "consistency_score", "optional_float"),
 ]
 
 
@@ -97,47 +60,56 @@ def _format_fixed_param_value(value: Any) -> str:
     return str(value)
 
 
+def _get_formatter(param_type: str) -> Optional[str]:
+    """Map parameter type to CSV formatter string."""
+
+    if param_type == "int":
+        return None
+    if param_type == "float":
+        return "float1"
+    if param_type in {"select", "options", "bool"}:
+        return None
+    return None
+
+
 def _build_column_specs_for_strategy(
     strategy_id: str,
 ) -> List[Tuple[str, Optional[str], str, Optional[str]]]:
-    """Build CSV column specifications based on strategy configuration."""
+    """Build CSV column specifications dynamically from strategy config."""
 
     from strategies import get_strategy_config
 
-    if strategy_id == "s01_trailing_ma":
-        return CSV_COLUMN_SPECS
-
     try:
         config = get_strategy_config(strategy_id)
-    except Exception:  # pragma: no cover - defensive fallback
-        return CSV_COLUMN_SPECS
+    except Exception as exc:  # pragma: no cover - defensive fallback
+        logger.warning(f"Could not load config for {strategy_id}: {exc}")
+        return _get_default_metric_columns()
 
     parameters = config.get("parameters", {})
     if not isinstance(parameters, dict):
-        return CSV_COLUMN_SPECS
+        logger.warning(f"Invalid parameters in config for {strategy_id}")
+        return _get_default_metric_columns()
 
     specs: List[Tuple[str, Optional[str], str, Optional[str]]] = []
 
-    for frontend_name, param_spec in parameters.items():
+    for param_name, param_spec in parameters.items():
         if not isinstance(param_spec, dict):
             continue
 
-        param_type = param_spec.get("type", "float")
-        label = param_spec.get("label", frontend_name)
-        internal_name = frontend_name
+        param_type = str(param_spec.get("type", "float")).lower()
+        label = param_spec.get("label", param_name)
+        formatter = _get_formatter(param_type)
 
-        if param_type == "int":
-            formatter: Optional[str] = None
-        elif param_type == "float":
-            formatter = "float1"
-        elif param_type == "select":
-            formatter = None
-        else:
-            formatter = None
+        specs.append((label, param_name, param_name, formatter))
 
-        specs.append((label, frontend_name, internal_name, formatter))
+    specs.extend(_get_metric_columns())
+    return specs
 
-    metric_specs = [
+
+def _get_metric_columns() -> List[Tuple[str, Optional[str], str, Optional[str]]]:
+    """Return universal metric column specifications."""
+
+    return [
         ("Net Profit%", None, "net_profit_pct", "percent"),
         ("Max DD%", None, "max_drawdown_pct", "percent"),
         ("Trades", None, "total_trades", None),
@@ -150,8 +122,11 @@ def _build_column_specs_for_strategy(
         ("Consist", None, "consistency_score", "optional_float"),
     ]
 
-    specs.extend(metric_specs)
-    return specs
+
+def _get_default_metric_columns() -> List[Tuple[str, Optional[str], str, Optional[str]]]:
+    """Fallback columns when strategy config is unavailable."""
+
+    return _get_metric_columns()
 
 
 def export_optuna_results(
@@ -235,7 +210,11 @@ def export_optuna_results(
     for item in filtered_results:
         row_values = []
         for _, frontend_name, attr_name, formatter in filtered_columns:
-            value = getattr(item, attr_name, "")
+            params_dict = getattr(item, "params", {}) or {}
+            if frontend_name is not None and frontend_name in params_dict:
+                value = params_dict.get(frontend_name)
+            else:
+                value = getattr(item, attr_name, "")
             row_values.append(_format_csv_value(value, formatter))
         output.write(",".join(row_values) + "\n")
 
