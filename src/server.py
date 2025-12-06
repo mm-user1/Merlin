@@ -5,7 +5,7 @@ import time
 from datetime import datetime
 from http import HTTPStatus
 from pathlib import Path
-from typing import Any, Dict, List, Optional, Tuple
+from typing import Any, Dict, List, Optional, Set, Tuple
 
 import pandas as pd
 from flask import Flask, jsonify, request, send_file, send_from_directory
@@ -38,60 +38,32 @@ MA_TYPES: Tuple[str, ...] = (
 )
 
 
-def _normalize_ma_group_name(value: object) -> Optional[str]:
-    """Normalize MA group identifier to a canonical name."""
+def _get_parameter_types(strategy_id: Optional[str]) -> Dict[str, str]:
+    """Load parameter types from the strategy configuration."""
 
-    if value is None:
-        return None
-
-    normalized = str(value).strip().lower()
-    if not normalized:
-        return None
-
-    if "trend" in normalized:
-        return "trend"
-    if "trail" in normalized and "long" in normalized:
-        return "trail_long"
-    if "trail" in normalized and "short" in normalized:
-        return "trail_short"
-
-    return None
-
-
-def _get_strategy_features(strategy_id: Optional[str]) -> Dict[str, Any]:
-    """Return feature flags defined by a strategy configuration."""
-
-    default = {"requires_ma_selection": False, "ma_groups": []}
     if not strategy_id:
-        return default
+        return {}
 
     try:
         from strategies import get_strategy_config
 
         config = get_strategy_config(strategy_id)
     except Exception:  # pragma: no cover - defensive
-        return default
+        return {}
 
-    raw_features = config.get("features") if isinstance(config, dict) else None
-    if not isinstance(raw_features, dict):
-        return default
+    params_def = config.get("parameters", {}) if isinstance(config, dict) else {}
+    if not isinstance(params_def, dict):
+        return {}
 
-    requires_ma_selection = bool(raw_features.get("requires_ma_selection"))
-    raw_groups = raw_features.get("ma_groups", [])
-    ma_groups: List[str] = []
-    if isinstance(raw_groups, (list, tuple)):
-        for group in raw_groups:
-            normalized = _normalize_ma_group_name(group)
-            if normalized and normalized not in ma_groups:
-                ma_groups.append(normalized)
+    param_types: Dict[str, str] = {}
+    for name, definition in params_def.items():
+        if not isinstance(definition, dict):
+            continue
+        param_type = definition.get("type", "float")
+        if isinstance(param_type, str) and param_type.strip():
+            param_types[name] = param_type.strip().lower()
 
-    if requires_ma_selection and not ma_groups:
-        ma_groups = ["trend", "trail_long", "trail_short"]
-
-    return {
-        "requires_ma_selection": requires_ma_selection,
-        "ma_groups": ma_groups,
-    }
+    return param_types
 
 
 def _resolve_strategy_id_from_request() -> Tuple[Optional[str], Optional[object]]:
@@ -175,16 +147,6 @@ DEFAULT_PRESET: Dict[str, Any] = {
     "stopLongMaxDays": 2,
     "stopShortMaxDays": 4,
     "trailRRLong": 1.0,
-    "trailRRShort": 1.0,
-    "trailLongTypes": ["SMA"],
-    "trailLongLength": 160,
-    "trailLongOffset": -1.0,
-    "trailShortTypes": ["SMA"],
-    "trailLock": False,
-    "trailShortLength": 160,
-    "trailShortOffset": 1.0,
-    "riskPerTrade": 2.0,
-    "contractSize": 0.01,
     "workerProcesses": 6,
     "minProfitFilter": False,
     "minProfitThreshold": 0.0,
@@ -209,37 +171,11 @@ DEFAULT_PRESET: Dict[str, Any] = {
     "scoreInvertMetrics": {"ulcer": True},
     "csvPath": "",
 }
-BOOL_FIELDS = {"dateFilter", "backtester", "trailLock", "minProfitFilter", "scoreFilterEnabled"}
-INT_FIELDS = {
-    "maLength",
-    "closeCountLong",
-    "closeCountShort",
-    "stopLongLP",
-    "stopShortLP",
-    "stopLongMaxDays",
-    "stopShortMaxDays",
-    "trailLongLength",
-    "trailShortLength",
-    "workerProcesses",
-}
-FLOAT_FIELDS = {
-    "stopLongX",
-    "stopLongRR",
-    "stopShortX",
-    "stopShortRR",
-    "stopLongMaxPct",
-    "stopShortMaxPct",
-    "trailRRLong",
-    "trailRRShort",
-    "trailLongOffset",
-    "trailShortOffset",
-    "riskPerTrade",
-    "contractSize",
-    "minProfitThreshold",
-    "scoreThreshold",
-}
+BOOL_FIELDS = {"dateFilter", "backtester", "minProfitFilter", "scoreFilterEnabled"}
+INT_FIELDS = {"workerProcesses"}
+FLOAT_FIELDS = {"minProfitThreshold", "scoreThreshold"}
 
-LIST_FIELDS = {"trendMATypes", "trailLongTypes", "trailShortTypes"}
+LIST_FIELDS: Set[str] = set()
 STRING_FIELDS = {"startDate", "startTime", "endDate", "endTime", "csvPath"}
 ALLOWED_PRESET_FIELDS = set(DEFAULT_PRESET.keys())
 
@@ -1085,8 +1021,6 @@ def run_backtest() -> object:
     except json.JSONDecodeError:
         return ("Invalid payload JSON.", HTTPStatus.BAD_REQUEST)
 
-    strategy_features = _get_strategy_features(strategy_id)
-
     # Load strategy
     from strategies import get_strategy
 
@@ -1138,31 +1072,6 @@ def run_backtest() -> object:
         except Exception as exc:  # pragma: no cover - defensive
             app.logger.exception("Failed to prepare dataset with warmup")
             return ("Failed to prepare dataset.", HTTPStatus.INTERNAL_SERVER_ERROR)
-
-    if strategy_features.get("requires_ma_selection"):
-        required_groups = strategy_features.get("ma_groups", [])
-        missing_groups = []
-
-        group_to_field = {
-            "trend": "maType",
-            "trail_long": "trailLongType",
-            "trail_short": "trailShortType",
-        }
-
-        for group_name in required_groups:
-            field_name = group_to_field.get(group_name)
-            if not field_name:
-                continue
-            value = payload.get(field_name)
-            if value is None or (isinstance(value, str) and not value.strip()):
-                missing_groups.append(group_name)
-
-        if missing_groups:
-            missing_str = ", ".join(missing_groups)
-            return (
-                f"MA selection required for group(s): {missing_str}.",
-                HTTPStatus.BAD_REQUEST,
-            )
 
     # Run strategy
     try:
@@ -1315,60 +1224,11 @@ def _build_optimization_config(
     if not isinstance(fixed_params, dict):
         raise ValueError("fixed_params must be a dictionary.")
 
-    strategy_features = _get_strategy_features(strategy_id)
-    ma_requires_selection = bool(strategy_features.get("requires_ma_selection"))
-    ma_groups = strategy_features.get("ma_groups", [])
-    strategy_param_types: Dict[str, str] = {}
-    try:
-        from strategies import get_strategy_config
-
-        strategy_config = get_strategy_config(strategy_id)
-        params_def = strategy_config.get("parameters", {}) if isinstance(strategy_config, dict) else {}
-        if isinstance(params_def, dict):
-            for name, definition in params_def.items():
-                p_type = definition.get("type") if isinstance(definition, dict) else None
-                if isinstance(p_type, str) and p_type.strip().lower() in {"int", "float"}:
-                    strategy_param_types[name] = p_type.strip().lower()
-    except Exception:
-        strategy_param_types = {}
+    strategy_param_types = _get_parameter_types(strategy_id)
     ma_types_trend: List[str] = []
     ma_types_trail_long: List[str] = []
     ma_types_trail_short: List[str] = []
     lock_trail_types = False
-
-    if ma_requires_selection:
-        ma_types_trend = payload.get("ma_types_trend") or payload.get("maTypesTrend") or []
-        ma_types_trail_long = (
-            payload.get("ma_types_trail_long")
-            or payload.get("maTypesTrailLong")
-            or []
-        )
-        ma_types_trail_short = (
-            payload.get("ma_types_trail_short")
-            or payload.get("maTypesTrailShort")
-            or []
-        )
-
-        lock_trail_types_raw = (
-            payload.get("lock_trail_types")
-            or payload.get("lockTrailTypes")
-            or payload.get("trailLock")
-        )
-        lock_trail_types = _parse_bool(lock_trail_types_raw, False)
-
-        missing_groups = []
-        if "trend" in ma_groups and not ma_types_trend:
-            missing_groups.append("trend")
-        if "trail_long" in ma_groups and not ma_types_trail_long:
-            missing_groups.append("trail_long")
-        if "trail_short" in ma_groups and not ma_types_trail_short:
-            missing_groups.append("trail_short")
-
-        if missing_groups:
-            missing_str = ", ".join(missing_groups)
-            raise ValueError(
-                f"MA selection required for group(s): {missing_str}."
-            )
 
     risk_per_trade = payload.get("risk_per_trade_pct")
     if risk_per_trade is None:

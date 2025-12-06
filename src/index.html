@@ -1410,28 +1410,8 @@
       return null;
     }
 
-    function getMaSelectionFeatures(config = currentStrategyConfig) {
-      const features = (config && config.features && typeof config.features === 'object') ? config.features : {};
-      const requiresMaSelection = Boolean(features.requires_ma_selection);
-      const rawGroups = Array.isArray(features.ma_groups) ? features.ma_groups : [];
-      const groups = [];
-
-      rawGroups.forEach((group) => {
-        const normalized = normalizeMaGroupName(group);
-        if (normalized && !groups.includes(normalized)) {
-          groups.push(normalized);
-        }
-      });
-
-      const strategyId = config?.id || currentStrategyId;
-      const legacyMaStrategy = !requiresMaSelection
-        && typeof strategyId === 'string'
-        && strategyId.toLowerCase().includes('s01');
-
-      const enabled = requiresMaSelection || legacyMaStrategy;
-      const normalizedGroups = enabled ? (groups.length ? groups : [...DEFAULT_MA_GROUPS]) : [];
-
-      return { enabled, groups: normalizedGroups };
+    function getMaSelectionFeatures() {
+      return { enabled: false, groups: [] };
     }
 
     function strategyUsesMaSelection() {
@@ -1513,31 +1493,6 @@
         endDate: '2025-09-01',
         endTime: '00:00',
         csvPath: '',
-        trendMATypes: [...MA_TYPES],
-        maLength: 45,
-        closeCountLong: 7,
-        closeCountShort: 5,
-        stopLongX: 2,
-        stopLongRR: 3,
-        stopLongLP: 2,
-        stopShortX: 2,
-        stopShortRR: 3,
-        stopShortLP: 2,
-        stopLongMaxPct: 3.0,
-        stopShortMaxPct: 3.0,
-        stopLongMaxDays: 2,
-        stopShortMaxDays: 4,
-        trailRRLong: 1,
-        trailRRShort: 1,
-        trailLongTypes: ['SMA'],
-        trailLongLength: 160,
-        trailLongOffset: -1,
-        trailShortTypes: ['SMA'],
-        trailLock: false,
-        trailShortLength: 160,
-        trailShortOffset: 1,
-        riskPerTrade: 2,
-        contractSize: 0.01,
         workerProcesses: 6,
         minProfitFilter: false,
         minProfitThreshold: 0,
@@ -1558,31 +1513,6 @@
         endDate: 'End Date',
         endTime: 'End Time',
         csvPath: 'CSV Path',
-        trendMATypes: 'Trend MA Types',
-        maLength: 'MA Length',
-        closeCountLong: 'Close Count Long',
-        closeCountShort: 'Close Count Short',
-        stopLongX: 'Stop Long X',
-        stopLongRR: 'Stop Long RR',
-        stopLongLP: 'Stop Long LP',
-        stopShortX: 'Stop Short X',
-        stopShortRR: 'Stop Short RR',
-        stopShortLP: 'Stop Short LP',
-        stopLongMaxPct: 'Stop Long Max %',
-        stopShortMaxPct: 'Stop Short Max %',
-        stopLongMaxDays: 'Stop Long Max Days',
-        stopShortMaxDays: 'Stop Short Max Days',
-        trailRRLong: 'Trail RR Long',
-        trailRRShort: 'Trail RR Short',
-        trailLongTypes: 'Trail MA Long Type',
-        trailLongLength: 'Trail MA Long Length',
-        trailLongOffset: 'Trail MA Long Offset',
-        trailLock: 'Trail MA Lock',
-        trailShortTypes: 'Trail MA Short Type',
-        trailShortLength: 'Trail MA Short Length',
-        trailShortOffset: 'Trail MA Short Offset',
-        riskPerTrade: 'Risk Per Trade',
-        contractSize: 'Contract Size',
         workerProcesses: 'Worker Processes',
         minProfitFilter: 'Net Profit Filter',
         minProfitThreshold: 'Net Profit Min %',
