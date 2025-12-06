@@ -1890,20 +1890,7 @@
       }
 
       function collectSelectedTypes(group) {
-        if (!isMaSelectorVisible()) {
-          return [];
-        }
-        const { allCheckbox, checkboxes } = getMaTypeCheckboxes(group);
-        if (!allCheckbox || !checkboxes.length) {
-          return [];
-        }
-        if (allCheckbox.checked) {
-          return [...MA_TYPES];
-        }
-        const chosen = checkboxes
-          .filter((checkbox) => checkbox.checked)
-          .map((checkbox) => checkbox.dataset.type);
-        return chosen;
+        return [];
       }
 
       function syncAllToggle(group) {
@@ -2014,16 +2001,6 @@
           }
         }
 
-        if (Object.prototype.hasOwnProperty.call(values, 'trendMATypes') && Array.isArray(values.trendMATypes)) {
-          setCheckboxGroup('trend', values.trendMATypes);
-        }
-        if (Object.prototype.hasOwnProperty.call(values, 'trailLongTypes') && Array.isArray(values.trailLongTypes)) {
-          setCheckboxGroup('trailLong', values.trailLongTypes);
-        }
-        if (Object.prototype.hasOwnProperty.call(values, 'trailShortTypes') && Array.isArray(values.trailShortTypes)) {
-          setCheckboxGroup('trailShort', values.trailShortTypes);
-        }
-
         const { checkbox: minProfitCheckbox, input: minProfitInput } = getMinProfitElements();
         if (minProfitCheckbox && Object.prototype.hasOwnProperty.call(values, 'minProfitFilter')) {
           minProfitCheckbox.checked = Boolean(values.minProfitFilter);
@@ -2102,15 +2079,10 @@
       }
 
       function collectPresetValues() {
-        const trendTypes = collectSelectedTypes('trend');
-        const trailLongTypes = collectSelectedTypes('trailLong');
-        const trailShortTypes = collectSelectedTypes('trailShort');
         const { checkbox: minProfitCheckbox, input: minProfitInput } = getMinProfitElements();
         const workerInput = document.getElementById('workerProcesses');
         const csvPathValue = typeof selectedCsvPath === 'string' ? selectedCsvPath.trim() : '';
         const scoreState = readScoreUIState();
-
-        const lockEl = document.getElementById('opt-lockTrailTypes') || document.getElementById('trailLock');
 
         // Collect dynamic strategy parameters
         const dynamicParams = collectDynamicBacktestParams();
@@ -2118,15 +2090,11 @@
         return {
           dateFilter: document.getElementById('dateFilter').checked,
           backtester: document.getElementById('backtester').checked,
-          trailLock: Boolean(lockEl?.checked),
           startDate: document.getElementById('startDate').value.trim(),
           startTime: document.getElementById('startTime').value.trim(),
           endDate: document.getElementById('endDate').value.trim(),
           endTime: document.getElementById('endTime').value.trim(),
           csvPath: csvPathValue,
-          trendMATypes: trendTypes,
-          trailLongTypes,
-          trailShortTypes,
           workerProcesses: workerInput
             ? parseNumber(workerInput.value, defaults.workerProcesses)
             : defaults.workerProcesses,
@@ -2956,10 +2924,6 @@
         });
 
         const workerProcesses = getWorkerProcessesValue();
-        const maTypesTrend = state.maSelectionEnabled ? state.trendTypes : [];
-        const maTypesTrailLong = state.maSelectionEnabled ? state.trailLongTypes : [];
-        const maTypesTrailShort = state.maSelectionEnabled ? state.trailShortTypes : [];
-        const lockTrail = state.maSelectionEnabled ? Boolean(state.lockTrailTypes) : false;
 
         const riskPerTrade = getBacktestParamValue('riskPerTrade', paramsDef.riskPerTrade, dynamicParams) || 0;
         const contractSize = getBacktestParamValue('contractSize', paramsDef.contractSize, dynamicParams) || 0;
@@ -2970,10 +2934,6 @@
           enabled_params: enabledParams,
           param_ranges: paramRanges,
           fixed_params: fixedParams,
-          ma_types_trend: maTypesTrend,
-          ma_types_trail_long: maTypesTrailLong,
-          ma_types_trail_short: maTypesTrailShort,
-          lock_trail_types: lockTrail,
           risk_per_trade_pct: Number(riskPerTrade) || 0,
           contract_size: Number(contractSize) || 0,
           commission_rate: commissionRate !== undefined ? Number(commissionRate) || 0 : 0.0005,

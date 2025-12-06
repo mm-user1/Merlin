@@ -18,21 +18,6 @@ from core.optuna_engine import OptimizationConfig, OptimizationResult, run_optim
 app = Flask(__name__, static_folder="static", static_url_path="/static")
 
 
-MA_TYPES: Tuple[str, ...] = (
-    "EMA",
-    "SMA",
-    "HMA",
-    "WMA",
-    "ALMA",
-    "KAMA",
-    "TMA",
-    "T3",
-    "DEMA",
-    "VWMA",
-    "VWAP",
-)
-
-
 def _resolve_strategy_id_from_request() -> Tuple[Optional[str], Optional[object]]:
     from strategies import list_strategies
 
@@ -315,24 +300,6 @@ def _parse_csv_parameter_block(file_storage) -> Tuple[Dict[str, Any], List[str]]
             if time_part:
                 updates["endTime"] = time_part
                 applied.append("endTime")
-            continue
-        if name == "maType":
-            value = str(raw_value or "").strip().upper()
-            if value:
-                updates["trendMATypes"] = [value]
-                applied.append("trendMATypes")
-            continue
-        if name == "trailLongType":
-            value = str(raw_value or "").strip().upper()
-            if value:
-                updates["trailLongTypes"] = [value]
-                applied.append("trailLongTypes")
-            continue
-        if name == "trailShortType":
-            value = str(raw_value or "").strip().upper()
-            if value:
-                updates["trailShortTypes"] = [value]
-                applied.append("trailShortTypes")
             continue
 
         converted = _convert_import_value(name, raw_value)
