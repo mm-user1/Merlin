@@ -287,6 +287,9 @@ def _run_single_combination(
         advanced_metrics = metrics.calculate_advanced(result)
 
         opt_result = _base_result()
+        for key, value in params_dict.items():
+            if not hasattr(opt_result, key):
+                setattr(opt_result, key, value)
         opt_result.net_profit_pct = basic_metrics.net_profit_pct
         opt_result.max_drawdown_pct = basic_metrics.max_drawdown_pct
         opt_result.total_trades = basic_metrics.total_trades

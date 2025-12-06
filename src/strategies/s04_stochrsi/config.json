@@ -37,7 +37,7 @@
       "max": 50,
       "step": 1,
       "group": "StochRSI",
-      "optimize": { "enabled": false }
+      "optimize": { "enabled": true }
     },
     "dLen": {
       "type": "int",
@@ -47,7 +47,7 @@
       "max": 50,
       "step": 1,
       "group": "StochRSI",
-      "optimize": { "enabled": false }
+      "optimize": { "enabled": true }
     },
     "obLevel": {
       "type": "float",
