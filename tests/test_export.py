@@ -1,9 +1,9 @@
 import json
+import sys
 import zipfile
 from dataclasses import dataclass
 from io import BytesIO
 from pathlib import Path
-import sys
 
 import pandas as pd
 

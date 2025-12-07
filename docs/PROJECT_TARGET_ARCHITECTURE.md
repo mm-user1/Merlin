@@ -2,10 +2,14 @@
 # Target Architecture Overview
 # Unified Core + Strategies + Optimization
 
-**Version:** 2.0
+**Version:** 2.1
 **Date:** 2025-11-27
 **Status:** Updated with final architecture decisions
 **Scope:** Final target state of the project after migration from legacy architecture to new clean architecture.
+
+**Naming Contract:** Parameter names remain camelCase end-to-end (Pine Script → `config.json` → Python → CSV). No snake_case fallbacks or conversion helpers are allowed.
+
+**Config-Driven Core:** The backend, frontend, and exporters derive parameter schemas directly from each strategy's `config.json`; core modules remain strategy-agnostic.
 
 ---
 
