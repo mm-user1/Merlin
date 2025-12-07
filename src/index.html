@@ -2843,12 +2843,8 @@
               return;
             }
 
-            ranges[paramName] = {
-              type: paramType,
-              from: fromValue,
-              to: toValue,
-              step: stepValue
-            };
+            // Backend expects [from, to, step] array format
+            ranges[paramName] = [fromValue, toValue, stepValue];
           }
         });
 
@@ -2912,12 +2908,8 @@
                 stepValue > 0 &&
                 fromValue < toValue
               ) {
-                paramRanges[name] = {
-                  type: paramType,
-                  from: fromValue,
-                  to: toValue,
-                  step: stepValue
-                };
+                // Backend expects [from, to, step] array format (see server.py:1298-1301)
+                paramRanges[name] = [fromValue, toValue, stepValue];
               }
             }
           }
