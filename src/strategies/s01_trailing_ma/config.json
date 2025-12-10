@@ -24,7 +24,7 @@
       ],
       "group": "Entry",
       "optimize": {
-        "enabled": false
+        "enabled": true
       }
     },
     "maLength": {
@@ -319,7 +319,7 @@
       ],
       "group": "Trail",
       "optimize": {
-        "enabled": false
+        "enabled": true
       }
     },
     "trailLongLength": {
@@ -371,7 +371,7 @@
       ],
       "group": "Trail",
       "optimize": {
-        "enabled": false
+        "enabled": true
       }
     },
     "trailShortLength": {
