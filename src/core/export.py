@@ -23,10 +23,12 @@ import pandas as pd
 
 from .backtest_engine import TradeRecord
 from .optuna_engine import OptimizationResult
+import logging
+
+logger = logging.getLogger(__name__)
 
 __all__ = [
     "export_optuna_results",
-    "export_wfa_summary",
     "export_trades_csv",
     "export_trades_zip",
 ]
@@ -219,17 +221,6 @@ def export_optuna_results(
         output.write(",".join(row_values) + "\n")
 
     return output.getvalue()
-
-
-def export_wfa_summary(wfa_results: Any, path: Optional[str] = None) -> str:
-    """
-    Placeholder for Walk-Forward Analysis export.
-
-    The implementation will be completed once the WFA engine export
-    requirements are finalized and validated.
-    """
-
-    raise NotImplementedError("WFA export will be implemented when WFA engine is validated")
 
 
 def export_trades_csv(
