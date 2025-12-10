@@ -530,6 +530,8 @@
 
     let currentStrategyId = null;
     let currentStrategyConfig = null;
+    let bindOptimizerInputs;
+    let handleOptimizerCheckboxChange;
 
     /**
      * Load list of available strategies on page load
@@ -751,7 +753,6 @@
       }
 
       bindOptimizerInputs();
-      calculateTotalCombinations();
 
       console.log(`Generated optimizer form with ${totalParams} parameters`);
     }
@@ -768,6 +769,7 @@
       checkbox.id = `opt-${paramName}`;
       checkbox.checked = Boolean(paramDef.optimize && paramDef.optimize.enabled);
       checkbox.dataset.paramName = paramName;
+      checkbox.classList.add('opt-param-toggle');
 
       const label = document.createElement('label');
       label.className = 'opt-label';
@@ -917,9 +919,7 @@
 
     function getOptimizerParamElements() {
       const params = currentStrategyConfig?.parameters || {};
-      const checkboxes = document.querySelectorAll(
-        '[id^="opt-"]:not([id$="-from"]):not([id$="-to"]):not([id$="-step"])'
-      );
+      const checkboxes = document.querySelectorAll('.opt-param-toggle');
 
       return Array.from(checkboxes).map((checkbox) => {
         const paramName = checkbox.dataset.paramName || checkbox.id.replace(/^opt-/, '');
@@ -1006,8 +1006,6 @@
 
       // Reference configuration used to calibrate the historical ETA formula:
       // 2025-04-01 → 2025-09-01 on a 15 minute timeframe results in 14 689 bars.
-      const REFERENCE_BAR_COUNT = 14689;
-
       const SCORE_METRICS = ['romad', 'sharpe', 'pf', 'ulcer', 'recovery', 'consistency'];
       const SCORE_DEFAULT_THRESHOLD = 60;
       const SCORE_DEFAULT_WEIGHTS = {
@@ -1088,8 +1086,6 @@
       const optunaBestTrial = document.getElementById('optunaBestTrial');
       const optunaCurrentTrial = document.getElementById('optunaCurrentTrial');
       const optunaEta = document.getElementById('optunaEta');
-      const totalCombinationsEl = document.getElementById('totalCombinations');
-      const estimatedTimeEl = document.getElementById('estimatedTime');
       const csvFileInputEl = document.getElementById('csvFile');
       const selectedFilesWrapper = document.getElementById('selectedFilesWrapper');
       const selectedFilesList = document.getElementById('selectedFilesList');
@@ -1448,7 +1444,6 @@
             selectedCsvPath = '';
           }
           renderSelectedFiles(files);
-          calculateTotalCombinations();
         });
       }
 
@@ -1570,7 +1565,6 @@
         syncMinProfitFilterUI();
         syncScoreFilterUI();
         updateScoreFormulaPreview();
-        calculateTotalCombinations();
       }
 
       function updateDefaults(values) {
@@ -2067,18 +2061,6 @@
         ].join('\n');
       }
 
-      function getRangeCount(from, to, step) {
-        const delta = Math.abs(step);
-        if (!delta) {
-          return 0;
-        }
-        if (Number.isNaN(from) || Number.isNaN(to)) {
-          return 0;
-        }
-        const distance = Math.abs(to - from);
-        return Math.floor(distance / delta + 1e-9) + 1;
-      }
-
       function getBacktestParamValue(paramName, paramDef = {}, dynamicParams = {}) {
         if (Object.prototype.hasOwnProperty.call(dynamicParams, paramName)) {
           return dynamicParams[paramName];
@@ -2115,248 +2097,6 @@
           }
         }
         return Math.round(Math.min(32, Math.max(1, workerProcesses)));
-      }
-
-      function formatEstimatedTimeValue(total, workerCount, barCount) {
-        if (!Number.isFinite(total) || total <= 0) {
-          return '-';
-        }
-        const normalizedWorkers = Math.round(
-          Math.min(32, Math.max(1, Number.isFinite(workerCount) ? workerCount : defaults.workerProcesses))
-        );
-        const baseRate = (normalizedWorkers / 6) * 16;
-        let combinationsPerSecond = baseRate;
-        if (Number.isFinite(barCount) && barCount > 0) {
-          combinationsPerSecond = baseRate * (REFERENCE_BAR_COUNT / barCount);
-        }
-        if (!Number.isFinite(combinationsPerSecond) || combinationsPerSecond <= 0) {
-          return '-';
-        }
-        const seconds = total / combinationsPerSecond;
-        if (seconds < 60) {
-          return `${seconds.toFixed(1)} s`;
-        }
-        const minutes = Math.floor(seconds / 60);
-        const remainingSeconds = Math.round(seconds % 60);
-        if (minutes < 60) {
-          return `${minutes}m ${remainingSeconds.toString().padStart(2, '0')}s`;
-        }
-        const hours = Math.floor(minutes / 60);
-        const remMinutes = minutes % 60;
-        if (hours < 24) {
-          return `${hours}h ${remMinutes}m`;
-        }
-        const days = Math.floor(hours / 24);
-        const remHours = hours % 24;
-        return `${days}d ${remHours}h`;
-      }
-
-      let latestBarCountRequestId = 0;
-
-      function parseDateRangeForBars() {
-        const startValue = composeDateTime(
-          document.getElementById('startDate').value,
-          document.getElementById('startTime').value
-        );
-        const endValue = composeDateTime(
-          document.getElementById('endDate').value,
-          document.getElementById('endTime').value
-        );
-
-        if (!startValue || !endValue) {
-          return { error: 'Invalid date range' };
-        }
-
-        const startDate = new Date(startValue);
-        const endDate = new Date(endValue);
-
-        if (!Number.isFinite(startDate.valueOf()) || !Number.isFinite(endDate.valueOf())) {
-          return { error: 'Invalid date range' };
-        }
-
-        if (endDate < startDate) {
-          return { error: 'Invalid date range' };
-        }
-
-        return {
-          startSec: Math.floor(startDate.getTime() / 1000),
-          endSec: Math.floor(endDate.getTime() / 1000)
-        };
-      }
-
-      function countBarsInCsvText(csvText, startSec, endSec) {
-        if (!csvText || !Number.isFinite(startSec) || !Number.isFinite(endSec) || endSec < startSec) {
-          return 0;
-        }
-
-        const lines = csvText.split(/\r?\n/);
-        if (lines.length <= 1) {
-          return 0;
-        }
-
-        let count = 0;
-        for (let index = 1; index < lines.length; index += 1) {
-          const line = lines[index].trim();
-          if (!line) {
-            continue;
-          }
-
-          const commaIndex = line.indexOf(',');
-          const timePart = commaIndex >= 0 ? line.slice(0, commaIndex) : line;
-          const timestamp = Number(timePart.trim());
-          if (!Number.isFinite(timestamp)) {
-            continue;
-          }
-
-          if (timestamp >= startSec && timestamp <= endSec) {
-            count += 1;
-          }
-        }
-
-        return count;
-      }
-
-      function countBarsInFile(file, startSec, endSec) {
-        return new Promise((resolve, reject) => {
-          const reader = new FileReader();
-          reader.onload = () => {
-            try {
-              const text = typeof reader.result === 'string' ? reader.result : '';
-              resolve(countBarsInCsvText(text, startSec, endSec));
-            } catch (error) {
-              reject(error);
-            }
-          };
-          reader.onerror = () => {
-            reject(reader.error || new Error('Failed to read CSV file'));
-          };
-          reader.readAsText(file);
-        });
-      }
-
-      function updateEstimatedTime(total, workerCount) {
-        if (!estimatedTimeEl) {
-          return;
-        }
-
-        if (!Number.isFinite(total) || total <= 0) {
-          estimatedTimeEl.textContent = '-';
-          return;
-        }
-
-        const files = Array.from(csvFileInputEl?.files || []);
-        if (!files.length) {
-          if (selectedCsvPath) {
-            estimatedTimeEl.textContent = 'ETA unavailable for saved path';
-          } else {
-            estimatedTimeEl.textContent = 'Load CSV for calculation';
-          }
-          return;
-        }
-
-        const dateRange = parseDateRangeForBars();
-        if (!dateRange || dateRange.error) {
-          estimatedTimeEl.textContent = dateRange?.error || 'Invalid date range';
-          return;
-        }
-
-        const requestId = latestBarCountRequestId + 1;
-        latestBarCountRequestId = requestId;
-        estimatedTimeEl.textContent = 'Calculating…';
-
-        Promise.all(files.map((file) => countBarsInFile(file, dateRange.startSec, dateRange.endSec)))
-          .then((counts) => {
-            if (requestId !== latestBarCountRequestId) {
-              return;
-            }
-
-            const barCount = counts.reduce((acc, value) => acc + (Number.isFinite(value) ? value : 0), 0);
-            if (!Number.isFinite(barCount) || barCount <= 0) {
-              estimatedTimeEl.textContent = 'No data in range';
-              return;
-            }
-
-            estimatedTimeEl.textContent = formatEstimatedTimeValue(total, workerCount, barCount);
-          })
-          .catch((error) => {
-            if (requestId !== latestBarCountRequestId) {
-              return;
-            }
-            console.error('Failed to calculate bar count from CSV', error);
-            estimatedTimeEl.textContent = 'Failed to read CSV';
-          });
-      }
-
-      function calculateTotalCombinations() {
-        let total = 1;
-        let valid = true;
-        const canDisplay = Boolean(totalCombinationsEl && estimatedTimeEl);
-        const params = currentStrategyConfig?.parameters || {};
-
-        if (!Object.keys(params).length) {
-          if (canDisplay) {
-            totalCombinationsEl.textContent = '0';
-            estimatedTimeEl.textContent = '-';
-          }
-          return 0;
-        }
-
-        for (const [paramName, paramDef] of Object.entries(params)) {
-          const checkbox = document.getElementById(`opt-${paramName}`);
-          if (!checkbox || !checkbox.checked) {
-            continue;
-          }
-
-          const paramType = paramDef.type || 'float';
-
-          if (paramType === 'select' || paramType === 'options') {
-            const selectedCount = Array.from(
-              document.querySelectorAll(
-                `input.select-option-checkbox[data-param-name="${paramName}"]:not([data-option-value="__ALL__"]):checked`
-              )
-            ).length;
-
-            if (selectedCount === 0) {
-              valid = false;
-              break;
-            }
-
-            total *= selectedCount;
-          } else {
-            const fromInput = document.getElementById(`opt-${paramName}-from`);
-            const toInput = document.getElementById(`opt-${paramName}-to`);
-            const stepInput = document.getElementById(`opt-${paramName}-step`);
-
-            if (!fromInput || !toInput || !stepInput) {
-              continue;
-            }
-
-            const from = Number(fromInput.value);
-            const to = Number(toInput.value);
-            const step = Number(stepInput.value);
-            const count = getRangeCount(from, to, step);
-            if (count <= 0) {
-              valid = false;
-              break;
-            }
-            total *= count;
-          }
-        }
-
-        if (!valid || !Number.isFinite(total)) {
-          if (canDisplay) {
-            totalCombinationsEl.textContent = '0';
-            estimatedTimeEl.textContent = '-';
-          }
-          return total;
-        }
-
-        if (canDisplay) {
-          const workerProcesses = getWorkerProcessesValue();
-          totalCombinationsEl.textContent = total.toLocaleString('en-US');
-          updateEstimatedTime(total, workerProcesses);
-        }
-        return total;
       }
 
       function validateOptimizerForm(config) {
@@ -2541,7 +2281,10 @@
                 .map((cb) => cb.dataset.optionValue);
 
               if (selectedOptions.length > 0) {
-                fixedParams[`${name}_options`] = selectedOptions;
+                paramRanges[name] = {
+                  type: 'select',
+                  values: selectedOptions
+                };
               }
             } else if (paramType === 'bool') {
               // Boolean params require no range metadata; search space derives from type
@@ -3131,60 +2874,25 @@
         optimizerResultsEl.textContent = summaryMessages.join('\n');
       }
 
-      function bindOptimizerInputs() {
-        const checkboxes = document.querySelectorAll(
-          '[id^="opt-"]:not([id$="-from"]):not([id$="-to"]):not([id$="-step"])'
-        );
+      bindOptimizerInputs = function bindOptimizerInputs() {
+        const paramCheckboxes = document.querySelectorAll('.opt-param-toggle');
 
-        checkboxes.forEach((checkbox) => {
+        paramCheckboxes.forEach((checkbox) => {
           checkbox.removeEventListener('change', handleOptimizerCheckboxChange);
           checkbox.addEventListener('change', handleOptimizerCheckboxChange);
-          checkbox.addEventListener('change', calculateTotalCombinations);
           handleOptimizerCheckboxChange.call(checkbox);
         });
+      };
 
-        const numericInputs = document.querySelectorAll('#optimizerParamsContainer input[type="number"]');
-        numericInputs.forEach((input) => {
-          input.addEventListener('input', calculateTotalCombinations);
-        });
-
-        const selectOptionCheckboxes = document.querySelectorAll('.select-option-checkbox');
-        selectOptionCheckboxes.forEach((checkbox) => {
-          checkbox.removeEventListener('change', calculateTotalCombinations);
-          checkbox.addEventListener('change', calculateTotalCombinations);
-        });
-
-        const workerInput = document.getElementById('workerProcesses');
-        if (workerInput) {
-          workerInput.addEventListener('input', calculateTotalCombinations);
-        }
-
-        const dateInputs = ['startDate', 'startTime', 'endDate', 'endTime'];
-        dateInputs.forEach((inputId) => {
-          const input = document.getElementById(inputId);
-          if (input) {
-            input.addEventListener('input', calculateTotalCombinations);
-            input.addEventListener('change', calculateTotalCombinations);
-          }
-        });
-
-        const lockEl = document.getElementById('opt-lockTrailTypes') || document.getElementById('trailLock');
-        if (lockEl) {
-          lockEl.removeEventListener('change', calculateTotalCombinations);
-          lockEl.addEventListener('change', calculateTotalCombinations);
-        }
-
-        calculateTotalCombinations();
-      }
-
-      function handleOptimizerCheckboxChange() {
+      handleOptimizerCheckboxChange = function handleOptimizerCheckboxChange() {
         const paramName = this.dataset.paramName || this.id.replace('opt-', '');
+        const row = this.closest('.opt-row');
         const fromInput = document.getElementById(`opt-${paramName}-from`);
         const toInput = document.getElementById(`opt-${paramName}-to`);
         const stepInput = document.getElementById(`opt-${paramName}-step`);
-        const selectOptions = document.querySelectorAll(
-          `input.select-option-checkbox[data-param-name="${paramName}"]`
-        );
+        const selectOptions = row
+          ? row.querySelectorAll(`input.select-option-checkbox[data-param-name="${paramName}"]`)
+          : document.querySelectorAll(`input.select-option-checkbox[data-param-name="${paramName}"]`);
 
         const disabled = !this.checked;
 
@@ -3197,7 +2905,6 @@
           });
         }
 
-        const row = this.closest('.opt-row');
         if (row) {
           if (disabled) {
             row.classList.add('disabled');
@@ -3205,7 +2912,7 @@
             row.classList.remove('disabled');
           }
         }
-      }
+      };
 
       function bindMinProfitFilterControl() {
         const { checkbox, input } = getMinProfitElements();
