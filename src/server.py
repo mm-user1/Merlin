@@ -258,7 +258,7 @@ def _parse_csv_parameter_block(file_storage) -> Tuple[Dict[str, Any], List[str]]
         text = str(content)
 
     lines = text.splitlines()
-    parameters: Dict[str, Any] = {}
+    csv_parameters: Dict[str, Any] = {}
     applied: List[str] = []
 
     header_seen = False
@@ -275,10 +275,41 @@ def _parse_csv_parameter_block(file_storage) -> Tuple[Dict[str, Any], List[str]]
         param_name = name.strip()
         if not param_name:
             continue
-        parameters[param_name] = value.strip()
+        csv_parameters[param_name] = value.strip()
 
     updates: Dict[str, Any] = {}
-    for name, raw_value in parameters.items():
+    # Use strategy config to drive type-aware parsing so imports stay generic across strategies.
+    strategy_id = request.form.get("strategy")
+    if not strategy_id and request.is_json:
+        payload = request.get_json(silent=True) or {}
+        if isinstance(payload, dict):
+            strategy_id = payload.get("strategy")
+
+    param_types: Dict[str, str] = {}
+    if not strategy_id:
+        try:
+            from strategies import list_strategies
+
+            available = list_strategies()
+            if available:
+                strategy_id = available[0]["id"]
+        except Exception:
+            strategy_id = None
+
+    if strategy_id:
+        try:
+            from strategies import get_strategy_config
+
+            config = get_strategy_config(strategy_id)
+            config_parameters = config.get("parameters", {}) if isinstance(config, dict) else {}
+            for param_name, param_spec in config_parameters.items():
+                if not isinstance(param_spec, dict):
+                    continue
+                param_types[param_name] = str(param_spec.get("type", "float")).lower()
+        except Exception:
+            param_types = {}
+
+    for name, raw_value in csv_parameters.items():
         if name == "start":
             date_part, time_part = _split_timestamp(raw_value)
             if date_part:
@@ -297,23 +328,31 @@ def _parse_csv_parameter_block(file_storage) -> Tuple[Dict[str, Any], List[str]]
                 updates["endTime"] = time_part
                 applied.append("endTime")
             continue
-        if name == "maType":
+
+        param_type = param_types.get(name, "")
+        if param_type in {"select", "options"}:
             value = str(raw_value or "").strip().upper()
             if value:
-                updates["trendMATypes"] = [value]
-                applied.append("trendMATypes")
+                updates[name] = value
+                applied.append(name)
             continue
-        if name == "trailLongType":
-            value = str(raw_value or "").strip().upper()
-            if value:
-                updates["trailLongTypes"] = [value]
-                applied.append("trailLongTypes")
+        if param_type == "int":
+            try:
+                updates[name] = int(round(float(raw_value)))
+            except (TypeError, ValueError):
+                updates[name] = 0
+            applied.append(name)
             continue
-        if name == "trailShortType":
-            value = str(raw_value or "").strip().upper()
-            if value:
-                updates["trailShortTypes"] = [value]
-                applied.append("trailShortTypes")
+        if param_type == "float":
+            try:
+                updates[name] = float(raw_value)
+            except (TypeError, ValueError):
+                updates[name] = 0.0
+            applied.append(name)
+            continue
+        if param_type in {"bool", "boolean"}:
+            updates[name] = _coerce_bool(raw_value)
+            applied.append(name)
             continue
 
         converted = _convert_import_value(name, raw_value)
