@@ -5,47 +5,6 @@
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
   <title>Strategy Backtester &amp; Optimizer</title>
   <link rel="stylesheet" href="/static/css/style.css" />
-  <style>
-    /* Select parameter multi-checkbox container */
-    .select-options-container {
-      display: grid;
-      grid-template-columns: repeat(auto-fill, minmax(80px, 1fr));
-      gap: 6px;
-      padding: 8px;
-      background-color: #f9f9f9;
-      border: 1px solid #dfe3e8;
-      border-radius: 4px;
-      max-width: 600px;
-    }
-
-    .select-option-label {
-      display: flex;
-      align-items: center;
-      gap: 4px;
-      font-size: 13px;
-      cursor: pointer;
-      user-select: none;
-    }
-
-    .select-option-label.all-option {
-      grid-column: 1 / -1;
-      padding-bottom: 4px;
-      border-bottom: 1px solid #dfe3e8;
-      margin-bottom: 4px;
-    }
-
-    .select-option-checkbox {
-      cursor: pointer;
-      width: 14px;
-      height: 14px;
-    }
-
-    .warning-text {
-      color: #e74c3c;
-      font-size: 12px;
-      font-style: italic;
-    }
-  </style>
 </head>
 <body>
   <div class="pane">
@@ -287,278 +246,7 @@
                 </div>
               </div>
 
-              <!-- Hide old hardcoded forms (keep for fallback) -->
-              <div id="legacyForms" style="display: none;">
-              <div class="section">
-                <div class="form-group with-ma">
-                  <label>T MA Type</label>
-                  <div class="ma-selector" data-group="trend">
-                    <div class="ma-row">
-                      <div class="ma-option">
-                        <input type="checkbox" id="trend-all" data-group="trend" data-type="ALL" />
-                        <label for="trend-all">ALL</label>
-                      </div>
-                      <div class="ma-option">
-                        <input type="checkbox" id="trend-ema" data-group="trend" data-type="EMA" />
-                        <label for="trend-ema">EMA</label>
-                      </div>
-                      <div class="ma-option">
-                        <input type="checkbox" id="trend-sma" data-group="trend" data-type="SMA" />
-                        <label for="trend-sma">SMA</label>
-                      </div>
-                      <div class="ma-option">
-                        <input type="checkbox" id="trend-hma" data-group="trend" data-type="HMA" />
-                        <label for="trend-hma">HMA</label>
-                      </div>
-                      <div class="ma-option">
-                        <input type="checkbox" id="trend-wma" data-group="trend" data-type="WMA" />
-                        <label for="trend-wma">WMA</label>
-                      </div>
-                      <div class="ma-option">
-                        <input type="checkbox" id="trend-alma" data-group="trend" data-type="ALMA" />
-                        <label for="trend-alma">ALMA</label>
-                      </div>
-                    </div>
-                    <div class="ma-row">
-                      <div class="ma-option">
-                        <input type="checkbox" id="trend-kama" data-group="trend" data-type="KAMA" />
-                        <label for="trend-kama">KAMA</label>
-                      </div>
-                      <div class="ma-option">
-                        <input type="checkbox" id="trend-tma" data-group="trend" data-type="TMA" />
-                        <label for="trend-tma">TMA</label>
-                      </div>
-                      <div class="ma-option">
-                        <input type="checkbox" id="trend-t3" data-group="trend" data-type="T3" />
-                        <label for="trend-t3">T3</label>
-                      </div>
-                      <div class="ma-option">
-                        <input type="checkbox" id="trend-dema" data-group="trend" data-type="DEMA" />
-                        <label for="trend-dema">DEMA</label>
-                      </div>
-                      <div class="ma-option">
-                        <input type="checkbox" id="trend-vwma" data-group="trend" data-type="VWMA" />
-                        <label for="trend-vwma">VWMA</label>
-                      </div>
-                      <div class="ma-option">
-                        <input type="checkbox" id="trend-vwap" data-group="trend" data-type="VWAP" />
-                        <label for="trend-vwap">VWAP</label>
-                      </div>
-                    </div>
-                  </div>
-                </div>
-
-                <div class="form-group">
-                  <label for="maLength">Length</label>
-                  <input type="number" id="maLength" min="0" />
-                </div>
-
-                <div class="form-group">
-                  <label for="closeCountLong">Close Count Long</label>
-                  <input type="number" id="closeCountLong" min="0" />
-                  <label for="closeCountShort">Close Count Short</label>
-                  <input type="number" id="closeCountShort" min="0" />
-                </div>
-              </div>
-
-              <div class="collapsible open">
-                <div class="collapsible-header">
-                  <span class="collapsible-icon">▼</span>
-                  <span class="section-title" style="margin: 0; border: none;">STOPS AND FILTERS</span>
-                </div>
-                <div class="collapsible-content">
-                  <div class="param-group">
-                    <label for="stopLongX">Stop Long X</label>
-                    <input type="number" id="stopLongX" step="0.1" min="0" />
-                    <label for="stopLongRR">RR</label>
-                    <input type="number" id="stopLongRR" step="0.1" min="0" />
-                    <label for="stopLongLP">LP</label>
-                    <input type="number" id="stopLongLP" min="1" />
-                  </div>
-
-                  <div class="param-group">
-                    <label for="stopShortX">Stop Short X</label>
-                    <input type="number" id="stopShortX" step="0.1" min="0" />
-                    <label for="stopShortRR">RR</label>
-                    <input type="number" id="stopShortRR" step="0.1" min="0" />
-                    <label for="stopShortLP">LP</label>
-                    <input type="number" id="stopShortLP" min="1" />
-                  </div>
-
-                  <div class="param-group">
-                    <label for="stopLongMaxPct">L Stop Max %</label>
-                    <input type="number" id="stopLongMaxPct" step="0.1" min="0" />
-                    <label for="stopShortMaxPct">S Stop Max %</label>
-                    <input type="number" id="stopShortMaxPct" step="0.1" min="0" />
-                  </div>
-
-                  <div class="param-group">
-                    <label for="stopLongMaxDays">L Stop Max D</label>
-                    <input type="number" id="stopLongMaxDays" min="0" />
-                    <label for="stopShortMaxDays">S Stop Max D</label>
-                    <input type="number" id="stopShortMaxDays" min="0" />
-                  </div>
-                </div>
-              </div>
-
-              <div class="collapsible open">
-                <div class="collapsible-header">
-                  <span class="collapsible-icon">▼</span>
-                  <span class="section-title" style="margin: 0; border: none;">TRAILING STOPS</span>
-                </div>
-                <div class="collapsible-content">
-                  <div class="param-group">
-                    <label for="trailRRLong">Trail RR Long</label>
-                    <input type="number" id="trailRRLong" step="0.1" min="0" />
-                    <label for="trailRRShort">Trail RR Short</label>
-                    <input type="number" id="trailRRShort" step="0.1" min="0" />
-                  </div>
-
-                  <div class="param-group" style="flex-direction: column; align-items: flex-start;">
-                    <label>Trail MA Long</label>
-                    <div class="ma-selector" data-group="trailLong">
-                      <div class="ma-row">
-                        <div class="ma-option">
-                          <input type="checkbox" id="trailLong-all" data-group="trailLong" data-type="ALL" />
-                          <label for="trailLong-all">ALL</label>
-                        </div>
-                        <div class="ma-option">
-                          <input type="checkbox" id="trailLong-ema" data-group="trailLong" data-type="EMA" />
-                          <label for="trailLong-ema">EMA</label>
-                        </div>
-                        <div class="ma-option">
-                          <input type="checkbox" id="trailLong-sma" data-group="trailLong" data-type="SMA" />
-                          <label for="trailLong-sma">SMA</label>
-                        </div>
-                        <div class="ma-option">
-                          <input type="checkbox" id="trailLong-hma" data-group="trailLong" data-type="HMA" />
-                          <label for="trailLong-hma">HMA</label>
-                        </div>
-                        <div class="ma-option">
-                          <input type="checkbox" id="trailLong-wma" data-group="trailLong" data-type="WMA" />
-                          <label for="trailLong-wma">WMA</label>
-                        </div>
-                        <div class="ma-option">
-                          <input type="checkbox" id="trailLong-alma" data-group="trailLong" data-type="ALMA" />
-                          <label for="trailLong-alma">ALMA</label>
-                        </div>
-                      </div>
-                      <div class="ma-row">
-                        <div class="ma-option">
-                          <input type="checkbox" id="trailLong-kama" data-group="trailLong" data-type="KAMA" />
-                          <label for="trailLong-kama">KAMA</label>
-                        </div>
-                        <div class="ma-option">
-                          <input type="checkbox" id="trailLong-tma" data-group="trailLong" data-type="TMA" />
-                          <label for="trailLong-tma">TMA</label>
-                        </div>
-                        <div class="ma-option">
-                          <input type="checkbox" id="trailLong-t3" data-group="trailLong" data-type="T3" />
-                          <label for="trailLong-t3">T3</label>
-                        </div>
-                        <div class="ma-option">
-                          <input type="checkbox" id="trailLong-dema" data-group="trailLong" data-type="DEMA" />
-                          <label for="trailLong-dema">DEMA</label>
-                        </div>
-                        <div class="ma-option">
-                          <input type="checkbox" id="trailLong-vwma" data-group="trailLong" data-type="VWMA" />
-                          <label for="trailLong-vwma">VWMA</label>
-                        </div>
-                        <div class="ma-option">
-                          <input type="checkbox" id="trailLong-vwap" data-group="trailLong" data-type="VWAP" />
-                          <label for="trailLong-vwap">VWAP</label>
-                        </div>
-                      </div>
-                    </div>
-                    <div style="display: flex; gap: 8px; margin-top: 8px; align-items: center;">
-                      <label for="trailLongLength">Length</label>
-                      <input type="number" id="trailLongLength" min="0" />
-                      <label for="trailLongOffset">Offset</label>
-                      <input type="number" id="trailLongOffset" step="0.1" />
-                      <label style="display: flex; align-items: center; gap: 4px;">
-                        <input type="checkbox" id="trailLock" />
-                        <span title="Pair Trail MA Long & Short by the same MA type during optimization">Lock</span>
-                      </label>
-                    </div>
-                  </div>
-
-                  <div class="param-group" style="flex-direction: column; align-items: flex-start;">
-                    <label>Trail MA Short</label>
-                    <div class="ma-selector" data-group="trailShort">
-                      <div class="ma-row">
-                        <div class="ma-option">
-                          <input type="checkbox" id="trailShort-all" data-group="trailShort" data-type="ALL" />
-                          <label for="trailShort-all">ALL</label>
-                        </div>
-                        <div class="ma-option">
-                          <input type="checkbox" id="trailShort-ema" data-group="trailShort" data-type="EMA" />
-                          <label for="trailShort-ema">EMA</label>
-                        </div>
-                        <div class="ma-option">
-                          <input type="checkbox" id="trailShort-sma" data-group="trailShort" data-type="SMA" />
-                          <label for="trailShort-sma">SMA</label>
-                        </div>
-                        <div class="ma-option">
-                          <input type="checkbox" id="trailShort-hma" data-group="trailShort" data-type="HMA" />
-                          <label for="trailShort-hma">HMA</label>
-                        </div>
-                        <div class="ma-option">
-                          <input type="checkbox" id="trailShort-wma" data-group="trailShort" data-type="WMA" />
-                          <label for="trailShort-wma">WMA</label>
-                        </div>
-                        <div class="ma-option">
-                          <input type="checkbox" id="trailShort-alma" data-group="trailShort" data-type="ALMA" />
-                          <label for="trailShort-alma">ALMA</label>
-                        </div>
-                      </div>
-                      <div class="ma-row">
-                        <div class="ma-option">
-                          <input type="checkbox" id="trailShort-kama" data-group="trailShort" data-type="KAMA" />
-                          <label for="trailShort-kama">KAMA</label>
-                        </div>
-                        <div class="ma-option">
-                          <input type="checkbox" id="trailShort-tma" data-group="trailShort" data-type="TMA" />
-                          <label for="trailShort-tma">TMA</label>
-                        </div>
-                        <div class="ma-option">
-                          <input type="checkbox" id="trailShort-t3" data-group="trailShort" data-type="T3" />
-                          <label for="trailShort-t3">T3</label>
-                        </div>
-                        <div class="ma-option">
-                          <input type="checkbox" id="trailShort-dema" data-group="trailShort" data-type="DEMA" />
-                          <label for="trailShort-dema">DEMA</label>
-                        </div>
-                        <div class="ma-option">
-                          <input type="checkbox" id="trailShort-vwma" data-group="trailShort" data-type="VWMA" />
-                          <label for="trailShort-vwma">VWMA</label>
-                        </div>
-                        <div class="ma-option">
-                          <input type="checkbox" id="trailShort-vwap" data-group="trailShort" data-type="VWAP" />
-                          <label for="trailShort-vwap">VWAP</label>
-                        </div>
-                      </div>
-                    </div>
-                    <div style="display: flex; gap: 8px; margin-top: 8px; align-items: center;">
-                      <label for="trailShortLength">Length</label>
-                      <input type="number" id="trailShortLength" min="0" />
-                      <label for="trailShortOffset">Offset</label>
-                      <input type="number" id="trailShortOffset" step="0.1" />
-                    </div>
-                  </div>
-                </div>
-              </div>
-
-              <div class="section">
-                <div class="form-group">
-                  <label for="riskPerTrade">Risk Per Trade</label>
-                  <input type="number" id="riskPerTrade" step="0.01" min="0" />
-                  <label for="contractSize">Contract Size</label>
-                  <input type="number" id="contractSize" step="0.01" min="0" />
-                </div>
-              </div>
-
-              </div>
-
+              
               <div class="section">
                 <div class="section-title">Results</div>
                 <div id="results" class="results-area">Нажмите «Run» для запуска бэктеста…</div>
@@ -1304,20 +992,6 @@
       return formGroup;
     }
 
-    const MA_TYPES = [
-      'EMA',
-      'SMA',
-      'HMA',
-      'WMA',
-      'ALMA',
-      'KAMA',
-      'TMA',
-      'T3',
-      'DEMA',
-      'VWMA',
-      'VWAP'
-    ];
-
     document.addEventListener('DOMContentLoaded', () => {
 
       loadStrategiesList();
@@ -1359,36 +1033,11 @@
       let defaults = {
         dateFilter: true,
         backtester: true,
-        startDate: '2025-04-01',
-        startTime: '00:00',
-        endDate: '2025-09-01',
-        endTime: '00:00',
+        startDate: '',
+        startTime: '',
+        endDate: '',
+        endTime: '',
         csvPath: '',
-        trendMATypes: [...MA_TYPES],
-        maLength: 45,
-        closeCountLong: 7,
-        closeCountShort: 5,
-        stopLongX: 2,
-        stopLongRR: 3,
-        stopLongLP: 2,
-        stopShortX: 2,
-        stopShortRR: 3,
-        stopShortLP: 2,
-        stopLongMaxPct: 3.0,
-        stopShortMaxPct: 3.0,
-        stopLongMaxDays: 2,
-        stopShortMaxDays: 4,
-        trailRRLong: 1,
-        trailRRShort: 1,
-        trailLongTypes: ['SMA'],
-        trailLongLength: 160,
-        trailLongOffset: -1,
-        trailShortTypes: ['SMA'],
-        trailLock: false,
-        trailShortLength: 160,
-        trailShortOffset: 1,
-        riskPerTrade: 2,
-        contractSize: 0.01,
         workerProcesses: 6,
         minProfitFilter: false,
         minProfitThreshold: 0,
@@ -1409,31 +1058,6 @@
         endDate: 'End Date',
         endTime: 'End Time',
         csvPath: 'CSV Path',
-        trendMATypes: 'Trend MA Types',
-        maLength: 'MA Length',
-        closeCountLong: 'Close Count Long',
-        closeCountShort: 'Close Count Short',
-        stopLongX: 'Stop Long X',
-        stopLongRR: 'Stop Long RR',
-        stopLongLP: 'Stop Long LP',
-        stopShortX: 'Stop Short X',
-        stopShortRR: 'Stop Short RR',
-        stopShortLP: 'Stop Short LP',
-        stopLongMaxPct: 'Stop Long Max %',
-        stopShortMaxPct: 'Stop Short Max %',
-        stopLongMaxDays: 'Stop Long Max Days',
-        stopShortMaxDays: 'Stop Short Max Days',
-        trailRRLong: 'Trail RR Long',
-        trailRRShort: 'Trail RR Short',
-        trailLongTypes: 'Trail MA Long Type',
-        trailLongLength: 'Trail MA Long Length',
-        trailLongOffset: 'Trail MA Long Offset',
-        trailLock: 'Trail MA Lock',
-        trailShortTypes: 'Trail MA Short Type',
-        trailShortLength: 'Trail MA Short Length',
-        trailShortOffset: 'Trail MA Short Offset',
-        riskPerTrade: 'Risk Per Trade',
-        contractSize: 'Contract Size',
         workerProcesses: 'Worker Processes',
         minProfitFilter: 'Net Profit Filter',
         minProfitThreshold: 'Net Profit Min %',
@@ -1865,11 +1489,6 @@
         if (Object.prototype.hasOwnProperty.call(values, 'backtester')) {
           setCheckboxValue('backtester', values.backtester);
         }
-        if (Object.prototype.hasOwnProperty.call(values, 'trailLock')) {
-          setCheckboxValue('trailLock', values.trailLock);
-          setCheckboxValue('opt-lockTrailTypes', values.trailLock);
-        }
-
         if (Object.prototype.hasOwnProperty.call(values, 'startDate')) {
           setInputValue('startDate', values.startDate);
         }
@@ -1882,35 +1501,6 @@
         if (Object.prototype.hasOwnProperty.call(values, 'endTime')) {
           setInputValue('endTime', values.endTime);
         }
-
-        const numericFields = [
-          'maLength',
-          'closeCountLong',
-          'closeCountShort',
-          'stopLongX',
-          'stopLongRR',
-          'stopLongLP',
-          'stopShortX',
-          'stopShortRR',
-          'stopShortLP',
-          'stopLongMaxPct',
-          'stopShortMaxPct',
-          'stopLongMaxDays',
-          'stopShortMaxDays',
-          'trailRRLong',
-          'trailRRShort',
-          'trailLongLength',
-          'trailLongOffset',
-          'trailShortLength',
-          'trailShortOffset',
-          'riskPerTrade',
-          'contractSize'
-        ];
-        numericFields.forEach((field) => {
-          if (Object.prototype.hasOwnProperty.call(values, field)) {
-            setInputValue(field, values[field]);
-          }
-        });
 
         if (Object.prototype.hasOwnProperty.call(values, 'workerProcesses')) {
           const workerInput = document.getElementById('workerProcesses');
@@ -1997,15 +1587,10 @@
       }
 
       function collectPresetValues() {
-        const trendTypes = collectSelectedTypes('trend');
-        const trailLongTypes = collectSelectedTypes('trailLong');
-        const trailShortTypes = collectSelectedTypes('trailShort');
         const { checkbox: minProfitCheckbox, input: minProfitInput } = getMinProfitElements();
         const workerInput = document.getElementById('workerProcesses');
         const csvPathValue = typeof selectedCsvPath === 'string' ? selectedCsvPath.trim() : '';
         const scoreState = readScoreUIState();
-
-        const lockEl = document.getElementById('opt-lockTrailTypes') || document.getElementById('trailLock');
 
         // Collect dynamic strategy parameters
         const dynamicParams = collectDynamicBacktestParams();
@@ -2013,15 +1598,11 @@
         return {
           dateFilter: document.getElementById('dateFilter').checked,
           backtester: document.getElementById('backtester').checked,
-          trailLock: Boolean(lockEl?.checked),
           startDate: document.getElementById('startDate').value.trim(),
           startTime: document.getElementById('startTime').value.trim(),
           endDate: document.getElementById('endDate').value.trim(),
           endTime: document.getElementById('endTime').value.trim(),
           csvPath: csvPathValue,
-          trendMATypes: trendTypes,
-          trailLongTypes,
-          trailShortTypes,
           workerProcesses: workerInput
             ? parseNumber(workerInput.value, defaults.workerProcesses)
             : defaults.workerProcesses,
@@ -2462,11 +2043,6 @@
         return {
           start,
           end,
-          maSelectionEnabled: false,
-          trendTypes: [],
-          trailLongTypes: [],
-          trailShortTypes: [],
-          lockTrailTypes: false,
           payload
         };
       }
@@ -2475,22 +2051,19 @@
         if (typeof value === 'number' && Number.isFinite(value)) {
           return value.toFixed(digits);
         }
-        return value ?? '—';
+        if (value === undefined || value === null) {
+          return 'N/A';
+        }
+        return value;
       }
 
       function formatResultBlock(index, total, payload, data) {
         const metrics = data.metrics || {};
-        const trendLabel = payload.maType ? payload.maType : 'N/A';
-        const trailLongLabel = payload.trailLongType ? payload.trailLongType : 'N/A';
-        const trailShortLabel = payload.trailShortType ? payload.trailShortType : 'N/A';
         return [
           `#${index}/${total}`,
-          `Trend MA: ${trendLabel}`,
-          `Trail MA Long: ${trailLongLabel}`,
-          `Trail MA Short: ${trailShortLabel}`,
           `Net Profit %: ${formatMetric(metrics.net_profit_pct)}`,
           `Max Drawdown %: ${formatMetric(metrics.max_drawdown_pct)}`,
-          `Total Trades: ${metrics.total_trades ?? '—'}`
+          `Total Trades: ${metrics.total_trades ?? 'N/A'}`
         ].join('\n');
       }
 
@@ -2786,6 +2359,76 @@
         return total;
       }
 
+      function validateOptimizerForm(config) {
+        const params = config?.parameters || {};
+        const errors = [];
+        let enabledCount = 0;
+
+        getOptimizerParamElements().forEach(({ name, checkbox, fromInput, toInput, stepInput, def }) => {
+          const paramDef = def || params[name] || {};
+          const paramType = paramDef.type || 'float';
+          const label = paramDef.label || name;
+          const enabled = Boolean(checkbox && checkbox.checked);
+
+          if (!enabled) {
+            return;
+          }
+
+          enabledCount += 1;
+
+          if (paramType === 'select' || paramType === 'options') {
+            const selectedOptions = Array.from(
+              document.querySelectorAll(
+                `input.select-option-checkbox[data-param-name="${name}"]:not([data-option-value="__ALL__"])`
+              )
+            )
+              .filter((cb) => cb.checked)
+              .map((cb) => cb.dataset.optionValue);
+
+            if (!selectedOptions.length) {
+              errors.push(`${label}: select at least one option to optimize.`);
+            }
+            return;
+          }
+
+          if (paramType === 'bool') {
+            return;
+          }
+
+          const fromVal = Number(fromInput?.value);
+          const toVal = Number(toInput?.value);
+          const stepVal = Number(stepInput?.value);
+
+          if (!Number.isFinite(fromVal) || !Number.isFinite(toVal) || !Number.isFinite(stepVal)) {
+            errors.push(`${label}: enter valid numeric values for range and step.`);
+            return;
+          }
+
+          if (stepVal <= 0) {
+            errors.push(`${label}: step must be greater than 0.`);
+          }
+          if (fromVal >= toVal) {
+            errors.push(`${label}: from must be less than to.`);
+          }
+
+          const minBound = paramDef.optimize?.min ?? paramDef.min;
+          const maxBound = paramDef.optimize?.max ?? paramDef.max;
+
+          if (minBound !== undefined && fromVal < minBound) {
+            errors.push(`${label}: from below minimum (${minBound}).`);
+          }
+          if (maxBound !== undefined && toVal > maxBound) {
+            errors.push(`${label}: to above maximum (${maxBound}).`);
+          }
+        });
+
+        if (enabledCount === 0) {
+          errors.push('Enable at least one parameter to optimize.');
+        }
+
+        return errors;
+      }
+
       function collectOptimizerParams() {
         const ranges = {};
         const params = currentStrategyConfig?.parameters || {};
@@ -2853,7 +2496,8 @@
 
       function buildOptimizationConfig(state) {
         const enabledParams = {};
-        const paramRanges = collectOptimizerParams();
+        const paramRanges = {};
+        const paramTypes = {};
         const fixedParams = {
           dateFilter: state.payload.dateFilter,
           backtester: state.payload.backtester,
@@ -2875,13 +2519,18 @@
         const paramsDef = currentStrategyConfig?.parameters || {};
         const optimizableNames = new Set();
 
+        Object.entries(paramsDef).forEach(([name, def]) => {
+          paramTypes[name] = def.type || 'float';
+        });
+
         getOptimizerParamElements().forEach(({ name, checkbox, fromInput, toInput, stepInput, def }) => {
           optimizableNames.add(name);
+          const paramDef = def || {};
+          const paramType = paramDef.type || 'float';
           const isChecked = Boolean(checkbox && checkbox.checked);
           enabledParams[name] = isChecked;
 
-          if (isChecked && !paramRanges[name]) {
-            const paramType = def.type || 'float';
+          if (isChecked) {
             if (paramType === 'select' || paramType === 'options') {
               const selectedOptions = Array.from(
                 document.querySelectorAll(
@@ -2892,11 +2541,10 @@
                 .map((cb) => cb.dataset.optionValue);
 
               if (selectedOptions.length > 0) {
-                paramRanges[name] = {
-                  type: 'select',
-                  values: selectedOptions
-                };
+                fixedParams[`${name}_options`] = selectedOptions;
               }
+            } else if (paramType === 'bool') {
+              // Boolean params require no range metadata; search space derives from type
             } else if (fromInput && toInput && stepInput) {
               const fromValue = Number(fromInput.value);
               const toValue = Number(toInput.value);
@@ -2908,14 +2556,11 @@
                 stepValue > 0 &&
                 fromValue < toValue
               ) {
-                // Backend expects [from, to, step] array format (see server.py:1298-1301)
                 paramRanges[name] = [fromValue, toValue, stepValue];
               }
             }
-          }
-
-          if (!isChecked || !paramRanges[name]) {
-            fixedParams[name] = getBacktestParamValue(name, def, dynamicParams);
+          } else {
+            fixedParams[name] = getBacktestParamValue(name, paramDef, dynamicParams);
           }
         });
 
@@ -2927,28 +2572,19 @@
         });
 
         const workerProcesses = getWorkerProcessesValue();
-        const maTypesTrend = [];
-        const maTypesTrailLong = [];
-        const maTypesTrailShort = [];
-        const lockTrail = false;
 
         const riskPerTrade = getBacktestParamValue('riskPerTrade', paramsDef.riskPerTrade, dynamicParams) || 0;
         const contractSize = getBacktestParamValue('contractSize', paramsDef.contractSize, dynamicParams) || 0;
         const commissionRate = getBacktestParamValue('commissionPct', paramsDef.commissionPct, dynamicParams);
-        const atrPeriod = getBacktestParamValue('atrPeriod', paramsDef.atrPeriod, dynamicParams);
 
         return {
           enabled_params: enabledParams,
           param_ranges: paramRanges,
           fixed_params: fixedParams,
-          ma_types_trend: maTypesTrend,
-          ma_types_trail_long: maTypesTrailLong,
-          ma_types_trail_short: maTypesTrailShort,
-          lock_trail_types: lockTrail,
+          param_types: paramTypes,
           risk_per_trade_pct: Number(riskPerTrade) || 0,
           contract_size: Number(contractSize) || 0,
           commission_rate: commissionRate !== undefined ? Number(commissionRate) || 0 : 0.0005,
-          atr_period: atrPeriod !== undefined ? Number(atrPeriod) || 14 : 14,
           worker_processes: workerProcesses,
           filter_min_profit: filterEnabled,
           min_profit_threshold: minProfitThreshold,
@@ -3075,6 +2711,14 @@
         if (!currentStrategyId) {
           if (wfStatusEl) {
             wfStatusEl.textContent = 'Please select a strategy before running Walk-Forward.';
+          }
+          return;
+        }
+
+        const validationErrors = validateOptimizerForm(currentStrategyConfig);
+        if (validationErrors.length) {
+          if (wfStatusEl) {
+            wfStatusEl.textContent = `Validation errors:\\n${validationErrors.join('\\n')}`;
           }
           return;
         }
@@ -3277,6 +2921,14 @@
 
         if (!currentStrategyId) {
           optimizerResultsEl.textContent = 'Please select a strategy before running optimization.';
+          optimizerResultsEl.classList.remove('ready');
+          optimizerResultsEl.style.display = 'block';
+          return;
+        }
+
+        const validationErrors = validateOptimizerForm(currentStrategyConfig);
+        if (validationErrors.length) {
+          optimizerResultsEl.textContent = `Validation errors:\\n\\n${validationErrors.join('\\n')}`;
           optimizerResultsEl.classList.remove('ready');
           optimizerResultsEl.style.display = 'block';
           return;
@@ -3651,7 +3303,6 @@
           return;
         }
 
-        const requiresMaSelection = false;
         const combinations = [{}];
 
         if (!combinations.length) {
@@ -3674,12 +3325,6 @@
         for (let index = 0; index < combinations.length; index += 1) {
           const combo = combinations[index];
           const payload = { ...state.payload };
-
-          if (requiresMaSelection) {
-            payload.maType = combo.trendType;
-            payload.trailLongType = combo.trailLongType;
-            payload.trailShortType = combo.trailShortType;
-          }
 
           const formData = new FormData();
           formData.append('strategy', currentStrategyId);
