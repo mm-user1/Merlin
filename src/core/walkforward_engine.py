@@ -441,24 +441,20 @@ class WalkForwardEngine:
 
         base_config = OptimizationConfig(
             csv_file=csv_buffer,
+            strategy_id=self.config.strategy_id,
             enabled_params=deepcopy(self.base_config_template["enabled_params"]),
             param_ranges=deepcopy(self.base_config_template["param_ranges"]),
+            param_types=deepcopy(self.base_config_template.get("param_types", {})),
             fixed_params=fixed_params,
-            ma_types_trend=list(self.base_config_template["ma_types_trend"]),
-            ma_types_trail_long=list(self.base_config_template["ma_types_trail_long"]),
-            ma_types_trail_short=list(self.base_config_template["ma_types_trail_short"]),
-            lock_trail_types=bool(self.base_config_template["lock_trail_types"]),
+            worker_processes=int(self.base_config_template["worker_processes"]),
+            warmup_bars=self.config.warmup_bars,
             risk_per_trade_pct=float(self.base_config_template["risk_per_trade_pct"]),
             contract_size=float(self.base_config_template["contract_size"]),
             commission_rate=float(self.base_config_template["commission_rate"]),
-            atr_period=int(self.base_config_template["atr_period"]),
-            worker_processes=int(self.base_config_template["worker_processes"]),
             filter_min_profit=bool(self.base_config_template["filter_min_profit"]),
             min_profit_threshold=float(self.base_config_template["min_profit_threshold"]),
             score_config=deepcopy(self.base_config_template["score_config"]),
             optimization_mode="optuna",
-            strategy_id=self.config.strategy_id,
-            warmup_bars=self.config.warmup_bars,
         )
 
         optuna_cfg = OptunaConfig(
@@ -497,7 +493,6 @@ class WalkForwardEngine:
         params.setdefault("riskPerTrade", float(self.base_config_template["risk_per_trade_pct"]))
         params.setdefault("contractSize", float(self.base_config_template["contract_size"]))
         params.setdefault("commissionRate", float(self.base_config_template["commission_rate"]))
-        params.setdefault("atrPeriod", int(self.base_config_template["atr_period"]))
 
         return params
 

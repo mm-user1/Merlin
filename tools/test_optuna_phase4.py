@@ -20,11 +20,7 @@ def main() -> None:
 
     base_config = OptimizationConfig(
         csv_file=str(data_path),
-        worker_processes=1,
-        contract_size=0.01,
-        commission_rate=0.0005,
-        risk_per_trade_pct=2.0,
-        atr_period=14,
+        strategy_id="s01_trailing_ma",
         enabled_params={
             "closeCountLong": True,
             "closeCountShort": True,
@@ -33,10 +29,10 @@ def main() -> None:
             "closeCountLong": (5, 15, 5),
             "closeCountShort": (3, 9, 3),
         },
-        ma_types_trend=["HMA"],
-        ma_types_trail_long=["HMA"],
-        ma_types_trail_short=["HMA"],
-        lock_trail_types=False,
+        param_types={
+            "closeCountLong": "int",
+            "closeCountShort": "int",
+        },
         fixed_params={
             "maType": "HMA",
             "maLength": 50,
@@ -45,6 +41,11 @@ def main() -> None:
             "end": "2025-11-15 00:00:00",
             "backtester": True,
         },
+        worker_processes=1,
+        warmup_bars=1000,
+        contract_size=0.01,
+        commission_rate=0.0005,
+        risk_per_trade_pct=2.0,
         score_config=None,
     )
 

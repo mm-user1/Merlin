@@ -18,75 +18,21 @@ from core.optuna_engine import OptimizationConfig, OptimizationResult, run_optim
 app = Flask(__name__, static_folder="static", static_url_path="/static")
 
 
-MA_TYPES: Tuple[str, ...] = (
-    "EMA",
-    "SMA",
-    "HMA",
-    "WMA",
-    "ALMA",
-    "KAMA",
-    "TMA",
-    "T3",
-    "DEMA",
-    "VWMA",
-    "VWAP",
-)
+def _get_parameter_types(strategy_id: str) -> Dict[str, str]:
+    """Load parameter types from strategy configuration."""
 
+    from strategies import get_strategy_config
 
-def _normalize_ma_group_name(value: object) -> Optional[str]:
-    """Normalize MA group identifier to a canonical name."""
+    config = get_strategy_config(strategy_id)
+    parameters = config.get("parameters", {}) if isinstance(config, dict) else {}
 
-    if value is None:
-        return None
+    param_types: Dict[str, str] = {}
+    for param_name, param_spec in parameters.items():
+        if not isinstance(param_spec, dict):
+            continue
+        param_types[param_name] = str(param_spec.get("type", "float"))
 
-    normalized = str(value).strip().lower()
-    if not normalized:
-        return None
-
-    if "trend" in normalized:
-        return "trend"
-    if "trail" in normalized and "long" in normalized:
-        return "trail_long"
-    if "trail" in normalized and "short" in normalized:
-        return "trail_short"
-
-    return None
-
-
-def _get_strategy_features(strategy_id: Optional[str]) -> Dict[str, Any]:
-    """Return feature flags defined by a strategy configuration."""
-
-    default = {"requires_ma_selection": False, "ma_groups": []}
-    if not strategy_id:
-        return default
-
-    try:
-        from strategies import get_strategy_config
-
-        config = get_strategy_config(strategy_id)
-    except Exception:  # pragma: no cover - defensive
-        return default
-
-    raw_features = config.get("features") if isinstance(config, dict) else None
-    if not isinstance(raw_features, dict):
-        return default
-
-    requires_ma_selection = bool(raw_features.get("requires_ma_selection"))
-    raw_groups = raw_features.get("ma_groups", [])
-    ma_groups: List[str] = []
-    if isinstance(raw_groups, (list, tuple)):
-        for group in raw_groups:
-            normalized = _normalize_ma_group_name(group)
-            if normalized and normalized not in ma_groups:
-                ma_groups.append(normalized)
-
-    if requires_ma_selection and not ma_groups:
-        ma_groups = ["trend", "trail_long", "trail_short"]
-
-    return {
-        "requires_ma_selection": requires_ma_selection,
-        "ma_groups": ma_groups,
-    }
+    return param_types
 
 
 def _resolve_strategy_id_from_request() -> Tuple[Optional[str], Optional[object]]:
@@ -148,94 +94,37 @@ PRESETS_DIR = Path(__file__).resolve().parent / "Presets"
 DEFAULT_PRESET_NAME = "defaults"
 VALID_PRESET_NAME_RE = re.compile(r"^[A-Za-z0-9 _\-]{1,64}$")
 
+# Default preset containing only universal settings (not strategy-specific).
+# Strategy parameter defaults are loaded from each strategy's config.json.
 DEFAULT_PRESET: Dict[str, Any] = {
     "dateFilter": True,
-    "backtester": True,
-    "startDate": "2025-04-01",
-    "startTime": "00:00",
-    "endDate": "2025-09-01",
-    "endTime": "00:00",
-    "trendMATypes": list(MA_TYPES),
-    "maLength": 45,
-    "closeCountLong": 7,
-    "closeCountShort": 5,
-    "stopLongX": 2.0,
-    "stopLongRR": 3.0,
-    "stopLongLP": 2,
-    "stopShortX": 2.0,
-    "stopShortRR": 3.0,
-    "stopShortLP": 2,
-    "stopLongMaxPct": 3.0,
-    "stopShortMaxPct": 3.0,
-    "stopLongMaxDays": 2,
-    "stopShortMaxDays": 4,
-    "trailRRLong": 1.0,
-    "trailRRShort": 1.0,
-    "trailLongTypes": ["SMA"],
-    "trailLongLength": 160,
-    "trailLongOffset": -1.0,
-    "trailShortTypes": ["SMA"],
-    "trailLock": False,
-    "trailShortLength": 160,
-    "trailShortOffset": 1.0,
-    "riskPerTrade": 2.0,
-    "contractSize": 0.01,
+    "start": None,
+    "end": None,
+    "optimizationMode": "optuna",
+    "nTrials": 100,
+    "timeout": None,
+    "patience": None,
     "workerProcesses": 6,
-    "minProfitFilter": False,
+    "scoreConfig": {
+        "weights": {
+            "romad": 0.25,
+            "sharpe": 0.20,
+            "pf": 0.20,
+            "ulcer": 0.15,
+            "recovery": 0.10,
+            "consistency": 0.10,
+        },
+        "normalization_method": "percentile",
+    },
+    "filterByProfit": False,
     "minProfitThreshold": 0.0,
-    "scoreFilterEnabled": False,
-    "scoreThreshold": 60.0,
-    "scoreWeights": {
-        "romad": 0.25,
-        "sharpe": 0.20,
-        "pf": 0.20,
-        "ulcer": 0.15,
-        "recovery": 0.10,
-        "consistency": 0.10,
-    },
-    "scoreEnabledMetrics": {
-        "romad": True,
-        "sharpe": True,
-        "pf": True,
-        "ulcer": True,
-        "recovery": True,
-        "consistency": True,
-    },
-    "scoreInvertMetrics": {"ulcer": True},
-    "csvPath": "",
 }
-BOOL_FIELDS = {"dateFilter", "backtester", "trailLock", "minProfitFilter", "scoreFilterEnabled"}
-INT_FIELDS = {
-    "maLength",
-    "closeCountLong",
-    "closeCountShort",
-    "stopLongLP",
-    "stopShortLP",
-    "stopLongMaxDays",
-    "stopShortMaxDays",
-    "trailLongLength",
-    "trailShortLength",
-    "workerProcesses",
-}
-FLOAT_FIELDS = {
-    "stopLongX",
-    "stopLongRR",
-    "stopShortX",
-    "stopShortRR",
-    "stopLongMaxPct",
-    "stopShortMaxPct",
-    "trailRRLong",
-    "trailRRShort",
-    "trailLongOffset",
-    "trailShortOffset",
-    "riskPerTrade",
-    "contractSize",
-    "minProfitThreshold",
-    "scoreThreshold",
-}
+BOOL_FIELDS = {"dateFilter", "filterByProfit"}
+INT_FIELDS = {"nTrials", "timeout", "patience", "workerProcesses"}
+FLOAT_FIELDS = {"minProfitThreshold"}
 
-LIST_FIELDS = {"trendMATypes", "trailLongTypes", "trailShortTypes"}
-STRING_FIELDS = {"startDate", "startTime", "endDate", "endTime", "csvPath"}
+LIST_FIELDS: set = set()
+STRING_FIELDS = {"start", "end", "optimizationMode"}
 ALLOWED_PRESET_FIELDS = set(DEFAULT_PRESET.keys())
 
 
@@ -246,8 +135,11 @@ def _clone_default_template() -> Dict[str, Any]:
             raise ValueError
     except (FileNotFoundError, ValueError, json.JSONDecodeError):
         current_defaults = DEFAULT_PRESET
+    filtered_defaults = {
+        key: value for key, value in current_defaults.items() if key in ALLOWED_PRESET_FIELDS
+    }
     base = json.loads(json.dumps(DEFAULT_PRESET))
-    base.update(json.loads(json.dumps(current_defaults)))
+    base.update(json.loads(json.dumps(filtered_defaults)))
     return base
 
 
@@ -429,6 +321,60 @@ def _parse_csv_parameter_block(file_storage) -> Tuple[Dict[str, Any], List[str]]
         applied.append(name)
 
     return updates, applied
+
+
+def _validate_strategy_params(strategy_id: str, params: Dict[str, Any]) -> None:
+    """Validate and coerce strategy parameters based on config definitions."""
+
+    from strategies import get_strategy_config
+
+    try:
+        config = get_strategy_config(strategy_id)
+    except Exception:
+        return
+
+    definitions = config.get("parameters", {}) if isinstance(config, dict) else {}
+    if not isinstance(definitions, dict):
+        return
+
+    for name, definition in definitions.items():
+        if not isinstance(definition, dict):
+            continue
+
+        value = params.get(name)
+        if value is None:
+            continue
+
+        param_type = definition.get("type", "float")
+
+        if param_type == "int":
+            if not isinstance(value, int):
+                try:
+                    params[name] = int(value)
+                except (TypeError, ValueError):
+                    raise ValueError(f"{name} must be an integer")
+        elif param_type == "float":
+            if not isinstance(value, (int, float)):
+                try:
+                    params[name] = float(value)
+                except (TypeError, ValueError):
+                    raise ValueError(f"{name} must be a number")
+        elif param_type in {"select", "options"}:
+            options = definition.get("options", [])
+            if options and value not in options:
+                raise ValueError(f"{name} must be one of {options}, got {value}")
+        elif param_type == "bool":
+            if not isinstance(value, bool):
+                params[name] = bool(value)
+
+        if param_type in {"int", "float"}:
+            min_value = definition.get("min")
+            max_value = definition.get("max")
+            numeric_value = params.get(name)
+            if min_value is not None and numeric_value < min_value:
+                raise ValueError(f"{name} must be >= {min_value}")
+            if max_value is not None and numeric_value > max_value:
+                raise ValueError(f"{name} must be <= {max_value}")
 
 
 _ensure_presets_directory()
@@ -819,15 +765,11 @@ def run_walkforward_optimization() -> object:
     base_template = {
         "enabled_params": json.loads(json.dumps(optimization_config.enabled_params)),
         "param_ranges": json.loads(json.dumps(optimization_config.param_ranges)),
+        "param_types": json.loads(json.dumps(optimization_config.param_types)),
         "fixed_params": json.loads(json.dumps(optimization_config.fixed_params)),
-        "ma_types_trend": list(optimization_config.ma_types_trend),
-        "ma_types_trail_long": list(optimization_config.ma_types_trail_long),
-        "ma_types_trail_short": list(optimization_config.ma_types_trail_short),
-        "lock_trail_types": bool(optimization_config.lock_trail_types),
         "risk_per_trade_pct": float(optimization_config.risk_per_trade_pct),
         "contract_size": float(optimization_config.contract_size),
         "commission_rate": float(optimization_config.commission_rate),
-        "atr_period": int(optimization_config.atr_period),
         "worker_processes": int(optimization_config.worker_processes),
         "filter_min_profit": bool(optimization_config.filter_min_profit),
         "min_profit_threshold": float(optimization_config.min_profit_threshold),
@@ -1080,8 +1022,6 @@ def run_backtest() -> object:
     except json.JSONDecodeError:
         return ("Invalid payload JSON.", HTTPStatus.BAD_REQUEST)
 
-    strategy_features = _get_strategy_features(strategy_id)
-
     # Load strategy
     from strategies import get_strategy
 
@@ -1134,30 +1074,10 @@ def run_backtest() -> object:
             app.logger.exception("Failed to prepare dataset with warmup")
             return ("Failed to prepare dataset.", HTTPStatus.INTERNAL_SERVER_ERROR)
 
-    if strategy_features.get("requires_ma_selection"):
-        required_groups = strategy_features.get("ma_groups", [])
-        missing_groups = []
-
-        group_to_field = {
-            "trend": "maType",
-            "trail_long": "trailLongType",
-            "trail_short": "trailShortType",
-        }
-
-        for group_name in required_groups:
-            field_name = group_to_field.get(group_name)
-            if not field_name:
-                continue
-            value = payload.get(field_name)
-            if value is None or (isinstance(value, str) and not value.strip()):
-                missing_groups.append(group_name)
-
-        if missing_groups:
-            missing_str = ", ".join(missing_groups)
-            return (
-                f"MA selection required for group(s): {missing_str}.",
-                HTTPStatus.BAD_REQUEST,
-            )
+    try:
+        _validate_strategy_params(strategy_id, payload)
+    except ValueError as exc:
+        return (str(exc), HTTPStatus.BAD_REQUEST)
 
     # Run strategy
     try:
@@ -1204,17 +1124,12 @@ def _build_optimization_config(
         normalized = json.loads(json.dumps(DEFAULT_OPTIMIZER_SCORE_CONFIG))
 
         filter_value = source.get("filter_enabled")
-        if filter_value is None:
-            filter_value = source.get("filterEnabled")
         normalized["filter_enabled"] = _parse_bool(
             filter_value, normalized.get("filter_enabled", False)
         )
 
-        threshold_value = source.get("min_score_threshold")
-        if threshold_value is None:
-            threshold_value = source.get("minScoreThreshold")
         try:
-            threshold = float(threshold_value)
+            threshold = float(source.get("min_score_threshold"))
         except (TypeError, ValueError):
             threshold = normalized.get("min_score_threshold", 0.0)
         normalized["min_score_threshold"] = max(0.0, min(100.0, threshold))
@@ -1231,8 +1146,6 @@ def _build_optimization_config(
             normalized["weights"].update(weights)
 
         enabled_raw = source.get("enabled_metrics")
-        if enabled_raw is None:
-            enabled_raw = source.get("enabledMetrics")
         if isinstance(enabled_raw, dict):
             enabled: Dict[str, bool] = {}
             for key in SCORE_METRIC_KEYS:
@@ -1243,8 +1156,6 @@ def _build_optimization_config(
             normalized["enabled_metrics"].update(enabled)
 
         invert_raw = source.get("invert_metrics")
-        if invert_raw is None:
-            invert_raw = source.get("invertMetrics")
         invert_flags: Dict[str, bool] = {}
         if isinstance(invert_raw, dict):
             for key in SCORE_METRIC_KEYS:
@@ -1260,8 +1171,6 @@ def _build_optimization_config(
         }
 
         normalization_value = source.get("normalization_method")
-        if normalization_value is None:
-            normalization_value = source.get("normalizationMethod")
         if isinstance(normalization_value, str) and normalization_value.strip():
             normalized["normalization_method"] = normalization_value.strip().lower()
 
@@ -1278,9 +1187,7 @@ def _build_optimization_config(
             raise ValueError("Strategy ID is required for optimization.")
 
     if warmup_bars is None:
-        warmup_bars_raw = payload.get("warmup_bars")
-        if warmup_bars_raw is None:
-            warmup_bars_raw = payload.get("warmupBars", 1000)
+        warmup_bars_raw = payload.get("warmup_bars", 1000)
         try:
             warmup_bars = int(warmup_bars_raw)
             warmup_bars = max(100, min(5000, warmup_bars))
@@ -1300,7 +1207,19 @@ def _build_optimization_config(
     if not isinstance(param_ranges_raw, dict):
         raise ValueError("param_ranges must be a dictionary.")
     param_ranges = {}
+    select_range_options: Dict[str, List[Any]] = {}
     for name, values in param_ranges_raw.items():
+        if isinstance(values, dict):
+            range_type = str(values.get("type", "")).lower()
+            if range_type in {"select", "options"}:
+                raw_options = values.get("values") or values.get("options") or []
+                if isinstance(raw_options, (list, tuple)):
+                    normalized = [opt for opt in raw_options if str(opt).strip()]
+                    if normalized:
+                        select_range_options[name] = normalized
+                continue
+            raise ValueError(f"Unsupported range specification for parameter '{name}'.")
+
         if not isinstance(values, (list, tuple)) or len(values) != 3:
             raise ValueError(f"Invalid range for parameter '{name}'.")
         start, stop, step = values
@@ -1310,82 +1229,35 @@ def _build_optimization_config(
     if not isinstance(fixed_params, dict):
         raise ValueError("fixed_params must be a dictionary.")
 
-    strategy_features = _get_strategy_features(strategy_id)
-    ma_requires_selection = bool(strategy_features.get("requires_ma_selection"))
-    ma_groups = strategy_features.get("ma_groups", [])
-    strategy_param_types: Dict[str, str] = {}
     try:
-        from strategies import get_strategy_config
-
-        strategy_config = get_strategy_config(strategy_id)
-        params_def = strategy_config.get("parameters", {}) if isinstance(strategy_config, dict) else {}
-        if isinstance(params_def, dict):
-            for name, definition in params_def.items():
-                p_type = definition.get("type") if isinstance(definition, dict) else None
-                if isinstance(p_type, str) and p_type.strip().lower() in {"int", "float"}:
-                    strategy_param_types[name] = p_type.strip().lower()
-    except Exception:
+        strategy_param_types = _get_parameter_types(strategy_id)
+    except Exception as exc:
+        app.logger.warning(
+            "Could not load parameter types for %s: %s", strategy_id, exc
+        )
         strategy_param_types = {}
-    ma_types_trend: List[str] = []
-    ma_types_trail_long: List[str] = []
-    ma_types_trail_short: List[str] = []
-    lock_trail_types = False
+    payload_param_types = payload.get("param_types", {})
+    if isinstance(payload_param_types, dict):
+        merged_param_types = {**strategy_param_types, **payload_param_types}
+    else:
+        merged_param_types = strategy_param_types
 
-    if ma_requires_selection:
-        ma_types_trend = payload.get("ma_types_trend") or payload.get("maTypesTrend") or []
-        ma_types_trail_long = (
-            payload.get("ma_types_trail_long")
-            or payload.get("maTypesTrailLong")
-            or []
-        )
-        ma_types_trail_short = (
-            payload.get("ma_types_trail_short")
-            or payload.get("maTypesTrailShort")
-            or []
-        )
+    for name, options in select_range_options.items():
+        if not options:
+            continue
+        key = f"{name}_options"
+        existing = fixed_params.get(key)
+        if not existing:
+            fixed_params[key] = list(options)
 
-        lock_trail_types_raw = (
-            payload.get("lock_trail_types")
-            or payload.get("lockTrailTypes")
-            or payload.get("trailLock")
-        )
-        lock_trail_types = _parse_bool(lock_trail_types_raw, False)
-
-        missing_groups = []
-        if "trend" in ma_groups and not ma_types_trend:
-            missing_groups.append("trend")
-        if "trail_long" in ma_groups and not ma_types_trail_long:
-            missing_groups.append("trail_long")
-        if "trail_short" in ma_groups and not ma_types_trail_short:
-            missing_groups.append("trail_short")
-
-        if missing_groups:
-            missing_str = ", ".join(missing_groups)
-            raise ValueError(
-                f"MA selection required for group(s): {missing_str}."
-            )
-
-    risk_per_trade = payload.get("risk_per_trade_pct")
-    if risk_per_trade is None:
-        risk_per_trade = payload.get("riskPerTrade", 2.0)
-    contract_size = payload.get("contract_size")
-    if contract_size is None:
-        contract_size = payload.get("contractSize", 0.01)
-    commission_rate = payload.get("commission_rate")
-    if commission_rate is None:
-        commission_rate = payload.get("commissionRate", 0.0005)
-    atr_period = payload.get("atr_period")
-    if atr_period is None:
-        atr_period = payload.get("atrPeriod", 14)
+    risk_per_trade = payload.get("risk_per_trade_pct", 2.0)
+    contract_size = payload.get("contract_size", 0.01)
+    commission_rate = payload.get("commission_rate", 0.0005)
 
     filter_min_profit_raw = payload.get("filter_min_profit")
-    if filter_min_profit_raw is None:
-        filter_min_profit_raw = payload.get("filterMinProfit")
     filter_min_profit = _parse_bool(filter_min_profit_raw, False)
 
-    threshold_raw = payload.get("min_profit_threshold")
-    if threshold_raw is None:
-        threshold_raw = payload.get("minProfitThreshold", 0.0)
+    threshold_raw = payload.get("min_profit_threshold", 0.0)
     try:
         min_profit_threshold = float(threshold_raw)
     except (TypeError, ValueError):
@@ -1406,15 +1278,9 @@ def _build_optimization_config(
         worker_processes_value = 32
 
     score_config_payload = payload.get("score_config")
-    if score_config_payload is None:
-        score_config_payload = payload.get("scoreConfig")
     score_config = _sanitize_score_config(score_config_payload)
 
-    optimization_mode_raw = (
-        payload.get("optimization_mode")
-        or payload.get("optimizationMode")
-        or "optuna"
-    )
+    optimization_mode_raw = payload.get("optimization_mode", "optuna")
     optimization_mode = str(optimization_mode_raw).strip().lower() or "optuna"
     if optimization_mode != "optuna":
         raise ValueError("Grid Search has been removed. Use Optuna optimization only.")
@@ -1481,25 +1347,20 @@ def _build_optimization_config(
 
     config = OptimizationConfig(
         csv_file=csv_file,
+        strategy_id=str(strategy_id),
+        enabled_params=enabled_params,
+        param_ranges=param_ranges,
+        param_types=merged_param_types,
+        fixed_params=fixed_params,
         worker_processes=worker_processes_value,
+        warmup_bars=int(warmup_bars),
         contract_size=float(contract_size),
         commission_rate=float(commission_rate),
         risk_per_trade_pct=float(risk_per_trade),
-        atr_period=int(atr_period),
-        enabled_params=enabled_params,
-        param_ranges=param_ranges,
-        fixed_params=fixed_params,
-        param_types=strategy_param_types,
-        ma_types_trend=[str(ma).upper() for ma in ma_types_trend],
-        ma_types_trail_long=[str(ma).upper() for ma in ma_types_trail_long],
-        ma_types_trail_short=[str(ma).upper() for ma in ma_types_trail_short],
         filter_min_profit=filter_min_profit,
         min_profit_threshold=min_profit_threshold,
         score_config=score_config,
-        lock_trail_types=lock_trail_types,
         optimization_mode=optimization_mode,
-        strategy_id=str(strategy_id),
-        warmup_bars=int(warmup_bars),
     )
 
     if optimization_mode == "optuna":
@@ -1784,24 +1645,8 @@ def run_optimization_endpoint() -> object:
             opened_file = None
 
     fixed_parameters = []
-    trend_types = _unique_preserve_order(optimization_config.ma_types_trend)
-    trail_long_types = _unique_preserve_order(optimization_config.ma_types_trail_long)
-    trail_short_types = _unique_preserve_order(optimization_config.ma_types_trail_short)
 
     for name in _get_frontend_param_order(optimization_config.strategy_id):
-        if name == "maType":
-            if len(trend_types) == 1:
-                fixed_parameters.append((name, trend_types[0]))
-            continue
-        if name == "trailLongType":
-            if len(trail_long_types) == 1:
-                fixed_parameters.append((name, trail_long_types[0]))
-            continue
-        if name == "trailShortType":
-            if len(trail_short_types) == 1:
-                fixed_parameters.append((name, trail_short_types[0]))
-            continue
-
         if bool(optimization_config.enabled_params.get(name, False)):
             continue
 
@@ -1858,28 +1703,33 @@ def list_strategies_endpoint() -> object:
     strategies = list_strategies()
     return jsonify({"strategies": strategies})
 
-
-@app.get("/api/strategies/<string:strategy_id>/config")
-def get_strategy_config_endpoint(strategy_id: str) -> object:
-    """
-    Get strategy configuration (from config.json).
+@app.route("/api/strategy/<strategy_id>/config", methods=["GET"])
+def get_strategy_config_single(strategy_id: str):
+    """Return strategy configuration for frontend rendering.
 
     Args:
-        strategy_id: Strategy identifier (e.g., 's01_trailing_ma')
+        strategy_id: Strategy identifier (e.g., "s01_trailing_ma")
 
     Returns:
-        JSON: Full config.json content including parameters
-
-    Errors:
-        404: Strategy not found
+        JSON response with strategy configuration
     """
-    from strategies import get_strategy_config
-
     try:
+        from strategies import get_strategy_config
+
         config = get_strategy_config(strategy_id)
-        return jsonify(config)
-    except ValueError as e:
-        return (str(e), HTTPStatus.NOT_FOUND)
+        return jsonify(config), HTTPStatus.OK
+
+    except FileNotFoundError:
+        return (
+            jsonify({"error": f"Strategy '{strategy_id}' not found"}),
+            HTTPStatus.NOT_FOUND,
+        )
+    except Exception as exc:  # noqa: BLE001
+        logger.exception("Failed to load config for %s", strategy_id)
+        return (
+            jsonify({"error": f"Failed to load strategy config: {str(exc)}"}),
+            HTTPStatus.INTERNAL_SERVER_ERROR,
+        )
 
 
 @app.get("/api/strategies/<string:strategy_id>")

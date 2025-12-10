@@ -28,28 +28,29 @@ logger = logging.getLogger(__name__)
 
 @dataclass
 class OptimizationConfig:
-    """Configuration received from the optimizer form (Optuna-only)."""
+    """Generic optimization configuration for any strategy."""
 
+    # Required fields
     csv_file: Any
-    worker_processes: int
-    contract_size: float
-    commission_rate: float
-    risk_per_trade_pct: float
-    atr_period: int
+    strategy_id: str
     enabled_params: Dict[str, bool]
     param_ranges: Dict[str, Tuple[float, float, float]]
-    ma_types_trend: List[str]
-    ma_types_trail_long: List[str]
-    ma_types_trail_short: List[str]
-    lock_trail_types: bool
+    param_types: Dict[str, str]
     fixed_params: Dict[str, Any]
-    param_types: Optional[Dict[str, str]] = None
-    score_config: Optional[Dict[str, Any]] = None
 
-    strategy_id: str = ""
+    # Execution settings
+    worker_processes: int = 1
     warmup_bars: int = 1000
+
+    # Strategy-specific execution defaults
+    contract_size: float = 1.0
+    commission_rate: float = 0.0005
+    risk_per_trade_pct: float = 1.0
+
+    # Optimization control
     filter_min_profit: bool = False
     min_profit_threshold: float = 0.0
+    score_config: Optional[Dict[str, Any]] = None
     optimization_mode: str = "optuna"
 
 
@@ -357,15 +358,13 @@ class OptunaOptimizer:
         space: Dict[str, Dict[str, Any]] = {}
         self.param_type_map = {}
 
-        ma_trend_options = [ma.upper() for ma in self.base_config.ma_types_trend]
-        trail_long_options = [ma.upper() for ma in self.base_config.ma_types_trail_long]
-        trail_short_options = [ma.upper() for ma in self.base_config.ma_types_trail_short]
-
         for param_name, param_spec in parameters.items():
             if not isinstance(param_spec, dict):
                 continue
 
-            param_type = str(param_spec.get("type", "float")).lower()
+            param_type = str(
+                self.base_config.param_types.get(param_name, param_spec.get("type", "float"))
+            ).lower()
             self.param_type_map[param_name] = param_type
 
             if not self.base_config.enabled_params.get(param_name, False):
@@ -400,33 +399,32 @@ class OptunaOptimizer:
                 if step not in (None, 0, 0.0):
                     spec["step"] = float(step)
                 space[param_name] = spec
-            elif param_type in {"select", "options", "bool"}:
+            elif param_type in {"select", "options"}:
                 options = param_spec.get("options", [])
-                if param_name == "maType" and ma_trend_options:
-                    options = ma_trend_options
-                if param_name == "trailLongType" and trail_long_options:
-                    options = trail_long_options
-                if param_name == "trailShortType" and trail_short_options:
-                    options = trail_short_options
-                if param_type == "bool" and not options:
-                    options = [True, False]
-                if not options:
+
+                range_override = self.base_config.param_ranges.get(param_name)
+                if isinstance(range_override, dict):
+                    override_options = range_override.get("values") or range_override.get("options")
+                    if isinstance(override_options, (list, tuple)):
+                        options = override_options
+
+                fixed_override = self.base_config.fixed_params.get(f"{param_name}_options")
+                if isinstance(fixed_override, (list, tuple)) and fixed_override:
+                    options = fixed_override
+
+                cleaned_options = [opt for opt in options if str(opt).strip()]
+                if not cleaned_options:
                     continue
+
                 space[param_name] = {
                     "type": "categorical",
-                    "choices": list(options),
+                    "choices": list(cleaned_options),
                 }
 
-        if self.base_config.lock_trail_types:
-            if "trailLongType" in space and "trailShortType" not in space:
-                space["trailShortType"] = {
+            elif param_type in {"bool", "boolean"}:
+                space[param_name] = {
                     "type": "categorical",
-                    "choices": space["trailLongType"].get("choices", []),
-                }
-            if "trailShortType" in space and "trailLongType" not in space:
-                space["trailLongType"] = {
-                    "type": "categorical",
-                    "choices": space["trailShortType"].get("choices", []),
+                    "choices": [True, False],
                 }
 
         return space
@@ -558,14 +556,9 @@ class OptunaOptimizer:
                             key,
                             float(spec["low"]),
                             float(spec["high"]),
-                        )
+                    )
             elif p_type == "categorical":
                 params_dict[key] = trial.suggest_categorical(key, list(spec["choices"]))
-
-        if self.base_config.lock_trail_types:
-            trail_type = params_dict.get("trailLongType")
-            if trail_type is not None:
-                params_dict["trailShortType"] = trail_type
 
         for key, value in (self.base_config.fixed_params or {}).items():
             if value is None or key in params_dict:
@@ -575,7 +568,6 @@ class OptunaOptimizer:
         params_dict.setdefault("riskPerTrade", float(self.base_config.risk_per_trade_pct))
         params_dict.setdefault("contractSize", float(self.base_config.contract_size))
         params_dict.setdefault("commissionRate", float(self.base_config.commission_rate))
-        params_dict.setdefault("atrPeriod", int(self.base_config.atr_period))
 
         return params_dict
 
