@@ -40,10 +40,9 @@ class S01Params:
     stopShortMaxDays: int = 4
     trailRRLong: float = 1.0
     trailRRShort: float = 1.0
-    trailLongType: str = "SMA"
+    trailMaType: str = "SMA"
     trailLongLength: int = 160
     trailLongOffset: float = -1.0
-    trailShortType: str = "SMA"
     trailShortLength: int = 160
     trailShortOffset: float = 1.0
     riskPerTrade: float = 2.0
@@ -88,10 +87,9 @@ class S01Params:
             stopShortMaxDays=int(d.get("stopShortMaxDays", cls.stopShortMaxDays)),
             trailRRLong=float(d.get("trailRRLong", cls.trailRRLong)),
             trailRRShort=float(d.get("trailRRShort", cls.trailRRShort)),
-            trailLongType=str(d.get("trailLongType", cls.trailLongType)),
+            trailMaType=str(d.get("trailMaType", cls.trailMaType)),
             trailLongLength=int(d.get("trailLongLength", cls.trailLongLength)),
             trailLongOffset=float(d.get("trailLongOffset", cls.trailLongOffset)),
-            trailShortType=str(d.get("trailShortType", cls.trailShortType)),
             trailShortLength=int(d.get("trailShortLength", cls.trailShortLength)),
             trailShortOffset=float(d.get("trailShortOffset", cls.trailShortOffset)),
             riskPerTrade=float(d.get("riskPerTrade", cls.riskPerTrade)),
@@ -123,8 +121,8 @@ class S01TrailingMA(BaseStrategy):
         lowest_long = low.rolling(p.stopLongLP, min_periods=1).min()
         highest_short = high.rolling(p.stopShortLP, min_periods=1).max()
 
-        trail_ma_long = get_ma(close, p.trailLongType, p.trailLongLength, volume, high, low)
-        trail_ma_short = get_ma(close, p.trailShortType, p.trailShortLength, volume, high, low)
+        trail_ma_long = get_ma(close, p.trailMaType, p.trailLongLength, volume, high, low)
+        trail_ma_short = get_ma(close, p.trailMaType, p.trailShortLength, volume, high, low)
         if p.trailLongLength > 0:
             trail_ma_long = trail_ma_long * (1 + p.trailLongOffset / 100.0)
         if p.trailShortLength > 0:
