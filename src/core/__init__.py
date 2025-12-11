@@ -41,7 +41,6 @@ from .export import (
     export_optuna_results,
     export_trades_csv,
     export_trades_zip,
-    export_wfa_summary,
 )
 
 from .metrics import (
@@ -79,7 +78,6 @@ __all__ = [
     "export_optuna_results",
     "export_trades_csv",
     "export_trades_zip",
-    "export_wfa_summary",
 
     # metrics
     "BasicMetrics",

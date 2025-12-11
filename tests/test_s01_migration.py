@@ -43,6 +43,7 @@ class TestS01Strategy:
         params = S01Params.from_dict(baseline_params)
         assert params.maType == baseline_params["maType"]
         assert params.maLength == baseline_params["maLength"]
+        assert params.trailMaType == baseline_params["trailMaType"]
         assert params.closeCountLong == baseline_params["closeCountLong"]
         assert params.closeCountShort == baseline_params["closeCountShort"]
 
@@ -51,6 +52,7 @@ class TestS01Strategy:
         params_dict = asdict(params)
         assert params_dict["maType"] == baseline_params["maType"]
         assert params_dict["maLength"] == baseline_params["maLength"]
+        assert params_dict["trailMaType"] == baseline_params["trailMaType"]
         assert params_dict["closeCountLong"] == baseline_params["closeCountLong"]
         assert params_dict["closeCountShort"] == baseline_params["closeCountShort"]
 
@@ -99,8 +101,7 @@ class TestS01MATypes:
     ):
         params = baseline_params.copy()
         params["maType"] = ma_type
-        params["trailLongType"] = ma_type
-        params["trailShortType"] = ma_type
+        params["trailMaType"] = ma_type
 
         start_ts = pd.Timestamp(params["start"], tz="UTC")
         end_ts = pd.Timestamp(params["end"], tz="UTC")

@@ -576,17 +576,36 @@ class WalkForwardEngine:
 
     def _create_param_id(self, params: Dict[str, Any]) -> str:
         """
-        Create unique ID for param set
-        Format: "MA_TYPE MA_LENGTH_hash"
-        Example: "EMA 45_6d4ad0df"
+        Create unique ID for param set using first 2 optimizable parameters.
+        Format: "VALUE1 VALUE2_hash" or "hash" if no optimizable params found.
         """
-        ma_type = params.get("maType", "UNKNOWN")
-        ma_length = params.get("maLength", 0)
-
         param_str = json.dumps(params, sort_keys=True)
         param_hash = hashlib.md5(param_str.encode()).hexdigest()[:8]
 
-        return f"{ma_type} {ma_length}_{param_hash}"
+        try:
+            from strategies import get_strategy_config
+
+            config = get_strategy_config(self.config.strategy_id)
+            parameters = config.get("parameters", {}) if isinstance(config, dict) else {}
+
+            optimizable: List[str] = []
+            for param_name, param_spec in parameters.items():
+                if not isinstance(param_spec, dict):
+                    continue
+                optimize_cfg = param_spec.get("optimize", {})
+                if isinstance(optimize_cfg, dict) and optimize_cfg.get("enabled", False):
+                    optimizable.append(param_name)
+                if len(optimizable) == 2:
+                    break
+
+            label_parts = [str(params.get(param_name, "?")) for param_name in optimizable]
+            if label_parts:
+                label = " ".join(label_parts)
+                return f"{label}_{param_hash}"
+        except Exception:
+            pass
+
+        return param_hash
 
 
 def _extract_file_prefix(csv_filename: str) -> str:
@@ -1038,32 +1057,26 @@ def export_wf_results_csv(result: WFResult, df: Optional[pd.DataFrame] = None) -
     writer.writerow(["=== DETAILED PARAMETERS FOR TOP 10 ==="])
     writer.writerow([])
 
+    try:
+        from strategies import get_strategy_config
+
+        config = get_strategy_config(result.strategy_id)
+        param_definitions = config.get("parameters", {}) if isinstance(config, dict) else {}
+    except Exception:
+        param_definitions = {}
+
     for rank, agg in enumerate(result.aggregated[:10], 1):
         writer.writerow([f"--- Rank #{rank}: {agg.param_id} ---"])
         params = agg.params
         writer.writerow(["Parameter", "Value"])
-        writer.writerow(["MA Type", params.get("maType", "N/A")])
-        writer.writerow(["MA Length", params.get("maLength", "N/A")])
-        writer.writerow(["Close Count Long", params.get("closeCountLong", "N/A")])
-        writer.writerow(["Close Count Short", params.get("closeCountShort", "N/A")])
-        writer.writerow(["Stop Long ATR", params.get("stopLongX", "N/A")])
-        writer.writerow(["Stop Long RR", params.get("stopLongRR", "N/A")])
-        writer.writerow(["Stop Long LP", params.get("stopLongLP", "N/A")])
-        writer.writerow(["Stop Short ATR", params.get("stopShortX", "N/A")])
-        writer.writerow(["Stop Short RR", params.get("stopShortRR", "N/A")])
-        writer.writerow(["Stop Short LP", params.get("stopShortLP", "N/A")])
-        writer.writerow(["Stop Long Max %", params.get("stopLongMaxPct", "N/A")])
-        writer.writerow(["Stop Short Max %", params.get("stopShortMaxPct", "N/A")])
-        writer.writerow(["Stop Long Max Days", params.get("stopLongMaxDays", "N/A")])
-        writer.writerow(["Stop Short Max Days", params.get("stopShortMaxDays", "N/A")])
-        writer.writerow(["Trail RR Long", params.get("trailRRLong", "N/A")])
-        writer.writerow(["Trail RR Short", params.get("trailRRShort", "N/A")])
-        writer.writerow(["Trail MA Long Type", params.get("trailLongType", "N/A")])
-        writer.writerow(["Trail MA Long Length", params.get("trailLongLength", "N/A")])
-        writer.writerow(["Trail MA Long Offset", params.get("trailLongOffset", "N/A")])
-        writer.writerow(["Trail MA Short Type", params.get("trailShortType", "N/A")])
-        writer.writerow(["Trail MA Short Length", params.get("trailShortLength", "N/A")])
-        writer.writerow(["Trail MA Short Offset", params.get("trailShortOffset", "N/A")])
+        if param_definitions:
+            for param_name, param_spec in param_definitions.items():
+                label = param_spec.get("label", param_name) if isinstance(param_spec, dict) else param_name
+                value = params.get(param_name, "N/A")
+                writer.writerow([label, value])
+        else:
+            for param_name, value in params.items():
+                writer.writerow([param_name, value])
 
         writer.writerow([])
         writer.writerow(["Performance Metrics", ""])

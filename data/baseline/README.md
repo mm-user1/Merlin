@@ -1,4 +1,4 @@
-# S01 Trailing MA v26 - Baseline Data
+ï»¿# S01 Trailing MA v26 - Baseline Data
 
 ## Overview
 
@@ -47,29 +47,30 @@ These results serve as the "golden standard" for regression testing during migra
 
 **Trailing Stops:**
 - Long Trail RR: 1
-- Long Trail MA: EMA (90)
+- Trail MA Type: EMA
+- Long Trail Length: 90
 - Long Trail Offset: -0.5%
 - Short Trail RR: 1
-- Short Trail MA: EMA (190)
+- Short Trail Length: 190
 - Short Trail Offset: 2.0%
 
 ## Expected Results
 
 Based on user requirements, the baseline should produce:
 
-- **Net Profit:** 230.75% (Expected: ~230.75% ±0.5%)
-- **Max Drawdown:** 20.03% (Expected: ~20.03% ±0.5%)
-- **Total Trades:** 93 (Expected: ~93 ±2)
+- **Net Profit:** 230.75% (Expected: ~230.75% +0.5%)
+- **Max Drawdown:** 20.03% (Expected: ~20.03% +0.5%)
+- **Total Trades:** 93 (Expected: ~93 +2)
 
 ## Tolerance Levels for Regression Tests
 
 The following tolerances are used for regression validation:
 
-- **net_profit_pct:** ±0.01% (floating point tolerance)
-- **max_drawdown_pct:** ±0.01%
-- **total_trades:** exact match (±0)
+- **net_profit_pct:** +0.01% (floating point tolerance)
+- **max_drawdown_pct:** +0.01%
+- **total_trades:** exact match (+0)
 - **trade entry/exit times:** exact match
-- **trade PnL:** ±0.0001 (floating point epsilon)
+- **trade PnL:** +0.0001 (floating point epsilon)
 
 ## Files
 

@@ -46,10 +46,9 @@ BASELINE_PARAMS = {
     "stopShortMaxDays": 2,
     "trailRRLong": 1,
     "trailRRShort": 1,
-    "trailLongType": "EMA",
+    "trailMaType": "EMA",
     "trailLongLength": 90,
     "trailLongOffset": -0.5,
-    "trailShortType": "EMA",
     "trailShortLength": 190,
     "trailShortOffset": 2.0,
     "backtester": True,
@@ -95,10 +94,10 @@ def run_baseline():
     # Parse parameters
     print("\nParsing strategy parameters...")
     params = S01Params.from_dict(BASELINE_PARAMS)
-    print(f"MA Type: {params.ma_type}")
-    print(f"MA Length: {params.ma_length}")
-    print(f"Close Count Long: {params.close_count_long}")
-    print(f"Close Count Short: {params.close_count_short}")
+    print(f"MA Type: {params.maType}")
+    print(f"MA Length: {params.maLength}")
+    print(f"Close Count Long: {params.closeCountLong}")
+    print(f"Close Count Short: {params.closeCountShort}")
 
     # Prepare dataset with warmup (using official function)
     print("\nPreparing dataset with warmup...")
@@ -226,10 +225,11 @@ These results serve as the "golden standard" for regression testing during migra
 
 **Trailing Stops:**
 - Long Trail RR: {BASELINE_PARAMS['trailRRLong']}
-- Long Trail MA: {BASELINE_PARAMS['trailLongType']} ({BASELINE_PARAMS['trailLongLength']})
+- Trail MA Type: {BASELINE_PARAMS['trailMaType']}
+- Long Trail Length: {BASELINE_PARAMS['trailLongLength']}
 - Long Trail Offset: {BASELINE_PARAMS['trailLongOffset']}%
 - Short Trail RR: {BASELINE_PARAMS['trailRRShort']}
-- Short Trail MA: {BASELINE_PARAMS['trailShortType']} ({BASELINE_PARAMS['trailShortLength']})
+- Short Trail Length: {BASELINE_PARAMS['trailShortLength']}
 - Short Trail Offset: {BASELINE_PARAMS['trailShortOffset']}%
 
 ## Expected Results

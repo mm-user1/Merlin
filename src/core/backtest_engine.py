@@ -3,22 +3,6 @@ from pathlib import Path
 from typing import IO, Any, Dict, List, Optional, Union
 
 import pandas as pd
-from backtesting import _stats
-from indicators.ma import (
-    VALID_MA_TYPES,
-    alma,
-    dema,
-    ema,
-    get_ma,
-    hma,
-    kama,
-    sma,
-    t3,
-    tma,
-    vwap,
-    vwma,
-    wma,
-)
 from indicators.volatility import atr
 
 
@@ -130,15 +114,6 @@ def load_data(csv_source: CSVSource) -> pd.DataFrame:
     normalized_cols = {col: renamed.get(col.lower(), col) for col in df.columns}
     df = df.rename(columns=normalized_cols)
     return df[["Open", "High", "Low", "Close", "Volume"]]
-
-
-def compute_max_drawdown(equity_curve: pd.Series) -> float:
-    equity_curve = equity_curve.ffill()
-    drawdown = 1 - equity_curve / equity_curve.cummax()
-    _, peak_dd = _stats.compute_drawdown_duration_peaks(drawdown)
-    if peak_dd.isna().all():
-        return 0.0
-    return peak_dd.max() * 100
 
 
 def prepare_dataset_with_warmup(
