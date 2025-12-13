@@ -1,6 +1,7 @@
 import io
 import json
 import re
+import sys
 import time
 from datetime import datetime
 from http import HTTPStatus
@@ -8,14 +9,20 @@ from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
 
 import pandas as pd
-from flask import Flask, jsonify, request, send_file, send_from_directory
+from flask import Flask, jsonify, render_template, request, send_file
 
+sys.path.insert(0, str(Path(__file__).parent.parent))
 
 from core.backtest_engine import load_data, prepare_dataset_with_warmup
 from core.export import export_optuna_results
 from core.optuna_engine import OptimizationConfig, OptimizationResult, run_optimization
 
-app = Flask(__name__, static_folder="static", static_url_path="/static")
+app = Flask(
+    __name__,
+    static_folder="static",
+    template_folder="templates",
+    static_url_path="/static",
+)
 
 
 def _get_parameter_types(strategy_id: str) -> Dict[str, str]:
@@ -54,10 +61,6 @@ def _resolve_strategy_id_from_request() -> Tuple[Optional[str], Optional[object]
     return None, (jsonify({"error": "No strategies available."}), HTTPStatus.INTERNAL_SERVER_ERROR)
 
 
-@app.route("/static/<path:path>")
-def send_static(path: str) -> object:
-    return send_from_directory("static", path)
-
 SCORE_METRIC_KEYS: Tuple[str, ...] = (
     "romad",
     "sharpe",
@@ -90,7 +93,7 @@ DEFAULT_OPTIMIZER_SCORE_CONFIG: Dict[str, Any] = {
     "normalization_method": "percentile",
 }
 
-PRESETS_DIR = Path(__file__).resolve().parent / "Presets"
+PRESETS_DIR = Path(__file__).resolve().parent.parent / "Presets"
 DEFAULT_PRESET_NAME = "defaults"
 VALID_PRESET_NAME_RE = re.compile(r"^[A-Za-z0-9 _\-]{1,64}$")
 
@@ -487,7 +490,7 @@ def _resolve_csv_path(raw_path: str) -> Path:
 
 @app.route("/")
 def index() -> object:
-    return send_from_directory(Path(app.root_path), "index.html")
+    return render_template("index.html")
 
 
 @app.get("/api/presets")

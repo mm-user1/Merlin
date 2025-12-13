@@ -6,7 +6,7 @@ import pytest
 
 sys.path.insert(0, str(Path(__file__).parent.parent / "src"))
 
-from server import app
+from ui.server import app
 
 
 @pytest.fixture
