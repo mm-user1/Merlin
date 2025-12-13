@@ -130,7 +130,7 @@ function applyPresetValues(values, { clearResults = false } = {}) {
     }
     const resultsEl = document.getElementById('results');
     if (resultsEl) {
-      resultsEl.textContent = '?ø?ñ‘\'ç ‚<Run‚> ?>‘? úøõ‘?‘?óø +‘?ó‘\'ç‘?‘\'ø¢?³';
+      resultsEl.textContent = '';
       resultsEl.classList.remove('ready', 'loading');
     }
     clearErrorMessage();
@@ -245,7 +245,7 @@ function renderPresetList() {
     overwriteButton.className = 'preset-action-btn preset-overwrite';
     overwriteButton.setAttribute('aria-label', `Overwrite preset ${item.name}`);
     overwriteButton.title = 'Overwrite preset';
-    overwriteButton.textContent = '¢??';
+    overwriteButton.textContent = 'Overwrite';
     overwriteButton.addEventListener('click', (event) => {
       event.stopPropagation();
       handlePresetOverwrite(item.name);
@@ -256,7 +256,7 @@ function renderPresetList() {
     deleteButton.className = 'preset-action-btn preset-delete';
     deleteButton.setAttribute('aria-label', `Delete preset ${item.name}`);
     deleteButton.title = 'Delete preset';
-    deleteButton.textContent = '¢?';
+    deleteButton.textContent = 'Delete';
     deleteButton.addEventListener('click', (event) => {
       event.stopPropagation();
       handlePresetDelete(item.name);

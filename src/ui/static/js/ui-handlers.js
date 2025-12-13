@@ -765,7 +765,7 @@ async function runWalkForward({ sources, state }) {
     const sourceNumber = index + 1;
     const fileLabel = `Processing source ${sourceNumber} of ${totalSources}: ${sourceName}`;
 
-    updateStatus(index, `${fileLabel} ??" running Walk-Forward???`);
+    updateStatus(index, `${fileLabel} - running Walk-Forward...`);
 
     const formData = new FormData();
     formData.append('strategy', window.currentStrategyId);
@@ -825,21 +825,21 @@ async function runWalkForward({ sources, state }) {
         }
       }
 
-      updateStatus(index, `â?: Source ${sourceNumber} of ${totalSources} (${sourceName}) completed successfully.`);
+      updateStatus(index, `Success: Source ${sourceNumber} of ${totalSources} (${sourceName}) completed successfully.`);
       successCount += 1;
       lastSuccessfulData = data;
     } catch (err) {
       const message = err && err.message ? err.message : 'Walk-Forward failed.';
       console.error(`Walk-Forward failed for source ${sourceName}`, err);
       errors.push({ file: sourceName, message });
-      updateStatus(index, `â?? Source ${sourceNumber} of ${totalSources} (${sourceName}) failed: ${message}`);
+      updateStatus(index, `Error: Source ${sourceNumber} of ${totalSources} (${sourceName}) failed: ${message}`);
     }
   }
 
   if (successCount === totalSources) {
     const summaryMsg = totalSources === 1
-      ? 'â?: Walk-Forward completed successfully.'
-      : `â?: All ${totalSources} files processed successfully.`;
+      ? 'Success: Walk-Forward completed successfully.'
+      : `Success: All ${totalSources} files processed successfully.`;
 
     if (wfStatusEl) {
       wfStatusEl.textContent = summaryMsg + '\n\n' + statusMessages.filter(Boolean).join('\n');
@@ -856,7 +856,7 @@ async function runWalkForward({ sources, state }) {
       wfSummaryEl.innerHTML = `<strong>Multi-file Walk-Forward Analysis completed!</strong><br>Processed ${totalSources} files. Check downloaded CSV/ZIP files for detailed results.`;
     }
   } else if (successCount > 0) {
-    const summaryMsg = `â? ï¸? ${successCount} of ${totalSources} files processed successfully, ${errors.length} failed.`;
+    const summaryMsg = `Partial: ${successCount} of ${totalSources} files processed successfully, ${errors.length} failed.`;
     if (wfStatusEl) {
       wfStatusEl.textContent = summaryMsg + '\n\n' + statusMessages.filter(Boolean).join('\n');
     }
@@ -865,12 +865,13 @@ async function runWalkForward({ sources, state }) {
       displayWFResults(lastSuccessfulData);
     }
   } else {
-    const summaryMsg = `â?? All ${totalSources} files failed.`;
+    const summaryMsg = `Error: All ${totalSources} files failed.`;
     if (wfStatusEl) {
       wfStatusEl.textContent = summaryMsg + '\n\n' + statusMessages.filter(Boolean).join('\n');
     }
   }
 }
+
 async function runBacktest(event) {
   event.preventDefault();
   const resultsEl = document.getElementById('results');
@@ -884,37 +885,35 @@ async function runBacktest(event) {
   const primaryFile = selectedFiles.length ? selectedFiles[0] : null;
 
   if (!primaryFile && !window.selectedCsvPath) {
-    errorEl.textContent = '???o?????n\''?c i»?<Runi»?> ???>a??? ?u?o?oa???a????o?o ?+a????o\''?ca???\''?o??A?';
+    errorEl.textContent = 'Please select a CSV data file or use a saved path.';
     errorEl.style.display = 'block';
     return;
   }
 
   const state = gatherFormState();
   if (!state.start || !state.end) {
-    errorEl.textContent = '???o?????n\''?c i»??n?o?ua????o?> ???o???n\''?u ???u ???o?u?u?n???o?> ?n ???o?????n?n?n???c?> ?o???o?u???n???n?°???????°???o.';
+    errorEl.textContent = 'Please fill in start and end dates.';
     errorEl.style.display = 'block';
     return;
   }
 
   if (!window.currentStrategyId) {
-    errorEl.textContent = '???o?????n\''?c i»?>?????u?> a??<?+?ca????n\''?c ?n?n?c?u?°?????o???¬?? ?????i???i?«?°???????????o.';
+    errorEl.textContent = 'Please select a strategy before running.';
     errorEl.style.display = 'block';
     return;
   }
 
   const combinations = [{}];
-
   if (!combinations.length) {
-    errorEl.textContent = '???c\'' a?¬?????????o?°?o?> ?n?o?°?i?n?o?° ?n?o?°?u???n???n?°???????°???o.';
+    errorEl.textContent = 'No parameter combinations to run.';
     errorEl.style.display = 'block';
     return;
   }
 
-  resultsEl.textContent = '?\'?n?o?????n?o?° ?n?o???????o?°?o?>?n??????A?';
+  resultsEl.textContent = 'Running calculation...';
   resultsEl.classList.add('loading');
 
   const aggregatedResults = [];
-
   if (primaryFile) {
     renderSelectedFiles(selectedFiles);
   } else {
@@ -937,13 +936,13 @@ async function runBacktest(event) {
     }
     formData.append('payload', JSON.stringify(payload));
 
-    resultsEl.textContent = `?\'?n?o?????n?o?° ?n?o???????o?°?o?>?n??????A? (${index + 1}/${combinations.length})`;
+    resultsEl.textContent = `Running calculation... (${index + 1}/${combinations.length})`;
 
     try {
       const data = await runBacktestRequest(formData);
       aggregatedResults.push(formatResultBlock(index + 1, combinations.length, payload, data));
     } catch (err) {
-      resultsEl.textContent = '???c\''? ???c?>?n???n?o???n?°?????o.';
+      resultsEl.textContent = 'An error occurred.';
       resultsEl.classList.remove('loading');
       errorEl.textContent = err.message;
       errorEl.style.display = 'block';
@@ -951,12 +950,15 @@ async function runBacktest(event) {
     }
   }
 
-  resultsEl.textContent = aggregatedResults.join('\n\n');
+  resultsEl.textContent = aggregatedResults.join('
+
+');
   resultsEl.classList.remove('loading');
   resultsEl.classList.add('ready');
 }
 
 async function submitOptimization(event) {
+
   event.preventDefault();
   const optimizerResultsEl = document.getElementById('optimizerResults');
   const progressContainer = document.getElementById('optimizerProgress');
@@ -1050,7 +1052,7 @@ async function submitOptimization(event) {
       const minutes = Math.round(config.optuna_time_limit / 60);
       optunaProgressText.textContent = `Time budget: ${minutes} min`;
     } else {
-      optunaProgressText.textContent = 'Waiting for convergence threshold???';
+      optunaProgressText.textContent = 'Waiting for convergence threshold...';
     }
   }
   if (optunaBestTrial) {
@@ -1076,15 +1078,15 @@ async function submitOptimization(event) {
     const sourceNumber = index + 1;
     const fileLabel = `Processing source ${sourceNumber} of ${totalSources}: ${sourceName}`;
 
-    updateStatus(index, `${fileLabel} ??" processing???`);
+    updateStatus(index, `${fileLabel} - processing...`);
     if (optunaProgressText) {
       if (plannedTrials) {
         optunaProgressText.textContent = `Trial: 0 / ${plannedTrials.toLocaleString('en-US')} (0%)`;
       } else if (optunaBudgetMode === 'time') {
         const minutes = Math.round(config.optuna_time_limit / 60);
-        optunaProgressText.textContent = `Time budget: ${minutes} min ??" running???`;
+        optunaProgressText.textContent = `Time budget: ${minutes} min - running...`;
       } else {
-        optunaProgressText.textContent = 'Running Optuna optimization???';
+        optunaProgressText.textContent = 'Running Optuna optimization...';
       }
     }
     if (optunaProgressFill) {
@@ -1144,7 +1146,7 @@ async function submitOptimization(event) {
         optunaBestTrial.textContent = 'Review the downloaded CSV to inspect the best trial and metrics.';
       }
 
-      updateStatus(index, `??: Source ${sourceNumber} of ${totalSources} (${sourceName}) processed successfully.`);
+      updateStatus(index, `Success: Source ${sourceNumber} of ${totalSources} (${sourceName}) processed successfully.`);
       successCount += 1;
     } catch (err) {
       const message = err && err.message ? err.message : 'Optimization failed.';
@@ -1158,7 +1160,7 @@ async function submitOptimization(event) {
         optunaProgressText.textContent = `Error: ${message}`;
       }
 
-      updateStatus(index, `??? Source ${sourceNumber} of ${totalSources} (${sourceName}) failed: ${message}`);
+      updateStatus(index, `Error: Source ${sourceNumber} of ${totalSources} (${sourceName}) failed: ${message}`);
     }
   }
 
