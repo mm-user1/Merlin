@@ -46,6 +46,27 @@ function composeDateTime(datePart, timePart) {
   return `${date}T${normalizedTime}`;
 }
 
+function composeISOTimestamp(dateInput, timeInput) {
+  const date = (dateInput || '').trim();
+  const time = (timeInput || '').trim();
+  if (!date) {
+    return '';
+  }
+  const normalizedTime = time || '00:00';
+  return `${date}T${normalizedTime}`;
+}
+
+function parseISOTimestamp(isoString) {
+  const raw = typeof isoString === 'string' ? isoString.trim() : '';
+  if (!raw) {
+    return { date: '', time: '' };
+  }
+  const [datePart, timePart] = raw.split('T');
+  const date = datePart || '';
+  const time = timePart ? timePart.slice(0, 5) : '00:00';
+  return { date, time };
+}
+
 function setCheckboxValue(id, checked) {
   const element = document.getElementById(id);
   if (!element) {

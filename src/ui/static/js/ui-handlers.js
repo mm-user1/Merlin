@@ -129,16 +129,29 @@ function applyScoreSettings(settings = {}) {
   const filterCheckbox = document.getElementById('scoreFilter');
   const thresholdInput = document.getElementById('scoreThreshold');
 
-  const effectiveWeights = { ...SCORE_DEFAULT_WEIGHTS, ...(settings.scoreWeights || {}) };
-  const effectiveEnabled = { ...SCORE_DEFAULT_ENABLED, ...(settings.scoreEnabledMetrics || {}) };
-  const effectiveInvert = { ...SCORE_DEFAULT_INVERT, ...(settings.scoreInvertMetrics || {}) };
+  const defaultScoreConfig = window.defaults?.scoreConfig || {};
+  const effectiveWeights = {
+    ...SCORE_DEFAULT_WEIGHTS,
+    ...(defaultScoreConfig.weights || {}),
+    ...(settings.scoreWeights || {})
+  };
+  const effectiveEnabled = {
+    ...SCORE_DEFAULT_ENABLED,
+    ...(defaultScoreConfig.enabled_metrics || {}),
+    ...(settings.scoreEnabledMetrics || {})
+  };
+  const effectiveInvert = {
+    ...SCORE_DEFAULT_INVERT,
+    ...(defaultScoreConfig.invert_metrics || {}),
+    ...(settings.scoreInvertMetrics || {})
+  };
 
   const filterEnabled = Object.prototype.hasOwnProperty.call(settings, 'scoreFilterEnabled')
     ? Boolean(settings.scoreFilterEnabled)
-    : Boolean(window.defaults.scoreFilterEnabled);
+    : Boolean(defaultScoreConfig.filter_enabled);
   const thresholdValue = Object.prototype.hasOwnProperty.call(settings, 'scoreThreshold')
     ? Number(settings.scoreThreshold)
-    : Number(window.defaults.scoreThreshold);
+    : Number(defaultScoreConfig.min_score_threshold);
 
   if (filterCheckbox) {
     filterCheckbox.checked = filterEnabled;
@@ -950,9 +963,7 @@ async function runBacktest(event) {
     }
   }
 
-  resultsEl.textContent = aggregatedResults.join('
-
-');
+  resultsEl.textContent = aggregatedResults.join('\n\n');
   resultsEl.classList.remove('loading');
   resultsEl.classList.add('ready');
 }
@@ -1265,12 +1276,13 @@ function bindScoreControls() {
   const resetButton = document.getElementById('scoreReset');
   if (resetButton) {
     resetButton.addEventListener('click', () => {
+      const defaultsConfig = window.defaults?.scoreConfig || {};
       applyScoreSettings({
-        scoreFilterEnabled: false,
-        scoreThreshold: SCORE_DEFAULT_THRESHOLD,
-        scoreWeights: clonePreset(SCORE_DEFAULT_WEIGHTS),
-        scoreEnabledMetrics: clonePreset(SCORE_DEFAULT_ENABLED),
-        scoreInvertMetrics: clonePreset(SCORE_DEFAULT_INVERT)
+        scoreFilterEnabled: Boolean(defaultsConfig.filter_enabled),
+        scoreThreshold: defaultsConfig.min_score_threshold ?? SCORE_DEFAULT_THRESHOLD,
+        scoreWeights: clonePreset({ ...SCORE_DEFAULT_WEIGHTS, ...(defaultsConfig.weights || {}) }),
+        scoreEnabledMetrics: clonePreset({ ...SCORE_DEFAULT_ENABLED, ...(defaultsConfig.enabled_metrics || {}) }),
+        scoreInvertMetrics: clonePreset({ ...SCORE_DEFAULT_INVERT, ...(defaultsConfig.invert_metrics || {}) })
       });
       updateScoreFormulaPreview();
     });

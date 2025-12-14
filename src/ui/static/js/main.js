@@ -78,8 +78,6 @@ document.addEventListener('DOMContentLoaded', async () => {
         handleApplyDefaults();
       } else if (action === 'save-as') {
         handleSaveAsPreset();
-      } else if (action === 'save-defaults') {
-        handleSaveDefaults();
       } else if (action === 'import') {
         if (presetImportInput) {
           presetImportInput.value = '';

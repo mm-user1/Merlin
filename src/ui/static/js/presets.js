@@ -7,44 +7,67 @@ const DEFAULT_PRESET_KEY = 'defaults';
 const PRESET_NAME_PATTERN = /^[A-Za-z0-9 _-]{1,64}$/;
 const PRESET_LABELS = {
   dateFilter: 'Date Filter',
-  backtester: 'Backtester',
-  startDate: 'Start Date',
-  startTime: 'Start Time',
-  endDate: 'End Date',
-  endTime: 'End Time',
-  csvPath: 'CSV Path',
-  workerProcesses: 'Worker Processes',
-  minProfitFilter: 'Net Profit Filter',
-  minProfitThreshold: 'Net Profit Min %',
-  scoreFilterEnabled: 'Score Filter',
-  scoreThreshold: 'Score Min Score',
-  scoreWeights: 'Score Weights',
-  scoreEnabledMetrics: 'Score Enabled Metrics',
-  scoreInvertMetrics: 'Score Invert Metrics'
+  start: 'Start Date/Time',
+  end: 'End Date/Time',
+  backtester: 'Backtester'
+};
+
+const DEFAULT_PRESET = {
+  dateFilter: true,
+  start: '',
+  end: '',
+  backtester: true
 };
 
 window.knownPresets = [];
 window.selectedCsvPath = '';
-window.defaults = {
-  dateFilter: true,
-  backtester: true,
-  startDate: '',
-  startTime: '',
-  endDate: '',
-  endTime: '',
+window.defaults = clonePreset(DEFAULT_PRESET);
+window.uiState = {
   csvPath: '',
-  workerProcesses: 6,
-  minProfitFilter: false,
-  minProfitThreshold: 0,
-  scoreFilterEnabled: false,
-  scoreThreshold: 60,
-  scoreWeights: { romad: 0.25, sharpe: 0.20, pf: 0.20, ulcer: 0.15, recovery: 0.10, consistency: 0.10 },
-  scoreEnabledMetrics: { romad: true, sharpe: true, pf: true, ulcer: true, recovery: true, consistency: true },
-  scoreInvertMetrics: { ulcer: true }
+  backtester: true
 };
 
 function formatPresetLabel(key) {
   return PRESET_LABELS[key] || key;
+}
+
+function normalizePresetValues(rawValues) {
+  const source = clonePreset(rawValues || {});
+
+  if (!source.start && (Object.prototype.hasOwnProperty.call(source, 'startDate') || Object.prototype.hasOwnProperty.call(source, 'startTime'))) {
+    source.start = composeISOTimestamp(source.startDate, source.startTime);
+  }
+  if (!source.end && (Object.prototype.hasOwnProperty.call(source, 'endDate') || Object.prototype.hasOwnProperty.call(source, 'endTime'))) {
+    source.end = composeISOTimestamp(source.endDate, source.endTime);
+  }
+  if (!Object.prototype.hasOwnProperty.call(source, 'backtester') && Object.prototype.hasOwnProperty.call(source, 'backtester')) {
+    source.backtester = Boolean(source.backtester);
+  }
+
+  const normalized = clonePreset(DEFAULT_PRESET);
+
+  if (Object.prototype.hasOwnProperty.call(source, 'dateFilter')) {
+    normalized.dateFilter = Boolean(source.dateFilter);
+  }
+  if (Object.prototype.hasOwnProperty.call(source, 'start')) {
+    normalized.start = typeof source.start === 'string' ? source.start.trim() : '';
+  }
+  if (Object.prototype.hasOwnProperty.call(source, 'end')) {
+    normalized.end = typeof source.end === 'string' ? source.end.trim() : '';
+  }
+  if (Object.prototype.hasOwnProperty.call(source, 'backtester')) {
+    normalized.backtester = Boolean(source.backtester);
+  }
+
+  // Preserve any strategy/backtest parameters as-is
+  Object.keys(source).forEach((key) => {
+    if (['dateFilter', 'start', 'end', 'backtester', 'startDate', 'startTime', 'endDate', 'endTime'].includes(key)) {
+      return;
+    }
+    normalized[key] = source[key];
+  });
+
+  return normalized;
 }
 
 function applyPresetValues(values, { clearResults = false } = {}) {
@@ -52,77 +75,29 @@ function applyPresetValues(values, { clearResults = false } = {}) {
     return;
   }
 
+  const normalized = normalizePresetValues(values);
   const csvFileInputEl = document.getElementById('csvFile');
   const optimizerResultsEl = document.getElementById('optimizerResults');
   const progressContainer = document.getElementById('optimizerProgress');
 
-  if (Object.prototype.hasOwnProperty.call(values, 'csvPath')) {
-    const csvPathValue = typeof values.csvPath === 'string' ? values.csvPath.trim() : '';
-    window.selectedCsvPath = csvPathValue;
-  } else {
-    window.selectedCsvPath = '';
+  if (Object.prototype.hasOwnProperty.call(normalized, 'dateFilter')) {
+    setCheckboxValue('dateFilter', normalized.dateFilter);
+  }
+  if (Object.prototype.hasOwnProperty.call(normalized, 'start')) {
+    const { date, time } = parseISOTimestamp(normalized.start);
+    setInputValue('startDate', date);
+    setInputValue('startTime', time);
+  }
+  if (Object.prototype.hasOwnProperty.call(normalized, 'end')) {
+    const { date, time } = parseISOTimestamp(normalized.end);
+    setInputValue('endDate', date);
+    setInputValue('endTime', time);
+  }
+  if (Object.prototype.hasOwnProperty.call(normalized, 'backtester')) {
+    setCheckboxValue('backtester', normalized.backtester);
   }
 
-  if (Object.prototype.hasOwnProperty.call(values, 'dateFilter')) {
-    setCheckboxValue('dateFilter', values.dateFilter);
-  }
-  if (Object.prototype.hasOwnProperty.call(values, 'backtester')) {
-    setCheckboxValue('backtester', values.backtester);
-  }
-  if (Object.prototype.hasOwnProperty.call(values, 'startDate')) {
-    setInputValue('startDate', values.startDate);
-  }
-  if (Object.prototype.hasOwnProperty.call(values, 'startTime')) {
-    setInputValue('startTime', values.startTime);
-  }
-  if (Object.prototype.hasOwnProperty.call(values, 'endDate')) {
-    setInputValue('endDate', values.endDate);
-  }
-  if (Object.prototype.hasOwnProperty.call(values, 'endTime')) {
-    setInputValue('endTime', values.endTime);
-  }
-
-  if (Object.prototype.hasOwnProperty.call(values, 'workerProcesses')) {
-    const workerInput = document.getElementById('workerProcesses');
-    if (workerInput) {
-      workerInput.value = values.workerProcesses;
-    }
-  }
-
-  const { checkbox: minProfitCheckbox, input: minProfitInput } = getMinProfitElements();
-  if (minProfitCheckbox && Object.prototype.hasOwnProperty.call(values, 'minProfitFilter')) {
-    minProfitCheckbox.checked = Boolean(values.minProfitFilter);
-  }
-  if (minProfitInput && Object.prototype.hasOwnProperty.call(values, 'minProfitThreshold')) {
-    setInputValue('minProfitThreshold', values.minProfitThreshold);
-  }
-
-  const scoreSettings = {
-    scoreFilterEnabled: Object.prototype.hasOwnProperty.call(values, 'scoreFilterEnabled')
-      ? values.scoreFilterEnabled
-      : window.defaults.scoreFilterEnabled,
-    scoreThreshold: Object.prototype.hasOwnProperty.call(values, 'scoreThreshold')
-      ? values.scoreThreshold
-      : window.defaults.scoreThreshold,
-    scoreWeights: clonePreset(
-      Object.prototype.hasOwnProperty.call(values, 'scoreWeights')
-        ? values.scoreWeights
-        : window.defaults.scoreWeights
-    ),
-    scoreEnabledMetrics: clonePreset(
-      Object.prototype.hasOwnProperty.call(values, 'scoreEnabledMetrics')
-        ? values.scoreEnabledMetrics
-        : window.defaults.scoreEnabledMetrics
-    ),
-    scoreInvertMetrics: clonePreset(
-      Object.prototype.hasOwnProperty.call(values, 'scoreInvertMetrics')
-        ? values.scoreInvertMetrics
-        : window.defaults.scoreInvertMetrics
-    )
-  };
-  applyScoreSettings(scoreSettings);
-
-  applyDynamicBacktestParams(values);
+  applyDynamicBacktestParams(normalized);
 
   if (clearResults) {
     if (csvFileInputEl) {
@@ -152,8 +127,7 @@ function applyPresetValues(values, { clearResults = false } = {}) {
 }
 
 function updateDefaults(values) {
-  const merged = { ...window.defaults, ...clonePreset(values) };
-  window.defaults = merged;
+  window.defaults = normalizePresetValues(values);
 }
 
 function applyDefaults(options = {}) {
@@ -164,33 +138,36 @@ function applyDefaults(options = {}) {
   applyPresetValues(window.defaults, { clearResults });
 }
 
+async function handleApplyDefaults() {
+  closePresetMenu();
+  try {
+    if (window.currentStrategyId && typeof loadStrategyConfig === 'function') {
+      await loadStrategyConfig(window.currentStrategyId);
+    }
+    applyPresetValues(window.defaults, { clearResults: true });
+    clearErrorMessage();
+  } catch (error) {
+    showErrorMessage(error.message || 'Failed to load defaults.');
+  }
+}
+
 function collectPresetValues() {
-  const { checkbox: minProfitCheckbox, input: minProfitInput } = getMinProfitElements();
-  const workerInput = document.getElementById('workerProcesses');
-  const csvPathValue = typeof window.selectedCsvPath === 'string' ? window.selectedCsvPath.trim() : '';
-  const scoreState = readScoreUIState();
+  const start = composeISOTimestamp(
+    document.getElementById('startDate')?.value,
+    document.getElementById('startTime')?.value
+  );
+  const end = composeISOTimestamp(
+    document.getElementById('endDate')?.value,
+    document.getElementById('endTime')?.value
+  );
+
   const dynamicParams = collectDynamicBacktestParams();
 
   return {
-    dateFilter: document.getElementById('dateFilter').checked,
-    backtester: document.getElementById('backtester').checked,
-    startDate: document.getElementById('startDate').value.trim(),
-    startTime: document.getElementById('startTime').value.trim(),
-    endDate: document.getElementById('endDate').value.trim(),
-    endTime: document.getElementById('endTime').value.trim(),
-    csvPath: csvPathValue,
-    workerProcesses: workerInput
-      ? parseNumber(workerInput.value, window.defaults.workerProcesses)
-      : window.defaults.workerProcesses,
-    minProfitFilter: Boolean(minProfitCheckbox && minProfitCheckbox.checked),
-    minProfitThreshold: minProfitInput
-      ? parseNumber(minProfitInput.value, window.defaults.minProfitThreshold)
-      : window.defaults.minProfitThreshold,
-    scoreFilterEnabled: Boolean(scoreState.scoreFilterEnabled),
-    scoreThreshold: scoreState.scoreThreshold,
-    scoreWeights: { ...scoreState.scoreWeights },
-    scoreEnabledMetrics: { ...scoreState.scoreEnabledMetrics },
-    scoreInvertMetrics: { ...scoreState.scoreInvertMetrics },
+    dateFilter: Boolean(document.getElementById('dateFilter')?.checked),
+    start: start || window.defaults.start,
+    end: end || window.defaults.end,
+    backtester: Boolean(document.getElementById('backtester')?.checked),
     ...dynamicParams
   };
 }
@@ -380,18 +357,6 @@ async function handleSaveAsPreset() {
   }
 }
 
-async function handleSaveDefaults() {
-  closePresetMenu();
-  const values = collectPresetValues();
-  try {
-    const response = await saveDefaultsRequest(values);
-    updateDefaults(response?.values || values);
-    window.alert('Current settings saved as defaults.');
-  } catch (error) {
-    showErrorMessage(error.message || 'Failed to save defaults.');
-  }
-}
-
 async function handlePresetDelete(name) {
   const confirmed = window.confirm(`Delete preset "${name}"?`);
   if (!confirmed) return;
@@ -421,13 +386,7 @@ async function handlePresetOverwrite(name) {
 }
 
 async function initializePresets() {
-  try {
-    await loadPreset(DEFAULT_PRESET_KEY, { clearResults: true });
-    clearErrorMessage();
-  } catch (error) {
-    console.error(error);
-    applyDefaults({ clearResults: true });
-  }
+  applyDefaults({ clearResults: true });
   await refreshPresetList(true);
 }
 

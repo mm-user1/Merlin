@@ -97,53 +97,26 @@ PRESETS_DIR = Path(__file__).resolve().parent.parent / "Presets"
 DEFAULT_PRESET_NAME = "defaults"
 VALID_PRESET_NAME_RE = re.compile(r"^[A-Za-z0-9 _\-]{1,64}$")
 
-# Default preset containing only universal settings (not strategy-specific).
-# Strategy parameter defaults are loaded from each strategy's config.json.
+# Default preset containing only date fields and backtester flag.
+# Strategy/backtest parameters are added dynamically from payload.
 DEFAULT_PRESET: Dict[str, Any] = {
     "dateFilter": True,
     "start": None,
     "end": None,
-    "optimizationMode": "optuna",
-    "nTrials": 100,
-    "timeout": None,
-    "patience": None,
-    "workerProcesses": 6,
-    "scoreConfig": {
-        "weights": {
-            "romad": 0.25,
-            "sharpe": 0.20,
-            "pf": 0.20,
-            "ulcer": 0.15,
-            "recovery": 0.10,
-            "consistency": 0.10,
-        },
-        "normalization_method": "percentile",
-    },
-    "filterByProfit": False,
-    "minProfitThreshold": 0.0,
+    "backtester": True,
 }
-BOOL_FIELDS = {"dateFilter", "filterByProfit"}
-INT_FIELDS = {"nTrials", "timeout", "patience", "workerProcesses"}
-FLOAT_FIELDS = {"minProfitThreshold"}
+BOOL_FIELDS = {"dateFilter", "backtester"}
+INT_FIELDS = set()
+FLOAT_FIELDS = set()
 
 LIST_FIELDS: set = set()
-STRING_FIELDS = {"start", "end", "optimizationMode"}
-ALLOWED_PRESET_FIELDS = set(DEFAULT_PRESET.keys())
+STRING_FIELDS = {"start", "end"}
+ALLOWED_PRESET_FIELDS = None  # None = accept all fields (strategy/backtest params included)
 
 
 def _clone_default_template() -> Dict[str, Any]:
-    try:
-        current_defaults = _load_preset(DEFAULT_PRESET_NAME)
-        if not isinstance(current_defaults, dict):
-            raise ValueError
-    except (FileNotFoundError, ValueError, json.JSONDecodeError):
-        current_defaults = DEFAULT_PRESET
-    filtered_defaults = {
-        key: value for key, value in current_defaults.items() if key in ALLOWED_PRESET_FIELDS
-    }
-    base = json.loads(json.dumps(DEFAULT_PRESET))
-    base.update(json.loads(json.dumps(filtered_defaults)))
-    return base
+    # Use minimal defaults only (date/backtester). Strategy defaults are in strategy.py.
+    return json.loads(json.dumps(DEFAULT_PRESET))
 
 
 def _ensure_presets_directory() -> None:
@@ -177,7 +150,7 @@ def _write_preset(name: str, values: Dict[str, Any]) -> None:
     path = _preset_path(name)
     serialized = json.loads(json.dumps(values))
     with path.open("w", encoding="utf-8") as handle:
-        json.dump(serialized, handle, ensure_ascii=False, indent=2, sort_keys=True)
+        json.dump(serialized, handle, ensure_ascii=False, indent=2, sort_keys=False)
 
 
 def _load_preset(name: str) -> Dict[str, Any]:
@@ -427,8 +400,6 @@ def _normalize_preset_payload(values: Dict[str, Any]) -> Dict[str, Any]:
         raise ValueError("Preset values must be provided as a dictionary.")
     normalized = _clone_default_template()
     for key, value in values.items():
-        if key not in ALLOWED_PRESET_FIELDS:
-            continue
         if key in LIST_FIELDS:
             if isinstance(value, (list, tuple)):
                 cleaned = [str(item).strip().upper() for item in value if str(item).strip()]
