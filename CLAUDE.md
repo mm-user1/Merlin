@@ -13,7 +13,7 @@ Cryptocurrency trading strategy backtesting and Optuna optimization platform wit
 cd src/ui
 python server.py
 ```
-Server runs at http://0.0.0.0:8000
+Server runs at http://0.0.0.0:5000
 
 ### CLI Backtest
 ```bash

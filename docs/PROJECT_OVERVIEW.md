@@ -200,7 +200,7 @@ For optimization:
 cd src/ui
 python server.py
 ```
-Opens at http://0.0.0.0:8000
+Opens at http://0.0.0.0:5000
 
 ### CLI Backtest
 ```bash

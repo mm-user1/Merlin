@@ -21,7 +21,7 @@ cd src/ui
 python server.py
 ```
 
-Open http://0.0.0.0:8000 in your browser.
+Open http://0.0.0.0:5000 in your browser.
 
 ## Project Structure
 
