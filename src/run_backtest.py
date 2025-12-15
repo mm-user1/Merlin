@@ -11,7 +11,6 @@ DEFAULT_WARMUP_BARS = 1000
 
 def build_default_params() -> S01Params:
     return S01Params(
-        use_backtester=True,
         use_date_filter=True,
         start=pd.Timestamp("2025-06-15", tz="UTC"),
         end=pd.Timestamp("2025-11-15", tz="UTC"),

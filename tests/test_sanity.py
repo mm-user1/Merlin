@@ -58,7 +58,15 @@ class TestSanityChecks:
             Path("core") / "backtest_engine.py",
             Path("core") / "optuna_engine.py",
             Path("core") / "walkforward_engine.py",
-            Path("server.py"),
+            Path("ui") / "server.py",
+            Path("ui") / "templates" / "index.html",
+            Path("ui") / "static" / "css" / "style.css",
+            Path("ui") / "static" / "js" / "utils.js",
+            Path("ui") / "static" / "js" / "api.js",
+            Path("ui") / "static" / "js" / "strategy-config.js",
+            Path("ui") / "static" / "js" / "presets.js",
+            Path("ui") / "static" / "js" / "ui-handlers.js",
+            Path("ui") / "static" / "js" / "main.js",
         ]
 
         for file_name in expected_files:

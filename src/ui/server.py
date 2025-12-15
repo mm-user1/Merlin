@@ -1,6 +1,7 @@
 import io
 import json
 import re
+import sys
 import time
 from datetime import datetime
 from http import HTTPStatus
@@ -8,14 +9,20 @@ from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
 
 import pandas as pd
-from flask import Flask, jsonify, request, send_file, send_from_directory
+from flask import Flask, jsonify, render_template, request, send_file
 
+sys.path.insert(0, str(Path(__file__).parent.parent))
 
 from core.backtest_engine import load_data, prepare_dataset_with_warmup
 from core.export import export_optuna_results
 from core.optuna_engine import OptimizationConfig, OptimizationResult, run_optimization
 
-app = Flask(__name__, static_folder="static", static_url_path="/static")
+app = Flask(
+    __name__,
+    static_folder="static",
+    template_folder="templates",
+    static_url_path="/static",
+)
 
 
 def _get_parameter_types(strategy_id: str) -> Dict[str, str]:
@@ -54,10 +61,6 @@ def _resolve_strategy_id_from_request() -> Tuple[Optional[str], Optional[object]
     return None, (jsonify({"error": "No strategies available."}), HTTPStatus.INTERNAL_SERVER_ERROR)
 
 
-@app.route("/static/<path:path>")
-def send_static(path: str) -> object:
-    return send_from_directory("static", path)
-
 SCORE_METRIC_KEYS: Tuple[str, ...] = (
     "romad",
     "sharpe",
@@ -90,57 +93,29 @@ DEFAULT_OPTIMIZER_SCORE_CONFIG: Dict[str, Any] = {
     "normalization_method": "percentile",
 }
 
-PRESETS_DIR = Path(__file__).resolve().parent / "Presets"
+PRESETS_DIR = Path(__file__).resolve().parent.parent / "Presets"
 DEFAULT_PRESET_NAME = "defaults"
 VALID_PRESET_NAME_RE = re.compile(r"^[A-Za-z0-9 _\-]{1,64}$")
 
-# Default preset containing only universal settings (not strategy-specific).
-# Strategy parameter defaults are loaded from each strategy's config.json.
+# Default preset containing only date fields.
+# Strategy/backtest parameters are added dynamically from payload.
 DEFAULT_PRESET: Dict[str, Any] = {
     "dateFilter": True,
     "start": None,
     "end": None,
-    "optimizationMode": "optuna",
-    "nTrials": 100,
-    "timeout": None,
-    "patience": None,
-    "workerProcesses": 6,
-    "scoreConfig": {
-        "weights": {
-            "romad": 0.25,
-            "sharpe": 0.20,
-            "pf": 0.20,
-            "ulcer": 0.15,
-            "recovery": 0.10,
-            "consistency": 0.10,
-        },
-        "normalization_method": "percentile",
-    },
-    "filterByProfit": False,
-    "minProfitThreshold": 0.0,
 }
-BOOL_FIELDS = {"dateFilter", "filterByProfit"}
-INT_FIELDS = {"nTrials", "timeout", "patience", "workerProcesses"}
-FLOAT_FIELDS = {"minProfitThreshold"}
+BOOL_FIELDS = {"dateFilter"}
+INT_FIELDS = set()
+FLOAT_FIELDS = set()
 
 LIST_FIELDS: set = set()
-STRING_FIELDS = {"start", "end", "optimizationMode"}
-ALLOWED_PRESET_FIELDS = set(DEFAULT_PRESET.keys())
+STRING_FIELDS = {"start", "end"}
+ALLOWED_PRESET_FIELDS = None  # None = accept all fields (strategy/backtest params included)
 
 
 def _clone_default_template() -> Dict[str, Any]:
-    try:
-        current_defaults = _load_preset(DEFAULT_PRESET_NAME)
-        if not isinstance(current_defaults, dict):
-            raise ValueError
-    except (FileNotFoundError, ValueError, json.JSONDecodeError):
-        current_defaults = DEFAULT_PRESET
-    filtered_defaults = {
-        key: value for key, value in current_defaults.items() if key in ALLOWED_PRESET_FIELDS
-    }
-    base = json.loads(json.dumps(DEFAULT_PRESET))
-    base.update(json.loads(json.dumps(filtered_defaults)))
-    return base
+    # Use minimal defaults only. Strategy defaults are in strategy.py.
+    return json.loads(json.dumps(DEFAULT_PRESET))
 
 
 def _ensure_presets_directory() -> None:
@@ -174,7 +149,7 @@ def _write_preset(name: str, values: Dict[str, Any]) -> None:
     path = _preset_path(name)
     serialized = json.loads(json.dumps(values))
     with path.open("w", encoding="utf-8") as handle:
-        json.dump(serialized, handle, ensure_ascii=False, indent=2, sort_keys=True)
+        json.dump(serialized, handle, ensure_ascii=False, indent=2, sort_keys=False)
 
 
 def _load_preset(name: str) -> Dict[str, Any]:
@@ -424,8 +399,6 @@ def _normalize_preset_payload(values: Dict[str, Any]) -> Dict[str, Any]:
         raise ValueError("Preset values must be provided as a dictionary.")
     normalized = _clone_default_template()
     for key, value in values.items():
-        if key not in ALLOWED_PRESET_FIELDS:
-            continue
         if key in LIST_FIELDS:
             if isinstance(value, (list, tuple)):
                 cleaned = [str(item).strip().upper() for item in value if str(item).strip()]
@@ -487,7 +460,7 @@ def _resolve_csv_path(raw_path: str) -> Path:
 
 @app.route("/")
 def index() -> object:
-    return send_from_directory(Path(app.root_path), "index.html")
+    return render_template("index.html")
 
 
 @app.get("/api/presets")

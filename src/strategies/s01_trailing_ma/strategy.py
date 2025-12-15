@@ -20,7 +20,6 @@ from strategies.base import BaseStrategy
 
 @dataclass
 class S01Params:
-    use_backtester: bool = True
     use_date_filter: bool = True
     start: Optional[pd.Timestamp] = None
     end: Optional[pd.Timestamp] = None
@@ -67,7 +66,6 @@ class S01Params:
             end = pd.Timestamp(end, tz="UTC")
 
         return cls(
-            use_backtester=bool(d.get("backtester", True)),
             use_date_filter=bool(d.get("dateFilter", True)),
             start=start,
             end=end,
@@ -107,9 +105,6 @@ class S01TrailingMA(BaseStrategy):
     @staticmethod
     def run(df: pd.DataFrame, params: Dict[str, Any], trade_start_idx: int = 0) -> StrategyResult:
         p = S01Params.from_dict(params)
-
-        if p.use_backtester is False:
-            raise ValueError("Backtester is disabled in the provided parameters")
 
         close = df["Close"]
         high = df["High"]

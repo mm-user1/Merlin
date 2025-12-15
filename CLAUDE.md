@@ -10,7 +10,7 @@ This is a cryptocurrency trading strategy backtesting and optimization platform.
 
 ### Web Server
 ```bash
-cd src
+cd src/ui
 python server.py
 ```
 The server runs at http://0.0.0.0:8000 and serves the SPA from `index.html`.
