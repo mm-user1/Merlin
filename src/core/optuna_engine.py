@@ -3,11 +3,11 @@ from __future__ import annotations
 
 import bisect
 import logging
-import multiprocessing as mp
+import os
 import time
 from dataclasses import dataclass
 from decimal import Decimal
-from typing import Any, Dict, Iterable, List, Optional, Tuple, Union
+from typing import Any, Dict, List, Optional, Tuple, Union
 
 import optuna
 from optuna.pruners import MedianPruner, PercentilePruner, PatientPruner
@@ -69,6 +69,139 @@ class OptimizationResult:
     recovery_factor: Optional[float] = None
     consistency_score: Optional[float] = None
     score: float = 0.0
+
+
+# ============================================================================
+# Process-level cache for parallel workers
+# ============================================================================
+# Each worker process maintains its own cache to avoid reloading data
+_PROCESS_CACHE: Dict[str, Any] = {}
+
+
+def _get_cached_data(
+    csv_file: Any,
+    csv_data: Optional[str],
+    start_ts: Optional[pd.Timestamp],
+    end_ts: Optional[pd.Timestamp],
+    warmup_bars: int,
+    strategy_id: str,
+    use_date_filter: bool,
+) -> Dict[str, Any]:
+    """
+    Get or load cached data for this worker process.
+
+    Each parallel worker process calls this on first trial,
+    then reuses cached data for subsequent trials.
+
+    Args:
+        csv_file: File path or file-like object (used if csv_data is None)
+        csv_data: Pre-read CSV content as string (preferred for file uploads)
+        start_ts: Start timestamp for date filtering
+        end_ts: End timestamp for date filtering
+        warmup_bars: Number of warmup bars
+        strategy_id: Strategy identifier
+        use_date_filter: Whether to apply date filtering
+    """
+    import io
+
+    # Create cache key from parameters
+    if csv_data is not None:
+        # Use hash of data for cache key when we have pre-read content
+        file_key = f"preloaded_{hash(csv_data[:1000]) if len(csv_data) > 1000 else hash(csv_data)}"
+    else:
+        file_key = str(csv_file) if not hasattr(csv_file, 'name') else csv_file.name
+    cache_key = f"{file_key}:{start_ts}:{end_ts}:{warmup_bars}:{strategy_id}"
+
+    if cache_key not in _PROCESS_CACHE:
+        from strategies import get_strategy
+        from .backtest_engine import prepare_dataset_with_warmup
+
+        logger.debug(f"Worker {os.getpid()} loading data for cache key: {cache_key[:50]}...")
+
+        # Use pre-read data if available, otherwise load from file
+        if csv_data is not None:
+            df = load_data(io.StringIO(csv_data))
+        else:
+            df = load_data(csv_file)
+
+        trade_start_idx = 0
+
+        if use_date_filter and (start_ts is not None or end_ts is not None):
+            df, trade_start_idx = prepare_dataset_with_warmup(
+                df, start_ts, end_ts, warmup_bars
+            )
+
+        strategy_class = get_strategy(strategy_id)
+
+        _PROCESS_CACHE[cache_key] = {
+            'df': df,
+            'trade_start_idx': trade_start_idx,
+            'strategy_class': strategy_class,
+        }
+        logger.debug(f"Worker {os.getpid()} cache initialized: {len(df)} rows")
+
+    return _PROCESS_CACHE[cache_key]
+
+
+def _run_trial_parallel(
+    params_dict: Dict[str, Any],
+    csv_file: Any,
+    csv_data: Optional[str],
+    start_ts: Optional[pd.Timestamp],
+    end_ts: Optional[pd.Timestamp],
+    warmup_bars: int,
+    strategy_id: str,
+    use_date_filter: bool,
+) -> OptimizationResult:
+    """
+    Standalone worker function for parallel trial execution.
+
+    This function is called by Optuna's parallel backend (joblib).
+    Each worker process caches data on first call.
+
+    Args:
+        params_dict: Strategy parameters to evaluate
+        csv_file: File path (used if csv_data is None)
+        csv_data: Pre-read CSV content as string (avoids file handle race conditions)
+        start_ts: Start timestamp for date filtering
+        end_ts: End timestamp for date filtering
+        warmup_bars: Number of warmup bars
+        strategy_id: Strategy identifier
+        use_date_filter: Whether to apply date filtering
+    """
+    cached = _get_cached_data(
+        csv_file, csv_data, start_ts, end_ts, warmup_bars, strategy_id, use_date_filter
+    )
+
+    df = cached['df']
+    trade_start_idx = cached['trade_start_idx']
+    strategy_class = cached['strategy_class']
+
+    try:
+        result = strategy_class.run(df, params_dict, trade_start_idx)
+
+        basic_metrics = metrics.calculate_basic(result)
+        advanced_metrics = metrics.calculate_advanced(result)
+
+        return OptimizationResult(
+            params=params_dict.copy(),
+            net_profit_pct=basic_metrics.net_profit_pct,
+            max_drawdown_pct=basic_metrics.max_drawdown_pct,
+            total_trades=basic_metrics.total_trades,
+            romad=advanced_metrics.romad,
+            sharpe_ratio=advanced_metrics.sharpe_ratio,
+            profit_factor=advanced_metrics.profit_factor,
+            ulcer_index=advanced_metrics.ulcer_index,
+            recovery_factor=advanced_metrics.recovery_factor,
+            consistency_score=advanced_metrics.consistency_score,
+        )
+    except Exception:
+        return OptimizationResult(
+            params=params_dict.copy(),
+            net_profit_pct=0.0,
+            max_drawdown_pct=0.0,
+            total_trades=0,
+        )
 
 
 # ============================================================================
@@ -323,12 +456,11 @@ class OptunaConfig:
 
 
 class OptunaOptimizer:
-    """Optuna-based optimizer for Bayesian hyperparameter search using multiprocess evaluation."""
+    """Optuna-based optimizer for Bayesian hyperparameter search with parallel execution."""
 
     def __init__(self, base_config, optuna_config: OptunaConfig) -> None:
         self.base_config = base_config
         self.optuna_config = optuna_config
-        self.pool: Optional[mp.pool.Pool] = None
         self.trial_results: List[OptimizationResult] = []
         self.best_value: float = float("-inf")
         self.trials_without_improvement: int = 0
@@ -337,6 +469,9 @@ class OptunaOptimizer:
         self.study: Optional[optuna.Study] = None
         self.pruner: Optional[optuna.pruners.BasePruner] = None
         self.param_type_map: Dict[str, str] = {}
+        # Worker configuration for parallel execution
+        self._worker_config: Dict[str, Any] = {}
+        self.n_jobs: int = min(32, max(1, int(base_config.worker_processes)))
 
     # ------------------------------------------------------------------
     # Search space handling
@@ -461,53 +596,97 @@ class OptunaOptimizer:
         )
 
     # ------------------------------------------------------------------
-    # Worker pool initialisation
+    # Worker configuration setup
     # ------------------------------------------------------------------
-    def _setup_worker_pool(self) -> None:
-        """Initialize the worker pool for Optuna optimization."""
+    def _setup_worker_config(self) -> None:
+        """Prepare configuration for parallel workers.
 
+        Instead of creating a process pool, we store the configuration
+        that workers need to initialize themselves. Each worker will
+        load and cache data on first use via _get_cached_data().
+
+        IMPORTANT: For file-like objects (e.g., Flask uploads), we read the
+        data once here in the main process to avoid race conditions when
+        multiple workers try to read the same file handle simultaneously.
+        """
         from strategies import get_strategy
 
+        # Validate strategy exists
         try:
-            strategy_class = get_strategy(self.base_config.strategy_id)
+            get_strategy(self.base_config.strategy_id)
         except ValueError as e:
             raise ValueError(
                 f"Failed to load strategy '{self.base_config.strategy_id}': {e}"
             )
 
-        from .backtest_engine import prepare_dataset_with_warmup
-
-        df = load_data(self.base_config.csv_file)
-
         use_date_filter = bool(self.base_config.fixed_params.get("dateFilter", False))
         start_ts = _parse_timestamp(self.base_config.fixed_params.get("start"))
         end_ts = _parse_timestamp(self.base_config.fixed_params.get("end"))
 
-        trade_start_idx = 0
-        if use_date_filter and (start_ts is not None or end_ts is not None):
+        # Handle file-like objects (e.g., Flask uploads) by reading once in main process
+        # This prevents race conditions when multiple workers try to read the same file
+        csv_source = self.base_config.csv_file
+        csv_data_for_workers = None
+
+        if hasattr(csv_source, 'read'):
+            # It's a file-like object - read content once
+            logger.info("Reading uploaded file content in main process to avoid race conditions")
             try:
-                df, trade_start_idx = prepare_dataset_with_warmup(
-                    df, start_ts, end_ts, self.base_config.warmup_bars
-                )
-            except Exception as exc:
-                raise ValueError(f"Failed to prepare dataset with warmup: {exc}")
+                # Save current position if possible
+                start_pos = csv_source.tell() if hasattr(csv_source, 'tell') else 0
+                content = csv_source.read()
 
-        self.df = df
-        self.trade_start_idx = trade_start_idx
-        self.strategy_class = strategy_class
+                # Handle bytes vs string
+                if isinstance(content, bytes):
+                    csv_data_for_workers = content.decode('utf-8')
+                else:
+                    csv_data_for_workers = content
 
-        processes = min(32, max(1, int(self.base_config.worker_processes)))
-        self.pool = mp.Pool(processes=processes)
+                # Try to reset position for any other code that might need it
+                if hasattr(csv_source, 'seek'):
+                    csv_source.seek(start_pos)
+            except Exception as e:
+                logger.warning(f"Could not read file content: {e}, will pass file reference")
+                csv_data_for_workers = None
+
+        # Store config for workers - they will load data themselves
+        self._worker_config = {
+            'csv_file': self.base_config.csv_file if csv_data_for_workers is None else None,
+            'csv_data': csv_data_for_workers,  # Pre-read content for file-like objects
+            'start_ts': start_ts,
+            'end_ts': end_ts,
+            'warmup_bars': self.base_config.warmup_bars,
+            'strategy_id': self.base_config.strategy_id,
+            'use_date_filter': use_date_filter,
+        }
+
+        logger.info(
+            f"Worker config prepared: n_jobs={self.n_jobs}, "
+            f"strategy={self.base_config.strategy_id}, "
+            f"data_preloaded={csv_data_for_workers is not None}"
+        )
 
     # ------------------------------------------------------------------
     # Objective evaluation
     # ------------------------------------------------------------------
     def _evaluate_parameters(self, params_dict: Dict[str, Any]) -> OptimizationResult:
-        if self.pool is None:
-            raise RuntimeError("Worker pool is not initialised.")
+        """Evaluate a single parameter combination.
 
-        args = (params_dict, self.df, self.trade_start_idx, self.strategy_class)
-        return self.pool.apply(_run_single_combination, (args,))
+        Uses _run_trial_parallel which handles data caching per worker process.
+        """
+        if not self._worker_config:
+            raise RuntimeError("Worker config not initialized. Call _setup_worker_config() first.")
+
+        return _run_trial_parallel(
+            params_dict=params_dict,
+            csv_file=self._worker_config['csv_file'],
+            csv_data=self._worker_config.get('csv_data'),
+            start_ts=self._worker_config['start_ts'],
+            end_ts=self._worker_config['end_ts'],
+            warmup_bars=self._worker_config['warmup_bars'],
+            strategy_id=self._worker_config['strategy_id'],
+            use_date_filter=self._worker_config['use_date_filter'],
+        )
 
     def _cast_param_value(self, name: str, value: Any) -> Any:
         param_type = self.param_type_map.get(name, "").lower()
@@ -650,7 +829,7 @@ class OptunaOptimizer:
         self.pruned_trials = 0
 
         search_space = self._build_search_space()
-        self._setup_worker_pool()
+        self._setup_worker_config()
 
         sampler = self._create_sampler()
         self.pruner = self._create_pruner()
@@ -695,20 +874,18 @@ class OptunaOptimizer:
             callbacks.append(convergence_callback)
 
         try:
+            logger.info(f"Starting parallel optimization with n_jobs={self.n_jobs}")
             self.study.optimize(
                 lambda trial: self._objective(trial, search_space),
                 n_trials=n_trials,
                 timeout=timeout,
+                n_jobs=self.n_jobs,
                 callbacks=callbacks or None,
                 show_progress_bar=False,
             )
         except KeyboardInterrupt:
             logger.info("Optuna optimisation interrupted by user")
         finally:
-            if self.pool is not None:
-                self.pool.close()
-                self.pool.join()
-                self.pool = None
             self.pruner = None
 
         end_time = time.time()
