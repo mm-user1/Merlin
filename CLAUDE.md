@@ -1,184 +1,179 @@
 # CLAUDE.md
 
-This file provides guidance to Claude Code (claude.ai/code) when working with code in this repository.
+Guidance for Claude Code (claude.ai/code) when working with this repository.
 
-## Project Overview
+## Project: Merlin
 
-This is a cryptocurrency/forex trading strategy backtesting and optimization platform for the "Trailing Moving Average" strategy. It provides both a web interface (Flask SPA) and CLI tools to run single backtests or optimize across thousands of parameter combinations using either grid search or Bayesian optimization (Optuna).
+Cryptocurrency trading strategy backtesting and Optuna optimization platform with a Flask SPA frontend.
 
 ## Running the Application
 
 ### Web Server
 ```bash
-cd src
+cd src/ui
 python server.py
 ```
-Server runs at http://0.0.0.0:8000 and serves the embedded SPA from `index.html`.
+Server runs at http://0.0.0.0:5000
 
 ### CLI Backtest
 ```bash
 cd src
-python run_backtest.py --csv ../data/OKX_LINKUSDT.P,\ 15...csv
+python run_backtest.py --csv ../data/raw/OKX_LINKUSDT.P,\ 15\ 2025.05.01-2025.11.20.csv
+```
+
+### Tests
+```bash
+pytest tests/ -v
 ```
 
 ### Dependencies
 ```bash
 pip install -r requirements.txt
 ```
-Key dependencies: Flask, pandas, numpy, matplotlib, backtesting, tqdm, optuna==4.4.0
+Key: Flask, pandas, numpy, matplotlib, optuna==4.4.0
 
-## Directory Structure
+## Architecture
 
-- `./src/` - Main project folder containing all source code
-- `./data/` - Example market data CSVs, reference PineScript strategies, and reference Python scripts
-- `./src/Presets/` - Auto-created directory for saved trading configuration presets (JSON files)
+### Core Principles
 
-## Architecture: Core Components
+1. **Config-driven design** - Parameter schemas in `config.json`, UI renders dynamically
+2. **camelCase naming** - End-to-end: Pine Script → config.json → Python → CSV
+3. **Optuna-only optimization** - Grid search removed
+4. **Strategy isolation** - Each strategy owns its params dataclass
 
-### 1. Entry Points
-- **Web**: `server.py` - Flask REST API with 6 endpoints for backtesting, optimization, and preset management
-- **CLI**: `run_backtest.py` - Command-line wrapper for single backtests
+### Directory Structure
 
-### 2. Optimization Modes
-
-The system supports two distinct optimization approaches:
-
-**Grid Search** (`optimizer_engine.py`):
-- Cartesian product of all enabled parameter ranges
-- Uses multiprocessing with pre-computed caches for performance
-- Best for small-to-medium search spaces (<10,000 combinations)
-
-**Bayesian Optimization** (`optuna_engine.py`):
-- Optuna-based smart search that learns from previous trials
-- 5 optimization targets: score, net_profit, romad, sharpe, max_drawdown
-- 3 budget modes: n_trials, timeout, or patience (convergence)
-- Includes pruning to eliminate unpromising trials early
-- Best for large search spaces or expensive evaluations
-
-### 3. Multi-Process Caching Architecture
-
-**Critical for understanding performance**: `optimizer_engine.py` implements a sophisticated caching system in `_init_worker()`:
-
-```python
-# Each worker process pre-computes and caches:
-_ma_cache = {}       # All MA values for all types/lengths
-_lowest_cache = {}   # Lowest lows for trail calculations
-_highest_cache = {}  # Highest highs for trail calculations
-_atr_values = {}     # ATR values for stop-loss sizing
+```
+src/
+├── core/               # Engines + utilities
+│   ├── backtest_engine.py    # Trade simulation, TradeRecord, StrategyResult
+│   ├── optuna_engine.py      # Optimization, OptimizationResult, OptunaConfig
+│   ├── walkforward_engine.py # WFA orchestration
+│   ├── metrics.py            # BasicMetrics, AdvancedMetrics calculation
+│   └── export.py             # CSV export functions
+├── indicators/         # Technical indicators
+│   ├── ma.py           # 11 MA types via get_ma()
+│   ├── volatility.py   # ATR, NATR
+│   └── oscillators.py  # RSI, StochRSI
+├── strategies/         # Trading strategies
+│   ├── base.py         # BaseStrategy class
+│   ├── s01_trailing_ma/
+│   └── s04_stochrsi/
+└── ui/                 # Web interface
+    ├── server.py       # Flask API
+    ├── templates/      # HTML
+    └── static/         # JS, CSS
 ```
 
-This architecture avoids recomputing expensive calculations across thousands of parameter combinations. The cache is initialized once per worker process and shared across all simulations in that worker. **When modifying optimization logic, preserve this caching pattern to maintain performance.**
+### Data Structure Ownership
 
-### 4. Strategy Simulation Flow
+| Structure | Module |
+|-----------|--------|
+| `TradeRecord`, `StrategyResult` | `backtest_engine.py` |
+| `BasicMetrics`, `AdvancedMetrics` | `metrics.py` |
+| `OptimizationResult`, `OptunaConfig` | `optuna_engine.py` |
+| Strategy params dataclass | Each strategy's `strategy.py` |
 
-`backtest_engine.py` → `run_strategy()` executes the core trading simulation:
+## Parameter Naming Rules
 
-1. **Indicator Calculation**: Computes MAs, ATR, trailing MAs (supports 11 MA types)
-2. **Bar-by-Bar Simulation**: Iterates through OHLCV data generating entry/exit signals based on MA crossovers and close counts
-3. **Position Management**: Handles stops (ATR-based, max %, max days) and trailing exits
-4. **Metrics Calculation**: Returns net profit, max drawdown, trade count, and full trade history
+**CRITICAL: Use camelCase everywhere**
 
-### 5. Moving Average Types (11 Supported)
+- ✅ `maType`, `closeCountLong`, `rsiLen`, `stopLongMaxPct`
+- ❌ `ma_type`, `close_count_long`, `rsi_len`, `stop_long_max_pct`
 
-The system implements 11 MA types with different characteristics:
-- **SMA**: Simple Moving Average (baseline)
-- **EMA**: Exponential MA (responsive)
-- **HMA**: Hull MA (fast trend detection, low lag)
-- **ALMA**: Arnaud Legoux MA (optimized for low lag)
-- **KAMA**: Kaufman Adaptive MA (adjusts to volatility)
-- **WMA**: Weighted MA
-- **TMA**: Triangular MA (double-smoothed)
-- **T3**: T3 MA (advanced smoothing)
-- **DEMA**: Double EMA (faster response than EMA)
-- **VWMA**: Volume-Weighted MA
-- **VWAP**: Volume-Weighted Average Price
+Internal control fields (`use_backtester`, `start`, `end`) may use snake_case but are excluded from UI/config.
 
-Each is implemented in `backtest_engine.py` (lines ~188-331). These are used for both trend detection (`maType`) and trailing exit logic (`trailLongType`/`trailShortType`).
+**Do NOT add:**
+- `to_dict()` methods - use `dataclasses.asdict(params)` instead
+- Snake↔camel conversion helpers
+- Feature flags
 
-### 6. Scoring System (6 Metrics)
+## Adding New Strategies
 
-Optimization can use a composite score combining 6 risk-adjusted metrics (`optimizer_engine.py`, lines 27-34):
+See `docs/ADDING_NEW_STRATEGY.md` for complete guide.
 
-- **RoMaD**: Return Over Maximum Drawdown (25% default weight)
-- **Sharpe Ratio**: Risk-adjusted return (20%)
-- **Profit Factor**: Wins/Losses ratio (20%)
-- **Ulcer Index**: Downside volatility measure (15%)
-- **Recovery Factor**: Profit vs. max drawdown (10%)
-- **Consistency**: Monthly return consistency (10%)
+Quick checklist:
+1. Create `src/strategies/<strategy_id>/` directory
+2. Create `config.json` with parameter schema (camelCase)
+3. Create `strategy.py` with params dataclass and strategy class
+4. Ensure `STRATEGY_ID`, `STRATEGY_NAME`, `STRATEGY_VERSION` class attributes
+5. Implement `run(df, params, trade_start_idx) -> StrategyResult` static method
+6. Strategy auto-discovered - no manual registration needed
 
-Users can adjust weights per their risk preferences. All 6 metrics are written to output CSV.
+## Common Tasks
 
-### 7. Parameter Flow and Preset System
+### Running Single Backtest
+```python
+from core.backtest_engine import load_data, prepare_dataset_with_warmup
+from strategies.s01_trailing_ma.strategy import S01TrailingMA
 
-**Configuration flow**:
-1. User sets parameters in web UI or loads a preset
-2. Frontend sends config to `/api/optimize` or `/api/backtest`
-3. Server validates and converts to `OptimizationConfig` or `StrategyParams`
-4. Optimizer generates combinations respecting enabled/disabled parameter flags
-5. Results exported to CSV with parameter block header (fixed params that weren't varied)
+df = load_data("data/raw/OKX_LINKUSDT.P, 15 2025.05.01-2025.11.20.csv")
+df_prepared, trade_start_idx = prepare_dataset_with_warmup(df, start, end, warmup_bars=1000)
+result = S01TrailingMA.run(df_prepared, params, trade_start_idx)
+```
 
-**Preset system** (`src/Presets/`):
-- Presets stored as JSON files
-- Can import optimal parameters from output CSV using `/api/presets/import-csv`
-- Only parameters in the "locked" block (not varied during optimization) are imported
-- Default preset in `defaults.json`
+### Calculating Metrics
+```python
+from core import metrics
+basic = metrics.calculate_basic(result, initial_capital=100.0)
+advanced = metrics.calculate_advanced(result)
+```
 
-### 8. API Endpoints
+### Using Indicators
+```python
+from indicators.ma import get_ma
+from indicators.volatility import atr
+from indicators.oscillators import rsi, stoch_rsi
 
-- `GET /` → Serves web UI
-- `POST /api/backtest` → Single backtest with specific parameters
-- `POST /api/optimize` → Grid or Optuna optimization
-- `GET /api/presets` → List all saved presets
-- `POST /api/presets` → Create new preset
-- `PUT /api/presets/<name>` → Update existing preset
-- `DELETE /api/presets/<name>` → Delete preset
-- `POST /api/presets/import-csv` → Import parameters from optimization result CSV
+ma_values = get_ma(df["Close"], "HMA", 50)
+atr_values = atr(df["High"], df["Low"], df["Close"], 14)
+rsi_values = rsi(df["Close"], 14)
+```
 
-## Key Design Constraints
+## Testing
 
-From `agents.md`, critical development guidelines:
+### Run All Tests
+```bash
+pytest tests/ -v
+```
 
-1. **Strict specification adherence**: Any deviations from requirements require explicit user consent
-2. **Performance is critical**: The script must be maximally efficient and fast. Respect the caching architecture.
-3. **Light theme for GUI**: UI must use light theme (already implemented in `index.html`)
+### Key Test Files
+- `test_sanity.py` - Infrastructure checks
+- `test_regression_s01.py` - S01 baseline regression
+- `test_naming_consistency.py` - camelCase guardrails
 
-## Output CSV Format
+### Regenerate S01 Baseline
+```bash
+python tools/generate_baseline_s01.py
+```
 
-Optimization results are exported as CSV with:
-1. **Parameter block header**: Fixed parameters that weren't varied (key-value pairs)
-2. **Results table**: One row per combination tested with columns for each varied parameter plus all metrics (net profit %, trades, sharpe, score, etc.)
+## UI Notes
 
-This format allows users to:
-- Import winning parameters back as presets
-- Analyze which parameter ranges performed best
-- Filter results by minimum score or profit thresholds
+- Light theme (project requirement)
+- Forms generated dynamically from `config.json`
+- Strategy dropdown auto-populated from discovered strategies
+- No hardcoded parameters in frontend
 
 ## Performance Considerations
 
-- **Multiprocessing**: Default 6 worker processes (user-configurable)
-- **Vectorized operations**: Uses numpy/pandas for bulk calculations
-- **Pre-computation**: All MA values cached before worker pool starts
-- **Memory sharing**: Workers inherit cached data via fork (Linux) or explicit initialization
-- **Progress tracking**: `tqdm` progress bars in terminal show ETA based on worker throughput
+- Use vectorized pandas/numpy operations
+- Reuse indicator calculations where possible
+- Avoid expensive logging in hot paths (optimization loops)
+- `trade_start_idx` skips warmup bars in simulation
 
-When modifying optimizer or backtest logic, run performance tests with realistic parameter grids (1000+ combinations) to ensure changes don't break the caching benefits.
+## Current Strategies
 
-## Common Workflow
+| ID | Name | Description |
+|----|------|-------------|
+| `s01_trailing_ma` | S01 Trailing MA | Complex trailing MA with 11 MA types, close counts, ATR stops |
+| `s04_stochrsi` | S04 StochRSI | StochRSI swing strategy with swing-based stops |
 
-1. User uploads OHLCV CSV data (or selects multiple files)
-2. Configures strategy parameters and selects which to vary
-3. Chooses optimization mode (grid vs optuna) and scoring preferences
-4. Clicks "Optimize" → Server spawns worker pool
-5. Results stream back as CSV download
-6. User analyzes results, identifies best parameters
-7. Imports winning parameters as new preset via `/api/presets/import-csv`
-8. Runs additional focused optimizations or tests on different date ranges
+## Key Files for Reference
 
-## Testing Notes
-
-No formal test suite exists. When making changes:
-- Test with small parameter grids first (e.g., 2-3 values per parameter)
-- Verify optimization completes without errors
-- Check output CSV format matches expected structure (parameter block + results table)
-- Test both grid and optuna modes if modifying optimization logic
-- Verify preset save/load/import functionality if touching preset endpoints
+| Purpose | File |
+|---------|------|
+| Full architecture | `docs/PROJECT_OVERVIEW.md` |
+| Adding strategies | `docs/ADDING_NEW_STRATEGY.md` |
+| S04 example | `src/strategies/s04_stochrsi/strategy.py` |
+| config.json example | `src/strategies/s04_stochrsi/config.json` |
+| Test baseline | `data/baseline/` |

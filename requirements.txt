@@ -5,3 +5,5 @@ backtesting
 flask
 tqdm
 optuna==4.4.0
+pytest
+pytest-cov
