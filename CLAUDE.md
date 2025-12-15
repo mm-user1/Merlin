@@ -1,10 +1,10 @@
 # CLAUDE.md
 
-This file provides guidance to Claude Code (claude.ai/code) when working with code in this repository.
+Guidance for Claude Code (claude.ai/code) when working with this repository.
 
-## Project Overview
+## Project: Merlin
 
-This is a cryptocurrency trading strategy backtesting and optimization platform. The system uses a hybrid architecture: typed strategy modules with camelCase parameters, a generic config-driven core (Optuna-only), and a light-themed Flask SPA frontend.
+Cryptocurrency trading strategy backtesting and Optuna optimization platform with a Flask SPA frontend.
 
 ## Running the Application
 
@@ -13,65 +13,167 @@ This is a cryptocurrency trading strategy backtesting and optimization platform.
 cd src/ui
 python server.py
 ```
-The server runs at http://0.0.0.0:8000 and serves the SPA from `index.html`.
+Server runs at http://0.0.0.0:8000
 
 ### CLI Backtest
 ```bash
 cd src
-python run_backtest.py --csv ../data/OKX_LINKUSDT.P,\ 15\ 2025.05.01-2025.11.20.csv
+python run_backtest.py --csv ../data/raw/OKX_LINKUSDT.P,\ 15\ 2025.05.01-2025.11.20.csv
+```
+
+### Tests
+```bash
+pytest tests/ -v
 ```
 
 ### Dependencies
 ```bash
 pip install -r requirements.txt
 ```
-Key dependencies: Flask, pandas, numpy, matplotlib, optuna==4.4.0.
+Key: Flask, pandas, numpy, matplotlib, optuna==4.4.0
 
-## Architecture (Target)
+## Architecture
 
-- **Parameter naming:** camelCase end-to-end (Pine → config.json → Python → CSV). No snake_case fallbacks or conversion helpers.
-- **Hybrid model:**
-  - Strategies own their dataclasses and logic (`src/strategies/<id>/strategy.py`).
-  - Core modules remain strategy-agnostic and consume `Dict[str, Any]` parameter dicts (`OptimizationResult.params`).
-- **Config-driven:**
-  - Backend loads parameter schemas from each strategy's `config.json`.
-  - Frontend renders parameter controls directly from `config.json`.
-  - CSV export builds headers from `config.json` (no hardcoded fields).
-- **Engines:**
-  - `core/backtest_engine.py` — single backtests, defines trade/result structures.
-  - `core/optuna_engine.py` — the only optimizer (grid search removed).
-  - `core/export.py` and `core/metrics.py` — generic metrics + CSV exports.
-- **Strategy discovery:** `strategies/__init__.py` auto-loads strategies that contain both `config.json` and `strategy.py`.
+### Core Principles
+
+1. **Config-driven design** - Parameter schemas in `config.json`, UI renders dynamically
+2. **camelCase naming** - End-to-end: Pine Script → config.json → Python → CSV
+3. **Optuna-only optimization** - Grid search removed
+4. **Strategy isolation** - Each strategy owns its params dataclass
+
+### Directory Structure
+
+```
+src/
+├── core/               # Engines + utilities
+│   ├── backtest_engine.py    # Trade simulation, TradeRecord, StrategyResult
+│   ├── optuna_engine.py      # Optimization, OptimizationResult, OptunaConfig
+│   ├── walkforward_engine.py # WFA orchestration
+│   ├── metrics.py            # BasicMetrics, AdvancedMetrics calculation
+│   └── export.py             # CSV export functions
+├── indicators/         # Technical indicators
+│   ├── ma.py           # 11 MA types via get_ma()
+│   ├── volatility.py   # ATR, NATR
+│   └── oscillators.py  # RSI, StochRSI
+├── strategies/         # Trading strategies
+│   ├── base.py         # BaseStrategy class
+│   ├── s01_trailing_ma/
+│   └── s04_stochrsi/
+└── ui/                 # Web interface
+    ├── server.py       # Flask API
+    ├── templates/      # HTML
+    └── static/         # JS, CSS
+```
+
+### Data Structure Ownership
+
+| Structure | Module |
+|-----------|--------|
+| `TradeRecord`, `StrategyResult` | `backtest_engine.py` |
+| `BasicMetrics`, `AdvancedMetrics` | `metrics.py` |
+| `OptimizationResult`, `OptunaConfig` | `optuna_engine.py` |
+| Strategy params dataclass | Each strategy's `strategy.py` |
 
 ## Parameter Naming Rules
 
-- ✅ `maType`, `closeCountLong`, `rsiLen`
-- ❌ `ma_type`, `close_count_long`, `rsi_len`
-- Internal control fields (`use_backtester`, `use_date_filter`, `start`, `end`) may stay snake_case but are excluded from UI/config.
-- Do not add `to_dict` or snake↔camel conversion layers; use `dataclasses.asdict`.
+**CRITICAL: Use camelCase everywhere**
 
-## Performance & Caching
+- ✅ `maType`, `closeCountLong`, `rsiLen`, `stopLongMaxPct`
+- ❌ `ma_type`, `close_count_long`, `rsi_len`, `stop_long_max_pct`
 
-- Backtests and optimizations rely on vectorized pandas/numpy routines.
-- Reuse indicator calculations where possible; avoid per-call recomputation inside loops.
-- Maintain Optuna-friendly objective functions and avoid expensive logging in hot paths.
+Internal control fields (`use_backtester`, `start`, `end`) may use snake_case but are excluded from UI/config.
 
-## Testing Expectations
+**Do NOT add:**
+- `to_dict()` methods - use `dataclasses.asdict(params)` instead
+- Snake↔camel conversion helpers
+- Feature flags
 
-- Unit tests live in `tests/` and must pass with camelCase fixtures.
-- Naming guardrails: `tests/test_naming_consistency.py` enforces parameter casing, config/dataclass alignment, and absence of feature flags.
-- Regression coverage: `tests/test_regression_s01.py` and `tests/test_s01_migration.py` verify baseline behavior using `data/raw/OKX_LINKUSDT.P, 15 2025.05.01-2025.11.20.csv`.
+## Adding New Strategies
 
-## Common Workflow
+See `docs/ADDING_NEW_STRATEGY.md` for complete guide.
 
-1. Load or upload OHLCV CSV data.
-2. Choose a strategy (`s01_trailing_ma` or `s04_stochrsi`).
-3. Configure parameters (camelCase) via UI or API payloads.
-4. Run backtest or Optuna optimization; results export to CSV with camelCase headers.
-5. Analyze metrics (net profit %, drawdown, Sharpe, RoMaD, etc.) and iterate.
+Quick checklist:
+1. Create `src/strategies/<strategy_id>/` directory
+2. Create `config.json` with parameter schema (camelCase)
+3. Create `strategy.py` with params dataclass and strategy class
+4. Ensure `STRATEGY_ID`, `STRATEGY_NAME`, `STRATEGY_VERSION` class attributes
+5. Implement `run(df, params, trade_start_idx) -> StrategyResult` static method
+6. Strategy auto-discovered - no manual registration needed
 
-## Development Notes
+## Common Tasks
 
-- Preserve light theme styling in the SPA.
-- Keep core modules free of strategy-specific fields; add new strategies via `config.json` + `strategy.py` only.
-- Follow `docs/ADDING_NEW_STRATEGY.md` for onboarding new strategies.
+### Running Single Backtest
+```python
+from core.backtest_engine import load_data, prepare_dataset_with_warmup
+from strategies.s01_trailing_ma.strategy import S01TrailingMA
+
+df = load_data("data/raw/OKX_LINKUSDT.P, 15 2025.05.01-2025.11.20.csv")
+df_prepared, trade_start_idx = prepare_dataset_with_warmup(df, start, end, warmup_bars=1000)
+result = S01TrailingMA.run(df_prepared, params, trade_start_idx)
+```
+
+### Calculating Metrics
+```python
+from core import metrics
+basic = metrics.calculate_basic(result, initial_capital=100.0)
+advanced = metrics.calculate_advanced(result)
+```
+
+### Using Indicators
+```python
+from indicators.ma import get_ma
+from indicators.volatility import atr
+from indicators.oscillators import rsi, stoch_rsi
+
+ma_values = get_ma(df["Close"], "HMA", 50)
+atr_values = atr(df["High"], df["Low"], df["Close"], 14)
+rsi_values = rsi(df["Close"], 14)
+```
+
+## Testing
+
+### Run All Tests
+```bash
+pytest tests/ -v
+```
+
+### Key Test Files
+- `test_sanity.py` - Infrastructure checks
+- `test_regression_s01.py` - S01 baseline regression
+- `test_naming_consistency.py` - camelCase guardrails
+
+### Regenerate S01 Baseline
+```bash
+python tools/generate_baseline_s01.py
+```
+
+## UI Notes
+
+- Light theme (project requirement)
+- Forms generated dynamically from `config.json`
+- Strategy dropdown auto-populated from discovered strategies
+- No hardcoded parameters in frontend
+
+## Performance Considerations
+
+- Use vectorized pandas/numpy operations
+- Reuse indicator calculations where possible
+- Avoid expensive logging in hot paths (optimization loops)
+- `trade_start_idx` skips warmup bars in simulation
+
+## Current Strategies
+
+| ID | Name | Description |
+|----|------|-------------|
+| `s01_trailing_ma` | S01 Trailing MA | Complex trailing MA with 11 MA types, close counts, ATR stops |
+| `s04_stochrsi` | S04 StochRSI | StochRSI swing strategy with swing-based stops |
+
+## Key Files for Reference
+
+| Purpose | File |
+|---------|------|
+| Full architecture | `docs/PROJECT_OVERVIEW.md` |
+| Adding strategies | `docs/ADDING_NEW_STRATEGY.md` |
+| S04 example | `src/strategies/s04_stochrsi/strategy.py` |
+| config.json example | `src/strategies/s04_stochrsi/config.json` |
+| Test baseline | `data/baseline/` |
