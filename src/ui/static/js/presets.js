@@ -8,23 +8,20 @@ const PRESET_NAME_PATTERN = /^[A-Za-z0-9 _-]{1,64}$/;
 const PRESET_LABELS = {
   dateFilter: 'Date Filter',
   start: 'Start Date/Time',
-  end: 'End Date/Time',
-  backtester: 'Backtester'
+  end: 'End Date/Time'
 };
 
 const DEFAULT_PRESET = {
   dateFilter: true,
   start: '',
-  end: '',
-  backtester: true
+  end: ''
 };
 
 window.knownPresets = [];
 window.selectedCsvPath = '';
 window.defaults = clonePreset(DEFAULT_PRESET);
 window.uiState = {
-  csvPath: '',
-  backtester: true
+  csvPath: ''
 };
 
 function formatPresetLabel(key) {
@@ -40,9 +37,6 @@ function normalizePresetValues(rawValues) {
   if (!source.end && (Object.prototype.hasOwnProperty.call(source, 'endDate') || Object.prototype.hasOwnProperty.call(source, 'endTime'))) {
     source.end = composeISOTimestamp(source.endDate, source.endTime);
   }
-  if (!Object.prototype.hasOwnProperty.call(source, 'backtester') && Object.prototype.hasOwnProperty.call(source, 'backtester')) {
-    source.backtester = Boolean(source.backtester);
-  }
 
   const normalized = clonePreset(DEFAULT_PRESET);
 
@@ -55,13 +49,10 @@ function normalizePresetValues(rawValues) {
   if (Object.prototype.hasOwnProperty.call(source, 'end')) {
     normalized.end = typeof source.end === 'string' ? source.end.trim() : '';
   }
-  if (Object.prototype.hasOwnProperty.call(source, 'backtester')) {
-    normalized.backtester = Boolean(source.backtester);
-  }
 
   // Preserve any strategy/backtest parameters as-is
   Object.keys(source).forEach((key) => {
-    if (['dateFilter', 'start', 'end', 'backtester', 'startDate', 'startTime', 'endDate', 'endTime'].includes(key)) {
+    if (['dateFilter', 'start', 'end', 'startDate', 'startTime', 'endDate', 'endTime'].includes(key)) {
       return;
     }
     normalized[key] = source[key];
@@ -92,9 +83,6 @@ function applyPresetValues(values, { clearResults = false } = {}) {
     const { date, time } = parseISOTimestamp(normalized.end);
     setInputValue('endDate', date);
     setInputValue('endTime', time);
-  }
-  if (Object.prototype.hasOwnProperty.call(normalized, 'backtester')) {
-    setCheckboxValue('backtester', normalized.backtester);
   }
 
   applyDynamicBacktestParams(normalized);
@@ -167,7 +155,6 @@ function collectPresetValues() {
     dateFilter: Boolean(document.getElementById('dateFilter')?.checked),
     start: start || window.defaults.start,
     end: end || window.defaults.end,
-    backtester: Boolean(document.getElementById('backtester')?.checked),
     ...dynamicParams
   };
 }

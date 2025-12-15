@@ -486,7 +486,6 @@ class WalkForwardEngine:
     def _result_to_params(self, result) -> Dict[str, Any]:
         params = dict(getattr(result, "params", {}) or {})
 
-        params.setdefault("backtester", True)
         params.setdefault("dateFilter", False)
         params.setdefault("start", None)
         params.setdefault("end", None)

@@ -97,15 +97,14 @@ PRESETS_DIR = Path(__file__).resolve().parent.parent / "Presets"
 DEFAULT_PRESET_NAME = "defaults"
 VALID_PRESET_NAME_RE = re.compile(r"^[A-Za-z0-9 _\-]{1,64}$")
 
-# Default preset containing only date fields and backtester flag.
+# Default preset containing only date fields.
 # Strategy/backtest parameters are added dynamically from payload.
 DEFAULT_PRESET: Dict[str, Any] = {
     "dateFilter": True,
     "start": None,
     "end": None,
-    "backtester": True,
 }
-BOOL_FIELDS = {"dateFilter", "backtester"}
+BOOL_FIELDS = {"dateFilter"}
 INT_FIELDS = set()
 FLOAT_FIELDS = set()
 
@@ -115,7 +114,7 @@ ALLOWED_PRESET_FIELDS = None  # None = accept all fields (strategy/backtest para
 
 
 def _clone_default_template() -> Dict[str, Any]:
-    # Use minimal defaults only (date/backtester). Strategy defaults are in strategy.py.
+    # Use minimal defaults only. Strategy defaults are in strategy.py.
     return json.loads(json.dumps(DEFAULT_PRESET))
 
 

@@ -303,7 +303,6 @@ function gatherFormState() {
   const payload = {
     ...dynamicParams,
     dateFilter: document.getElementById('dateFilter').checked,
-    backtester: document.getElementById('backtester').checked,
     start,
     end
   };
@@ -480,7 +479,6 @@ function buildOptimizationConfig(state) {
   const paramTypes = {};
   const fixedParams = {
     dateFilter: state.payload.dateFilter,
-    backtester: state.payload.backtester,
     start: state.start,
     end: state.end
   };
