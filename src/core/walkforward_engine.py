@@ -173,6 +173,20 @@ class WalkForwardEngine:
         forward_start = trading_start_idx + wf_zone_bars
         forward_end = trading_end_idx
 
+        # Align the start of the Forward Reserve to the first bar of its calendar day.
+        # This avoids intra-day offsets (e.g., 10:00 instead of 00:00) when users
+        # expect date-based boundaries (as shown in the summary/export files).
+        if len(df) > 0:
+            try:
+                forward_start_ts = df.index[min(forward_start, len(df) - 1)]
+                day_start_ts = forward_start_ts.normalize()
+                aligned_forward_start = df.index.searchsorted(day_start_ts)
+                # Do not move before the trading period start
+                forward_start = max(aligned_forward_start, trading_start_idx)
+            except Exception:
+                # If alignment fails, keep the original forward_start
+                pass
+
         # Available bars for WF windows
         wf_available_start = trading_start_idx
         wf_available_end = forward_start
