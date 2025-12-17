@@ -18,6 +18,7 @@
   (re-run after fixing `asdict` pickle issue for uploaded CSVs)
   (re-run again after deferring journal cleanup to post-finalization)
   (re-run after ensuring workers load study with same sampler/pruner to reduce duplicate suggestions)
+  (re-run after persisting full params into trial.user_attrs to avoid N/A fields in WFA exports)
 
 ## Follow-ups / Checks
 - Recommended to run a multi-process optimisation smoke test (e.g., 4 workers, small trial budget) to observe CPU utilisation and journal cleanup on the target host.

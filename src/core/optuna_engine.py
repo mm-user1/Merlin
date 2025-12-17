@@ -221,6 +221,7 @@ def _trial_set_result_attrs(
     """
     Persist key metrics into trial.user_attrs for cross-process aggregation.
     """
+    trial.set_user_attr("merlin.params", dict(result.params))
     trial.set_user_attr("merlin.net_profit_pct", float(result.net_profit_pct))
     trial.set_user_attr("merlin.max_drawdown_pct", float(result.max_drawdown_pct))
     trial.set_user_attr("merlin.total_trades", int(result.total_trades))
@@ -247,7 +248,7 @@ def _result_from_trial(trial: optuna.trial.FrozenTrial) -> OptimizationResult:
     """
     attrs = trial.user_attrs
     result = OptimizationResult(
-        params=dict(trial.params),
+        params=dict(attrs.get("merlin.params") or trial.params),
         net_profit_pct=float(attrs.get("merlin.net_profit_pct", 0.0)),
         max_drawdown_pct=float(attrs.get("merlin.max_drawdown_pct", 0.0)),
         total_trades=int(attrs.get("merlin.total_trades", 0)),
