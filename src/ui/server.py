@@ -705,46 +705,14 @@ def run_walkforward_optimization() -> object:
                 end_ts = end_date if end_date.tzinfo else end_date.tz_localize('UTC')
 
             # IMPORTANT: Add warmup period before start_ts for Walk-Forward Analysis
-            # The first WFA window will start from start_ts, so it needs historical data for MA warmup
-            # Calculate warmup dynamically based on maximum MA lengths
-            max_ma_length = 1
-
-            # Check parameter ranges (varied parameters) - using camelCase keys
-            param_ranges = optimization_config.param_ranges
-            if "maLength" in param_ranges:
-                # param_ranges format: (min, max, step)
-                max_ma_length = max(max_ma_length, int(param_ranges["maLength"][1]))
-            if "trailLongLength" in param_ranges:
-                max_ma_length = max(max_ma_length, int(param_ranges["trailLongLength"][1]))
-            if "trailShortLength" in param_ranges:
-                max_ma_length = max(max_ma_length, int(param_ranges["trailShortLength"][1]))
-
-            # Check fixed params (locked parameters)
-            fixed_params = optimization_config.fixed_params
-            if "maLength" in fixed_params and fixed_params["maLength"]:
-                max_ma_length = max(max_ma_length, int(fixed_params["maLength"]))
-            if "trailLongLength" in fixed_params and fixed_params["trailLongLength"]:
-                max_ma_length = max(max_ma_length, int(fixed_params["trailLongLength"]))
-            if "trailShortLength" in fixed_params and fixed_params["trailShortLength"]:
-                max_ma_length = max(max_ma_length, int(fixed_params["trailShortLength"]))
-
-            # Use same formula as prepare_dataset_with_warmup(): max(500, max_ma_length * 1.5)
-            dynamic_warmup_bars = max(500, int(max_ma_length * 1.5))
-            effective_warmup_bars = max(warmup_bars, dynamic_warmup_bars)
-
-            print(
-                "Dynamic warmup calculation: "
-                f"max_ma_length={max_ma_length}, "
-                f"warmup_bars={effective_warmup_bars}"
-            )
-
-            warmup_bars = effective_warmup_bars
+            # The first WFA window will start from start_ts, so it needs historical data.
+            # Use the user-specified warmup bars (default 1000) as-is to avoid strategy-specific logic.
 
             # Find the index of start_ts in the dataframe
             start_idx = df.index.searchsorted(start_ts)
 
             # Calculate warmup_start_idx (go back warmup_bars, but not before 0)
-            warmup_start_idx = max(0, start_idx - effective_warmup_bars)
+            warmup_start_idx = max(0, start_idx - warmup_bars)
 
             # Get the actual warmup start timestamp
             warmup_start_ts = df.index[warmup_start_idx]
