@@ -93,7 +93,7 @@ DEFAULT_OPTIMIZER_SCORE_CONFIG: Dict[str, Any] = {
     "normalization_method": "percentile",
 }
 
-PRESETS_DIR = Path(__file__).resolve().parent.parent / "Presets"
+PRESETS_DIR = Path(__file__).resolve().parent.parent / "presets"
 DEFAULT_PRESET_NAME = "defaults"
 VALID_PRESET_NAME_RE = re.compile(r"^[A-Za-z0-9 _\-]{1,64}$")
 
