@@ -1,26 +1,33 @@
 # Walk-Forward Entry Divergence Fix Report
 
 ## What was happening
-- In exported WFA trades for `T3 300_34869924`, the first Forward trade occurred at **2025-06-15 10:00**, while TradingView took it at **2025-06-15 00:00** (20 bars earlier on 30m data). All subsequent trades matched, so the drift was limited to the boundary of the Forward Reserve.
+- Boundary trades could appear later in exported WFA trades than in TradingView, while all subsequent trades matched. Examples:
+  - Forward start: `T3 300_34869924` — export showed first trade at **2025-06-15 10:00**, TradingView at **00:00**.
+  - OOS Window 2: `WMA 450_2f5a57f6` — export first trade at **2025-04-04 23:00**, TradingView at **00:00**.
 
 ## Root cause
-- The WFA splitter computed the Forward Reserve start (`forward_start`) as a bar index derived from the WF zone percentage. This index often landed **mid-day** (e.g., the bar at 10:00), but the CSV summary displays only the date, leading users (and TradingView setups) to assume the boundary is at **00:00** of that day.
-- TradingView evaluates conditions from the exact date boundary, so it could trigger on the first bar of that day. Merlin’s replay started forward testing several hours later, leaving earlier eligible setups unseen.
-- Time zone and warmup were not the issue: other trades aligned perfectly; only the first forward-bar entry shifted.
+- WFA window boundaries (IS start, gap→OOS start, Forward start) were set by bar counts, so they could land **mid-day**. The summary CSV shows only dates, so users and TradingView assume the boundary is at the day’s open (00:00). When the boundary landed mid-day, TradingView could take a valid setup on the first day bar while Merlin started later and missed it.
+- Time zones and warmup were not involved; the misalignment was purely intra-day boundary placement.
 
 ## Fix implemented
 - File: `src/core/walkforward_engine.py`
-- Change: After computing `forward_start`, align it to the **first bar of its calendar day**:
-  - Take the timestamp at `forward_start`, normalize to day start, find the first bar at or after that normalized timestamp.
-  - Keep the index within the trading period (no backward shift before trading_start_idx).
-- This preserves the same number of forward bars but moves the boundary to the day open, matching user expectation and TradingView behavior.
+- Added helper `_align_to_day_start(bar_idx, lower_bound)`:
+  - Snaps a boundary index to the first bar of its calendar day using the dataframe index.
+  - Never moves before `lower_bound`, preserving window ordering.
+- Applied this alignment to **all** WFA boundaries when `dateFilter` is used:
+  - IS start
+  - Gap→OOS start (gap shrinks if needed but order is preserved)
+  - Forward start
+- Consolidated alignment logic to avoid repetition and ensure consistent behavior.
 
-## Why this solves it
-- Forward testing now begins at 00:00 of the Forward Reserve start date, so Merlin evaluates the same first forward bar TradingView sees. The previously missed early setup (20 bars gap) is captured, aligning the first trade timing while leaving subsequent windows and trades unchanged.
+## Why it solves the issue
+- Each window now starts at 00:00 of its boundary date, matching what the summary communicates and what TradingView evaluates. Early-day setups are no longer skipped, eliminating first-trade divergence while leaving intra-window behavior unchanged.
 
-## Validation steps performed
-- Re-ran WFA with the same data/params; first forward trade timestamp moved from **2025-06-15 10:00** to **2025-06-15 00:00**, matching TradingView; later trades remained identical.
+## Validation
+- Forward case: first trade moved from **2025-06-15 10:00** to **2025-06-15 00:00**.
+- OOS Window 2 case: first trade moved from **2025-04-04 23:00** to **2025-04-04 00:00**.
+- All subsequent trades remained aligned.
 
-## Notes and scope
-- Impacted only WFA window splitting for the Forward Reserve boundary; IS/OOS windows and warmup handling are unchanged.
-- No time-zone changes; alignment is within the existing UTC index.
+## Scope
+- Affects only WFA window splitting under `dateFilter`; strategy logic and warmup handling are unchanged.
+- Alignment operates in UTC using existing index timestamps; no time-zone conversions were added.

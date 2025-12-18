@@ -123,6 +123,19 @@ class WalkForwardEngine:
         """
         total_bars = len(df)
 
+        def _align_to_day_start(bar_idx: int, lower_bound: int) -> int:
+            """
+            Snap a bar index to the first bar of its calendar day.
+            Keeps result >= lower_bound and within dataframe.
+            """
+            if total_bars == 0:
+                return bar_idx
+            safe_idx = min(max(bar_idx, 0), total_bars - 1)
+            ts = df.index[safe_idx]
+            day_start = ts.normalize()
+            aligned = df.index.searchsorted(day_start)
+            return max(aligned, lower_bound)
+
         # Check if date filtering is enabled and find trading period boundaries
         fixed_params = self.base_config_template.get('fixed_params', {})
         use_date_filter = fixed_params.get('dateFilter', False)
@@ -171,21 +184,8 @@ class WalkForwardEngine:
         # WF Zone: 80% of trading period, Forward Reserve: 20% of trading period
         wf_zone_bars = int(trading_period_bars * (self.config.wf_zone_pct / 100))
         forward_start = trading_start_idx + wf_zone_bars
+        forward_start = _align_to_day_start(forward_start, trading_start_idx)
         forward_end = trading_end_idx
-
-        # Align the start of the Forward Reserve to the first bar of its calendar day.
-        # This avoids intra-day offsets (e.g., 10:00 instead of 00:00) when users
-        # expect date-based boundaries (as shown in the summary/export files).
-        if len(df) > 0:
-            try:
-                forward_start_ts = df.index[min(forward_start, len(df) - 1)]
-                day_start_ts = forward_start_ts.normalize()
-                aligned_forward_start = df.index.searchsorted(day_start_ts)
-                # Do not move before the trading period start
-                forward_start = max(aligned_forward_start, trading_start_idx)
-            except Exception:
-                # If alignment fails, keep the original forward_start
-                pass
 
         # Available bars for WF windows
         wf_available_start = trading_start_idx
@@ -214,9 +214,16 @@ class WalkForwardEngine:
         stride = window_total_bars + self.config.gap_bars
         for i in range(self.config.num_windows):
             is_start = wf_available_start + i * stride
+            is_start = _align_to_day_start(is_start, wf_available_start)
             is_end = is_start + is_bars
             gap_start = is_end
             gap_end = gap_start + self.config.gap_bars
+            oos_start = gap_end
+            oos_end = oos_start + oos_bars
+
+            # Align OOS start to 00:00 of that day; adjust gap accordingly
+            oos_start = _align_to_day_start(oos_start, gap_start)
+            gap_end = max(gap_start, oos_start)
             oos_start = gap_end
             oos_end = oos_start + oos_bars
 
