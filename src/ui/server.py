@@ -225,7 +225,7 @@ def _convert_import_value(name: str, raw_value: str) -> Any:
     return raw_value
 
 
-def _parse_csv_parameter_block(file_storage) -> Tuple[Dict[str, Any], List[str]]:
+def _parse_csv_parameter_block(file_storage) -> Tuple[Dict[str, Any], List[str], List[str]]:
     content = file_storage.read()
     if isinstance(content, bytes):
         text = content.decode("utf-8-sig", errors="replace")
@@ -306,6 +306,8 @@ def _parse_csv_parameter_block(file_storage) -> Tuple[Dict[str, Any], List[str]]
                 f"Unsupported fields without typing: {formatted}. {reason}"
             )
 
+    errors: List[str] = []
+
     for name, raw_value in csv_parameters.items():
         if name == "start":
             date_part, time_part = _split_timestamp(raw_value)
@@ -337,15 +339,17 @@ def _parse_csv_parameter_block(file_storage) -> Tuple[Dict[str, Any], List[str]]
             try:
                 updates[name] = int(round(float(raw_value)))
             except (TypeError, ValueError):
-                updates[name] = 0
-            applied.append(name)
+                errors.append(f"{name}: expected integer, got '{raw_value}'")
+            else:
+                applied.append(name)
             continue
         if param_type == "float":
             try:
                 updates[name] = float(raw_value)
             except (TypeError, ValueError):
-                updates[name] = 0.0
-            applied.append(name)
+                errors.append(f"{name}: expected number, got '{raw_value}'")
+            else:
+                applied.append(name)
             continue
         if param_type in {"bool", "boolean"}:
             updates[name] = _coerce_bool(raw_value)
@@ -356,7 +360,7 @@ def _parse_csv_parameter_block(file_storage) -> Tuple[Dict[str, Any], List[str]]
         updates[name] = converted
         applied.append(name)
 
-    return updates, applied
+    return updates, applied, errors
 
 
 def _validate_strategy_params(strategy_id: str, params: Dict[str, Any]) -> None:
@@ -604,12 +608,17 @@ def import_preset_from_csv() -> object:
     if not csv_file or csv_file.filename == "":
         return ("CSV file is required.", HTTPStatus.BAD_REQUEST)
     try:
-        updates, applied = _parse_csv_parameter_block(csv_file)
+        updates, applied, errors = _parse_csv_parameter_block(csv_file)
     except ValueError as exc:
         return (str(exc), HTTPStatus.BAD_REQUEST)
     except Exception:  # pragma: no cover - defensive
         app.logger.exception("Failed to parse CSV for preset import")
         return ("Failed to parse CSV file.", HTTPStatus.BAD_REQUEST)
+    if errors:
+        return (
+            jsonify({"error": "Invalid numeric values in CSV.", "details": errors}),
+            HTTPStatus.BAD_REQUEST,
+        )
     if not updates:
         return ("No fixed parameters found in CSV.", HTTPStatus.BAD_REQUEST)
     return jsonify({"values": updates, "applied": applied})
