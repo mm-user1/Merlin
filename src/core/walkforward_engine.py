@@ -825,7 +825,9 @@ def export_wfa_trades_history(
 
     strategy_id = getattr(wf_result, "strategy_id", "")
     if not strategy_id:
-        strategy_id = getattr(wf_config, "strategy_id", "")
+        strategy_id = getattr(getattr(wf_result, "config", None), "strategy_id", "")
+    if not strategy_id:
+        raise ValueError("Walk-forward result is missing strategy_id; cannot export trades.")
     try:
         strategy_class = get_strategy(strategy_id)
     except ValueError as e:  # noqa: BLE001
