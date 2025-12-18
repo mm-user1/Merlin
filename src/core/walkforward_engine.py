@@ -9,6 +9,7 @@ from copy import deepcopy
 import hashlib
 import io
 import json
+import logging
 
 import numpy as np
 import pandas as pd
@@ -16,6 +17,8 @@ import pandas as pd
 from . import metrics
 from .backtest_engine import TradeRecord, prepare_dataset_with_warmup
 from .optuna_engine import OptunaConfig, OptimizationConfig, run_optuna_optimization
+
+logger = logging.getLogger(__name__)
 
 
 @dataclass
@@ -622,8 +625,12 @@ class WalkForwardEngine:
             if label_parts:
                 label = " ".join(label_parts)
                 return f"{label}_{param_hash}"
-        except Exception:
-            pass
+        except (ImportError, ValueError, KeyError, TypeError, AttributeError) as exc:
+            logger.warning(
+                "Falling back to hash-only param_id for strategy '%s': %s",
+                self.config.strategy_id,
+                exc,
+            )
 
         return param_hash
 
