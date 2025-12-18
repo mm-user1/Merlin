@@ -261,6 +261,7 @@ def _parse_csv_parameter_block(file_storage) -> Tuple[Dict[str, Any], List[str]]
             strategy_id = payload.get("strategy")
 
     param_types: Dict[str, str] = {}
+    strategy_resolution_error = None
     if not strategy_id:
         try:
             from strategies import list_strategies
@@ -270,6 +271,9 @@ def _parse_csv_parameter_block(file_storage) -> Tuple[Dict[str, Any], List[str]]
                 strategy_id = available[0]["id"]
         except Exception:
             strategy_id = None
+            strategy_resolution_error = (
+                "Strategy not provided and no strategies discovered to infer parameter types."
+            )
 
     if strategy_id:
         try:
@@ -283,6 +287,24 @@ def _parse_csv_parameter_block(file_storage) -> Tuple[Dict[str, Any], List[str]]
                 param_types[param_name] = str(param_spec.get("type", "float")).lower()
         except Exception:
             param_types = {}
+            strategy_resolution_error = (
+                f"Strategy '{strategy_id}' configuration could not be loaded for type inference."
+            )
+
+    # If strategy typing is unavailable, refuse to silently import strategy-specific parameters.
+    if not param_types:
+        # Fields that are safe to import without strategy typing.
+        untyped_allowed_fields = {"start", "end", "dateFilter"}
+        missing_typed_fields = [
+            name for name in csv_parameters.keys() if name not in untyped_allowed_fields
+        ]
+        if missing_typed_fields:
+            reason = strategy_resolution_error or "Parameter types unavailable."
+            formatted = ", ".join(sorted(missing_typed_fields))
+            raise ValueError(
+                f"Cannot import CSV because strategy parameter types are unavailable. "
+                f"Unsupported fields without typing: {formatted}. {reason}"
+            )
 
     for name, raw_value in csv_parameters.items():
         if name == "start":
@@ -583,6 +605,8 @@ def import_preset_from_csv() -> object:
         return ("CSV file is required.", HTTPStatus.BAD_REQUEST)
     try:
         updates, applied = _parse_csv_parameter_block(csv_file)
+    except ValueError as exc:
+        return (str(exc), HTTPStatus.BAD_REQUEST)
     except Exception:  # pragma: no cover - defensive
         app.logger.exception("Failed to parse CSV for preset import")
         return ("Failed to parse CSV file.", HTTPStatus.BAD_REQUEST)
