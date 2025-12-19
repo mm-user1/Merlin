@@ -93,7 +93,7 @@ DEFAULT_OPTIMIZER_SCORE_CONFIG: Dict[str, Any] = {
     "normalization_method": "percentile",
 }
 
-PRESETS_DIR = Path(__file__).resolve().parent.parent / "Presets"
+PRESETS_DIR = Path(__file__).resolve().parent.parent / "presets"
 DEFAULT_PRESET_NAME = "defaults"
 VALID_PRESET_NAME_RE = re.compile(r"^[A-Za-z0-9 _\-]{1,64}$")
 
@@ -225,7 +225,7 @@ def _convert_import_value(name: str, raw_value: str) -> Any:
     return raw_value
 
 
-def _parse_csv_parameter_block(file_storage) -> Tuple[Dict[str, Any], List[str]]:
+def _parse_csv_parameter_block(file_storage) -> Tuple[Dict[str, Any], List[str], List[str]]:
     content = file_storage.read()
     if isinstance(content, bytes):
         text = content.decode("utf-8-sig", errors="replace")
@@ -261,6 +261,7 @@ def _parse_csv_parameter_block(file_storage) -> Tuple[Dict[str, Any], List[str]]
             strategy_id = payload.get("strategy")
 
     param_types: Dict[str, str] = {}
+    strategy_resolution_error = None
     if not strategy_id:
         try:
             from strategies import list_strategies
@@ -270,6 +271,9 @@ def _parse_csv_parameter_block(file_storage) -> Tuple[Dict[str, Any], List[str]]
                 strategy_id = available[0]["id"]
         except Exception:
             strategy_id = None
+            strategy_resolution_error = (
+                "Strategy not provided and no strategies discovered to infer parameter types."
+            )
 
     if strategy_id:
         try:
@@ -283,6 +287,26 @@ def _parse_csv_parameter_block(file_storage) -> Tuple[Dict[str, Any], List[str]]
                 param_types[param_name] = str(param_spec.get("type", "float")).lower()
         except Exception:
             param_types = {}
+            strategy_resolution_error = (
+                f"Strategy '{strategy_id}' configuration could not be loaded for type inference."
+            )
+
+    # If strategy typing is unavailable, refuse to silently import strategy-specific parameters.
+    if not param_types:
+        # Fields that are safe to import without strategy typing.
+        untyped_allowed_fields = {"start", "end", "dateFilter"}
+        missing_typed_fields = [
+            name for name in csv_parameters.keys() if name not in untyped_allowed_fields
+        ]
+        if missing_typed_fields:
+            reason = strategy_resolution_error or "Parameter types unavailable."
+            formatted = ", ".join(sorted(missing_typed_fields))
+            raise ValueError(
+                f"Cannot import CSV because strategy parameter types are unavailable. "
+                f"Unsupported fields without typing: {formatted}. {reason}"
+            )
+
+    errors: List[str] = []
 
     for name, raw_value in csv_parameters.items():
         if name == "start":
@@ -315,15 +339,17 @@ def _parse_csv_parameter_block(file_storage) -> Tuple[Dict[str, Any], List[str]]
             try:
                 updates[name] = int(round(float(raw_value)))
             except (TypeError, ValueError):
-                updates[name] = 0
-            applied.append(name)
+                errors.append(f"{name}: expected integer, got '{raw_value}'")
+            else:
+                applied.append(name)
             continue
         if param_type == "float":
             try:
                 updates[name] = float(raw_value)
             except (TypeError, ValueError):
-                updates[name] = 0.0
-            applied.append(name)
+                errors.append(f"{name}: expected number, got '{raw_value}'")
+            else:
+                applied.append(name)
             continue
         if param_type in {"bool", "boolean"}:
             updates[name] = _coerce_bool(raw_value)
@@ -334,7 +360,7 @@ def _parse_csv_parameter_block(file_storage) -> Tuple[Dict[str, Any], List[str]]
         updates[name] = converted
         applied.append(name)
 
-    return updates, applied
+    return updates, applied, errors
 
 
 def _validate_strategy_params(strategy_id: str, params: Dict[str, Any]) -> None:
@@ -582,10 +608,17 @@ def import_preset_from_csv() -> object:
     if not csv_file or csv_file.filename == "":
         return ("CSV file is required.", HTTPStatus.BAD_REQUEST)
     try:
-        updates, applied = _parse_csv_parameter_block(csv_file)
+        updates, applied, errors = _parse_csv_parameter_block(csv_file)
+    except ValueError as exc:
+        return (str(exc), HTTPStatus.BAD_REQUEST)
     except Exception:  # pragma: no cover - defensive
         app.logger.exception("Failed to parse CSV for preset import")
         return ("Failed to parse CSV file.", HTTPStatus.BAD_REQUEST)
+    if errors:
+        return (
+            jsonify({"error": "Invalid numeric values in CSV.", "details": errors}),
+            HTTPStatus.BAD_REQUEST,
+        )
     if not updates:
         return ("No fixed parameters found in CSV.", HTTPStatus.BAD_REQUEST)
     return jsonify({"values": updates, "applied": applied})
@@ -705,46 +738,14 @@ def run_walkforward_optimization() -> object:
                 end_ts = end_date if end_date.tzinfo else end_date.tz_localize('UTC')
 
             # IMPORTANT: Add warmup period before start_ts for Walk-Forward Analysis
-            # The first WFA window will start from start_ts, so it needs historical data for MA warmup
-            # Calculate warmup dynamically based on maximum MA lengths
-            max_ma_length = 1
-
-            # Check parameter ranges (varied parameters) - using camelCase keys
-            param_ranges = optimization_config.param_ranges
-            if "maLength" in param_ranges:
-                # param_ranges format: (min, max, step)
-                max_ma_length = max(max_ma_length, int(param_ranges["maLength"][1]))
-            if "trailLongLength" in param_ranges:
-                max_ma_length = max(max_ma_length, int(param_ranges["trailLongLength"][1]))
-            if "trailShortLength" in param_ranges:
-                max_ma_length = max(max_ma_length, int(param_ranges["trailShortLength"][1]))
-
-            # Check fixed params (locked parameters)
-            fixed_params = optimization_config.fixed_params
-            if "maLength" in fixed_params and fixed_params["maLength"]:
-                max_ma_length = max(max_ma_length, int(fixed_params["maLength"]))
-            if "trailLongLength" in fixed_params and fixed_params["trailLongLength"]:
-                max_ma_length = max(max_ma_length, int(fixed_params["trailLongLength"]))
-            if "trailShortLength" in fixed_params and fixed_params["trailShortLength"]:
-                max_ma_length = max(max_ma_length, int(fixed_params["trailShortLength"]))
-
-            # Use same formula as prepare_dataset_with_warmup(): max(500, max_ma_length * 1.5)
-            dynamic_warmup_bars = max(500, int(max_ma_length * 1.5))
-            effective_warmup_bars = max(warmup_bars, dynamic_warmup_bars)
-
-            print(
-                "Dynamic warmup calculation: "
-                f"max_ma_length={max_ma_length}, "
-                f"warmup_bars={effective_warmup_bars}"
-            )
-
-            warmup_bars = effective_warmup_bars
+            # The first WFA window will start from start_ts, so it needs historical data.
+            # Use the user-specified warmup bars (default 1000) as-is to avoid strategy-specific logic.
 
             # Find the index of start_ts in the dataframe
             start_idx = df.index.searchsorted(start_ts)
 
             # Calculate warmup_start_idx (go back warmup_bars, but not before 0)
-            warmup_start_idx = max(0, start_idx - effective_warmup_bars)
+            warmup_start_idx = max(0, start_idx - warmup_bars)
 
             # Get the actual warmup start timestamp
             warmup_start_ts = df.index[warmup_start_idx]

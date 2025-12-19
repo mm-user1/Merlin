@@ -4,9 +4,11 @@ from __future__ import annotations
 import bisect
 import logging
 import multiprocessing as mp
+import tempfile
 import time
-from dataclasses import dataclass
+from dataclasses import asdict, dataclass, fields
 from decimal import Decimal
+from pathlib import Path
 from typing import Any, Dict, Iterable, List, Optional, Tuple, Union
 
 import optuna
@@ -205,6 +207,162 @@ def _run_single_combination(
         return _base_result(params_dict)
 
 
+# ---------------------------------------------------------------------------
+# Multi-process helpers (module-level for pickling)
+# ---------------------------------------------------------------------------
+
+
+def _trial_set_result_attrs(
+    trial: optuna.Trial,
+    result: OptimizationResult,
+    objective_value: float,
+    target: str,
+) -> None:
+    """
+    Persist key metrics into trial.user_attrs for cross-process aggregation.
+    """
+    trial.set_user_attr("merlin.params", dict(result.params))
+    trial.set_user_attr("merlin.net_profit_pct", float(result.net_profit_pct))
+    trial.set_user_attr("merlin.max_drawdown_pct", float(result.max_drawdown_pct))
+    trial.set_user_attr("merlin.total_trades", int(result.total_trades))
+    trial.set_user_attr("merlin.objective_value", float(objective_value))
+    trial.set_user_attr("merlin.target", str(target))
+
+    if result.romad is not None:
+        trial.set_user_attr("merlin.romad", float(result.romad))
+    if result.sharpe_ratio is not None:
+        trial.set_user_attr("merlin.sharpe_ratio", float(result.sharpe_ratio))
+    if result.profit_factor is not None:
+        trial.set_user_attr("merlin.profit_factor", float(result.profit_factor))
+    if result.ulcer_index is not None:
+        trial.set_user_attr("merlin.ulcer_index", float(result.ulcer_index))
+    if result.recovery_factor is not None:
+        trial.set_user_attr("merlin.recovery_factor", float(result.recovery_factor))
+    if result.consistency_score is not None:
+        trial.set_user_attr("merlin.consistency_score", float(result.consistency_score))
+
+
+def _result_from_trial(trial: optuna.trial.FrozenTrial) -> OptimizationResult:
+    """
+    Rebuild OptimizationResult from persisted user_attrs.
+    """
+    attrs = trial.user_attrs
+    result = OptimizationResult(
+        params=dict(attrs.get("merlin.params") or trial.params),
+        net_profit_pct=float(attrs.get("merlin.net_profit_pct", 0.0)),
+        max_drawdown_pct=float(attrs.get("merlin.max_drawdown_pct", 0.0)),
+        total_trades=int(attrs.get("merlin.total_trades", 0)),
+        romad=attrs.get("merlin.romad"),
+        sharpe_ratio=attrs.get("merlin.sharpe_ratio"),
+        profit_factor=attrs.get("merlin.profit_factor"),
+        ulcer_index=attrs.get("merlin.ulcer_index"),
+        recovery_factor=attrs.get("merlin.recovery_factor"),
+        consistency_score=attrs.get("merlin.consistency_score"),
+        score=0.0,
+    )
+    setattr(result, "optuna_trial_number", trial.number)
+    setattr(result, "optuna_value", trial.value)
+    return result
+
+
+def _materialize_csv_to_temp(csv_source: Any) -> Tuple[str, bool]:
+    """
+    Ensure CSV source is a file path string usable by worker processes.
+
+    Returns (path_string, needs_cleanup)
+    """
+    if isinstance(csv_source, (str, Path)):
+        return str(csv_source), False
+
+    if hasattr(csv_source, "name") and csv_source.name:
+        possible_path = Path(csv_source.name)
+        if possible_path.exists() and possible_path.is_file():
+            return str(possible_path), False
+
+    if hasattr(csv_source, "read"):
+        if hasattr(csv_source, "seek"):
+            try:
+                csv_source.seek(0)
+            except Exception:
+                pass
+
+        content = csv_source.read()
+        if isinstance(content, str):
+            content = content.encode("utf-8")
+
+        temp_dir = Path(tempfile.gettempdir()) / "merlin_optuna_csv"
+        temp_dir.mkdir(exist_ok=True)
+        temp_path = temp_dir / f"optimization_{int(time.time())}_{id(csv_source)}.csv"
+        Path(temp_path).write_bytes(content)
+        logger.info("Materialized CSV to temp file: %s", temp_path)
+        return str(temp_path), True
+
+    return str(csv_source), False
+
+
+def _worker_process_entry(
+    study_name: str,
+    storage_path: str,
+    base_config_dict: Dict[str, Any],
+    optuna_config_dict: Dict[str, Any],
+    n_trials: Optional[int],
+    timeout: Optional[int],
+    worker_id: int,
+) -> None:
+    """
+    Entry point for multi-process Optuna workers.
+    """
+    from optuna.storages import JournalStorage
+    from optuna.storages.journal import JournalFileBackend, JournalFileOpenLock
+    from optuna.study import MaxTrialsCallback
+
+    worker_logger = logging.getLogger(__name__)
+    worker_logger.info("Worker %s starting (pid=%s)", worker_id, mp.current_process().pid)
+
+    try:
+        base_config = OptimizationConfig(**base_config_dict)
+        optuna_config = OptunaConfig(**optuna_config_dict)
+
+        optimizer = OptunaOptimizer(base_config, optuna_config)
+        optimizer._prepare_data_and_strategy()
+        optimizer.pruner = optimizer._create_pruner()
+        worker_sampler = optimizer._create_sampler()
+
+        storage = JournalStorage(
+            JournalFileBackend(storage_path, lock_obj=JournalFileOpenLock(storage_path))
+        )
+        study = optuna.load_study(
+            study_name=study_name,
+            storage=storage,
+            sampler=worker_sampler,
+            pruner=optimizer.pruner,
+        )
+        search_space = optimizer._build_search_space()
+
+        def worker_objective(trial: optuna.Trial) -> float:
+            return optimizer._objective_for_worker(trial, search_space)
+
+        callbacks = []
+        if n_trials is not None:
+            callbacks.append(MaxTrialsCallback(n_trials, states=None))
+
+        worker_logger.info(
+            "Worker %s running optimise (n_trials=%s, timeout=%s)", worker_id, n_trials, timeout
+        )
+        study.optimize(
+            worker_objective,
+            n_trials=None,
+            timeout=timeout,
+            callbacks=callbacks or None,
+            show_progress_bar=False,
+            n_jobs=1,
+        )
+        worker_logger.info("Worker %s finished", worker_id)
+    except Exception as exc:  # pragma: no cover - defensive
+        worker_logger.error("Worker %s failed: %s", worker_id, exc, exc_info=True)
+        raise
+
+
 def calculate_score(
     results: List[OptimizationResult],
     config: Optional[Dict[str, Any]],
@@ -328,7 +486,9 @@ class OptunaOptimizer:
     def __init__(self, base_config, optuna_config: OptunaConfig) -> None:
         self.base_config = base_config
         self.optuna_config = optuna_config
-        self.pool: Optional[mp.pool.Pool] = None
+        self.df: Optional[pd.DataFrame] = None
+        self.trade_start_idx: int = 0
+        self.strategy_class: Optional[Any] = None
         self.trial_results: List[OptimizationResult] = []
         self.best_value: float = float("-inf")
         self.trials_without_improvement: int = 0
@@ -337,6 +497,7 @@ class OptunaOptimizer:
         self.study: Optional[optuna.Study] = None
         self.pruner: Optional[optuna.pruners.BasePruner] = None
         self.param_type_map: Dict[str, str] = {}
+        self._multiprocess_mode: bool = False
 
     # ------------------------------------------------------------------
     # Search space handling
@@ -461,21 +622,18 @@ class OptunaOptimizer:
         )
 
     # ------------------------------------------------------------------
-    # Worker pool initialisation
+    # Data preparation (shared by single and multi process)
     # ------------------------------------------------------------------
-    def _setup_worker_pool(self) -> None:
-        """Initialize the worker pool for Optuna optimization."""
+    def _prepare_data_and_strategy(self) -> None:
+        """Load strategy class and data, apply optional date filtering."""
 
         from strategies import get_strategy
+        from .backtest_engine import prepare_dataset_with_warmup
 
         try:
             strategy_class = get_strategy(self.base_config.strategy_id)
-        except ValueError as e:
-            raise ValueError(
-                f"Failed to load strategy '{self.base_config.strategy_id}': {e}"
-            )
-
-        from .backtest_engine import prepare_dataset_with_warmup
+        except ValueError as exc:
+            raise ValueError(f"Failed to load strategy '{self.base_config.strategy_id}': {exc}")
 
         df = load_data(self.base_config.csv_file)
 
@@ -496,18 +654,15 @@ class OptunaOptimizer:
         self.trade_start_idx = trade_start_idx
         self.strategy_class = strategy_class
 
-        processes = min(32, max(1, int(self.base_config.worker_processes)))
-        self.pool = mp.Pool(processes=processes)
-
     # ------------------------------------------------------------------
     # Objective evaluation
     # ------------------------------------------------------------------
     def _evaluate_parameters(self, params_dict: Dict[str, Any]) -> OptimizationResult:
-        if self.pool is None:
-            raise RuntimeError("Worker pool is not initialised.")
+        if self.df is None or self.strategy_class is None:
+            raise RuntimeError("Data and strategy must be prepared before evaluation.")
 
         args = (params_dict, self.df, self.trade_start_idx, self.strategy_class)
-        return self.pool.apply(_run_single_combination, (args,))
+        return _run_single_combination(args)
 
     def _cast_param_value(self, name: str, value: Any) -> Any:
         param_type = self.param_type_map.get(name, "").lower()
@@ -624,6 +779,7 @@ class OptunaOptimizer:
         self.trial_results.append(result)
         setattr(result, "optuna_trial_number", trial.number)
         setattr(result, "optuna_value", objective_value)
+        _trial_set_result_attrs(trial, result, objective_value, self.optuna_config.target)
 
         if objective_value > self.best_value:
             self.best_value = objective_value
@@ -633,16 +789,58 @@ class OptunaOptimizer:
 
         return objective_value
 
+    def _objective_for_worker(
+        self, trial: optuna.Trial, search_space: Dict[str, Dict[str, Any]]
+    ) -> float:
+        """
+        Objective used inside worker processes (no shared state).
+        """
+        params_dict = self._prepare_trial_parameters(trial, search_space)
+        result = self._evaluate_parameters(params_dict)
+
+        if self.base_config.filter_min_profit and (
+            result.net_profit_pct < float(self.base_config.min_profit_threshold)
+        ):
+            raise optuna.TrialPruned("Below minimum profit threshold")
+
+        if self.optuna_config.target == "score":
+            objective_value = float(result.romad or 0.0)
+        elif self.optuna_config.target == "net_profit":
+            objective_value = float(result.net_profit_pct)
+        elif self.optuna_config.target == "romad":
+            objective_value = float(result.romad or 0.0)
+        elif self.optuna_config.target == "sharpe":
+            objective_value = float(result.sharpe_ratio or 0.0)
+        elif self.optuna_config.target == "max_drawdown":
+            objective_value = -float(result.max_drawdown_pct)
+        else:
+            objective_value = float(result.romad or 0.0)
+
+        if self.pruner is not None:
+            trial.report(objective_value, step=0)
+            if trial.should_prune():
+                raise optuna.TrialPruned("Pruned by Optuna")
+
+        _trial_set_result_attrs(trial, result, objective_value, self.optuna_config.target)
+        return objective_value
+
     # ------------------------------------------------------------------
     # Main execution entrypoint
     # ------------------------------------------------------------------
     def optimize(self) -> List[OptimizationResult]:
+        workers = max(1, int(getattr(self.base_config, "worker_processes", 1) or 1))
+        if workers <= 1:
+            return self._optimize_single_process()
+        return self._optimize_multiprocess(workers)
+
+    def _optimize_single_process(self) -> List[OptimizationResult]:
         logger.info(
-            "Starting Optuna optimisation: target=%s, budget_mode=%s",
+            "Starting single-process Optuna optimisation: target=%s, budget_mode=%s",
             self.optuna_config.target,
             self.optuna_config.budget_mode,
         )
 
+        self._multiprocess_mode = False
         self.start_time = time.time()
         self.trial_results = []
         self.best_value = float("-inf")
@@ -650,7 +848,7 @@ class OptunaOptimizer:
         self.pruned_trials = 0
 
         search_space = self._build_search_space()
-        self._setup_worker_pool()
+        self._prepare_data_and_strategy()
 
         sampler = self._create_sampler()
         self.pruner = self._create_pruner()
@@ -705,34 +903,171 @@ class OptunaOptimizer:
         except KeyboardInterrupt:
             logger.info("Optuna optimisation interrupted by user")
         finally:
-            if self.pool is not None:
-                self.pool.close()
-                self.pool.join()
-                self.pool = None
             self.pruner = None
 
+        return self._finalize_results()
+
+    def _optimize_multiprocess(self, n_workers: int) -> List[OptimizationResult]:
+        logger.info(
+            "Starting multi-process Optuna optimisation: target=%s, budget_mode=%s, workers=%s",
+            self.optuna_config.target,
+            self.optuna_config.budget_mode,
+            n_workers,
+        )
+
+        self._multiprocess_mode = True
+        self.start_time = time.time()
+        self.trial_results = []
+        self.pruned_trials = 0
+        self.best_value = float("-inf")
+        self.trials_without_improvement = 0
+
+        # Build search space to validate config early
+        self._build_search_space()
+
+        csv_path, csv_cleanup = _materialize_csv_to_temp(self.base_config.csv_file)
+        base_config_dict = {
+            f.name: (csv_path if f.name == "csv_file" else getattr(self.base_config, f.name))
+            for f in fields(self.base_config)
+        }
+        optuna_config_dict = asdict(self.optuna_config)
+
+        from optuna.storages import JournalStorage
+        from optuna.storages.journal import JournalFileBackend, JournalFileOpenLock
+
+        journal_dir = Path(tempfile.gettempdir()) / "merlin_optuna_journals"
+        journal_dir.mkdir(exist_ok=True)
+        timestamp = int(time.time())
+        study_name = self.optuna_config.study_name or f"strategy_opt_{timestamp}"
+        storage_path = str(journal_dir / f"{study_name}_{timestamp}.journal.log")
+
+        storage = JournalStorage(
+            JournalFileBackend(storage_path, lock_obj=JournalFileOpenLock(storage_path))
+        )
+
+        sampler = self._create_sampler()
+        self.pruner = self._create_pruner()
+
+        self.study = optuna.create_study(
+            study_name=study_name,
+            direction="maximize",
+            sampler=sampler,
+            pruner=self.pruner,
+            storage=storage,
+            load_if_exists=True,
+        )
+
+        timeout: Optional[int] = None
+        n_trials: Optional[int] = None
+
+        if self.optuna_config.budget_mode == "time":
+            timeout = max(60, int(self.optuna_config.time_limit))
+            logger.info("Time budget per study: %ss", timeout)
+        elif self.optuna_config.budget_mode == "trials":
+            n_trials = max(1, int(self.optuna_config.n_trials))
+            logger.info("Global trial budget: %s", n_trials)
+        elif self.optuna_config.budget_mode == "convergence":
+            logger.warning(
+                "Convergence budget is not fully supported in multi-process mode; "
+                "using trial cap of 10000."
+            )
+            n_trials = 10000
+
+        processes: List[mp.Process] = []
+
+        try:
+            for worker_id in range(n_workers):
+                proc = mp.Process(
+                    target=_worker_process_entry,
+                    args=(
+                        study_name,
+                        storage_path,
+                        base_config_dict,
+                        optuna_config_dict,
+                        n_trials,
+                        timeout,
+                        worker_id,
+                    ),
+                    name=f"OptunaWorker-{worker_id}",
+                )
+                proc.start()
+                processes.append(proc)
+                logger.info("Started worker %s (pid=%s)", worker_id, proc.pid)
+
+            logger.info("Waiting for %s workers to finish...", n_workers)
+            for worker_id, proc in enumerate(processes):
+                proc.join()
+                if proc.exitcode == 0:
+                    logger.info("Worker %s completed successfully", worker_id)
+                else:
+                    logger.error("Worker %s exited with code %s", worker_id, proc.exitcode)
+
+        except KeyboardInterrupt:
+            logger.info("Optimisation interrupted; terminating workers...")
+            for proc in processes:
+                if proc.is_alive():
+                    proc.terminate()
+            for proc in processes:
+                proc.join(timeout=5)
+
+        # Reload study to gather results from storage
+        self.study = optuna.load_study(study_name=study_name, storage=storage)
+
+        self.trial_results = []
+        for trial in self.study.trials:
+            if trial.state == TrialState.COMPLETE:
+                try:
+                    self.trial_results.append(_result_from_trial(trial))
+                except Exception as exc:  # pragma: no cover - defensive
+                    logger.warning("Failed to rebuild trial %s: %s", trial.number, exc)
+
+        results = self._finalize_results()
+
+        # Cleanup temp CSV and storage if not persisted (after finalization)
+        if csv_cleanup:
+            try:
+                Path(csv_path).unlink(missing_ok=True)
+            except Exception:
+                logger.debug("Failed to cleanup temp CSV %s", csv_path)
+
+        if not self.optuna_config.save_study:
+            try:
+                Path(storage_path).unlink(missing_ok=True)
+            except Exception:
+                logger.debug("Failed to cleanup journal file %s", storage_path)
+
+        self.pruner = None
+
+        return results
+
+    def _finalize_results(self) -> List[OptimizationResult]:
         end_time = time.time()
         optimisation_time = end_time - (self.start_time or end_time)
 
         logger.info(
-            "Optuna optimisation completed: trials=%s, best_value=%s, time=%.1fs",
-            len(self.study.trials) if self.study else 0,
-            getattr(self.study, "best_value", float("nan")),
+            "Optuna optimisation completed: trials=%s, time=%.1fs",
+            len(self.study.trials) if self.study else len(self.trial_results),
             optimisation_time,
         )
 
-        # Calculate scores for all results using percentile ranking
         score_config = self.base_config.score_config or DEFAULT_SCORE_CONFIG
         self.trial_results = calculate_score(self.trial_results, score_config)
 
         if self.study:
             completed_trials = sum(1 for trial in self.study.trials if trial.state == TrialState.COMPLETE)
             pruned_trials = sum(1 for trial in self.study.trials if trial.state == TrialState.PRUNED)
+            total_trials = len(self.study.trials)
             best_trial_number = self.study.best_trial.number if self.study.best_trial else None
-            best_value = self.study.best_value if completed_trials else None
+            if self.optuna_config.target == "score" and self.trial_results:
+                best_result = max(self.trial_results, key=lambda r: float(r.score))
+                best_value = float(best_result.score)
+                best_trial_number = getattr(best_result, "optuna_trial_number", best_trial_number)
+            else:
+                best_value = self.study.best_value if completed_trials else None
         else:
             completed_trials = len(self.trial_results)
             pruned_trials = self.pruned_trials
+            total_trials = completed_trials + pruned_trials
             best_trial_number = None
             best_value = None
 
@@ -740,12 +1075,13 @@ class OptunaOptimizer:
             "method": "Optuna",
             "target": self.optuna_config.target,
             "budget_mode": self.optuna_config.budget_mode,
-            "total_trials": len(self.study.trials) if self.study else len(self.trial_results),
+            "total_trials": total_trials,
             "completed_trials": completed_trials,
             "pruned_trials": pruned_trials,
             "best_trial_number": best_trial_number,
             "best_value": best_value,
             "optimization_time_seconds": optimisation_time,
+            "multiprocess_mode": self._multiprocess_mode,
         }
         setattr(self.base_config, "optuna_summary", summary)
 

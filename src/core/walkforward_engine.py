@@ -9,6 +9,7 @@ from copy import deepcopy
 import hashlib
 import io
 import json
+import logging
 
 import numpy as np
 import pandas as pd
@@ -16,6 +17,8 @@ import pandas as pd
 from . import metrics
 from .backtest_engine import TradeRecord, prepare_dataset_with_warmup
 from .optuna_engine import OptunaConfig, OptimizationConfig, run_optuna_optimization
+
+logger = logging.getLogger(__name__)
 
 
 @dataclass
@@ -123,6 +126,19 @@ class WalkForwardEngine:
         """
         total_bars = len(df)
 
+        def _align_to_day_start(bar_idx: int, lower_bound: int) -> int:
+            """
+            Snap a bar index to the first bar of its calendar day.
+            Keeps result >= lower_bound and within dataframe.
+            """
+            if total_bars == 0:
+                return bar_idx
+            safe_idx = min(max(bar_idx, 0), total_bars - 1)
+            ts = df.index[safe_idx]
+            day_start = ts.normalize()
+            aligned = df.index.searchsorted(day_start)
+            return max(aligned, lower_bound)
+
         # Check if date filtering is enabled and find trading period boundaries
         fixed_params = self.base_config_template.get('fixed_params', {})
         use_date_filter = fixed_params.get('dateFilter', False)
@@ -171,6 +187,7 @@ class WalkForwardEngine:
         # WF Zone: 80% of trading period, Forward Reserve: 20% of trading period
         wf_zone_bars = int(trading_period_bars * (self.config.wf_zone_pct / 100))
         forward_start = trading_start_idx + wf_zone_bars
+        forward_start = _align_to_day_start(forward_start, trading_start_idx)
         forward_end = trading_end_idx
 
         # Available bars for WF windows
@@ -200,9 +217,16 @@ class WalkForwardEngine:
         stride = window_total_bars + self.config.gap_bars
         for i in range(self.config.num_windows):
             is_start = wf_available_start + i * stride
+            is_start = _align_to_day_start(is_start, wf_available_start)
             is_end = is_start + is_bars
             gap_start = is_end
             gap_end = gap_start + self.config.gap_bars
+            oos_start = gap_end
+            oos_end = oos_start + oos_bars
+
+            # Align OOS start to 00:00 of that day; adjust gap accordingly
+            oos_start = _align_to_day_start(oos_start, gap_start)
+            gap_end = max(gap_start, oos_start)
             oos_start = gap_end
             oos_end = oos_start + oos_bars
 
@@ -601,8 +625,12 @@ class WalkForwardEngine:
             if label_parts:
                 label = " ".join(label_parts)
                 return f"{label}_{param_hash}"
-        except Exception:
-            pass
+        except (ImportError, ValueError, KeyError, TypeError, AttributeError) as exc:
+            logger.warning(
+                "Falling back to hash-only param_id for strategy '%s': %s",
+                self.config.strategy_id,
+                exc,
+            )
 
         return param_hash
 
@@ -804,7 +832,9 @@ def export_wfa_trades_history(
 
     strategy_id = getattr(wf_result, "strategy_id", "")
     if not strategy_id:
-        strategy_id = getattr(wf_config, "strategy_id", "")
+        strategy_id = getattr(getattr(wf_result, "config", None), "strategy_id", "")
+    if not strategy_id:
+        raise ValueError("Walk-forward result is missing strategy_id; cannot export trades.")
     try:
         strategy_class = get_strategy(strategy_id)
     except ValueError as e:  # noqa: BLE001
