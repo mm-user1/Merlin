@@ -16,6 +16,8 @@ from core.walkforward_engine import (
     WalkForwardEngine,
     WindowResult,
     WindowSplit,
+)
+from core.export import (
     export_wfa_trades_history,
     export_wf_results_csv,
 )
@@ -66,7 +68,6 @@ def _build_wf_result(strategy_id: str):
         AggregatedResult(
             param_id=param_id,
             params=params,
-            appearances="1/1",
             window_ids=[1],
             avg_oos_profit=2.0,
             avg_is_profit=1.0,
@@ -212,7 +213,6 @@ def test_export_trades_falls_back_to_config_strategy(monkeypatch, tmp_path):
         AggregatedResult(
             param_id="p1",
             params={},
-            appearances="1/1",
             window_ids=[1],
             avg_oos_profit=1.0,
             avg_is_profit=1.0,

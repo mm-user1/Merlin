@@ -676,7 +676,6 @@ function displayWFResults(data) {
     tr.innerHTML = `
             <td style="padding: 10px; border: 1px solid #ddd; text-align: center;">${row.rank}</td>
             <td style="padding: 10px; border: 1px solid #ddd;">${row.param_id}</td>
-            <td style="padding: 10px; border: 1px solid #ddd; text-align: center;">${row.appearances}</td>
             <td style="padding: 10px; border: 1px solid #ddd; text-align: center;">${avgOos}%</td>
             <td style="padding: 10px; border: 1px solid #ddd; text-align: center;">${winRate}%</td>
             <td style="padding: 10px; border: 1px solid #ddd; text-align: center;">${forward}</td>

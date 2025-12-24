@@ -817,7 +817,8 @@ def run_walkforward_optimization() -> object:
     gap_bars = max(0, gap_bars)
     topk = max(1, min(200, topk))
 
-    from core.walkforward_engine import WFConfig, WalkForwardEngine, export_wf_results_csv
+    from core.walkforward_engine import WFConfig, WalkForwardEngine
+    from core.export import export_wf_results_csv
 
     wf_config = WFConfig(
         num_windows=num_windows,
@@ -851,7 +852,6 @@ def run_walkforward_optimization() -> object:
             {
                 "rank": rank,
                 "param_id": agg.param_id,
-                "appearances": agg.appearances,
                 "avg_oos_profit": round(agg.avg_oos_profit, 2),
                 "oos_win_rate": round(agg.oos_win_rate * 100, 1),
                 "forward_profit": round(forward_profit, 2) if isinstance(forward_profit, (int, float)) else None,
@@ -876,7 +876,7 @@ def run_walkforward_optimization() -> object:
         original_csv_name = csv_path_raw
 
     # Generate filenames
-    from core.walkforward_engine import (
+    from core.export import (
         _extract_symbol_from_csv_filename,
         export_wfa_trades_history,
         generate_wfa_output_filename,
