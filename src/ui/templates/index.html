@@ -223,6 +223,50 @@
                       <strong>Formula Preview:</strong> <span id="formulaPreview">Calculating...</span>
                     </div>
 
+                    <div style="margin-top: 12px; padding: 8px; background: #f9f9f9; border: 1px solid #ddd; border-radius: 3px;">
+                      <div style="font-size: 12px; color: #5a5a5a; margin-bottom: 8px;">
+                        Metric bounds (min/max) used for min-max normalization.
+                      </div>
+                      <div class="score-formula-params">
+                        <div class="score-metric-row">
+                          <label for="bound-min-romad" style="min-width: 140px;">RoMaD</label>
+                          <input type="number" id="bound-min-romad" step="0.1" style="width: 80px;" />
+                          <span style="font-size: 11px; color: #777;">to</span>
+                          <input type="number" id="bound-max-romad" step="0.1" style="width: 80px;" />
+                        </div>
+                        <div class="score-metric-row">
+                          <label for="bound-min-sharpe" style="min-width: 140px;">Sharpe Ratio</label>
+                          <input type="number" id="bound-min-sharpe" step="0.1" style="width: 80px;" />
+                          <span style="font-size: 11px; color: #777;">to</span>
+                          <input type="number" id="bound-max-sharpe" step="0.1" style="width: 80px;" />
+                        </div>
+                        <div class="score-metric-row">
+                          <label for="bound-min-pf" style="min-width: 140px;">Profit Factor</label>
+                          <input type="number" id="bound-min-pf" step="0.1" style="width: 80px;" />
+                          <span style="font-size: 11px; color: #777;">to</span>
+                          <input type="number" id="bound-max-pf" step="0.1" style="width: 80px;" />
+                        </div>
+                        <div class="score-metric-row">
+                          <label for="bound-min-ulcer" style="min-width: 140px;">Ulcer Index</label>
+                          <input type="number" id="bound-min-ulcer" step="0.1" style="width: 80px;" />
+                          <span style="font-size: 11px; color: #777;">to</span>
+                          <input type="number" id="bound-max-ulcer" step="0.1" style="width: 80px;" />
+                        </div>
+                        <div class="score-metric-row">
+                          <label for="bound-min-sqn" style="min-width: 140px;">SQN</label>
+                          <input type="number" id="bound-min-sqn" step="0.1" style="width: 80px;" />
+                          <span style="font-size: 11px; color: #777;">to</span>
+                          <input type="number" id="bound-max-sqn" step="0.1" style="width: 80px;" />
+                        </div>
+                        <div class="score-metric-row">
+                          <label for="bound-min-consistency" style="min-width: 140px;">Consistency Score</label>
+                          <input type="number" id="bound-min-consistency" step="1" style="width: 80px;" />
+                          <span style="font-size: 11px; color: #777;">to</span>
+                          <input type="number" id="bound-max-consistency" step="1" style="width: 80px;" />
+                        </div>
+                      </div>
+                    </div>
+
                     <button type="button" class="secondary" id="resetScoreBtn" style="margin-top: 10px;">Reset to Defaults</button>
                   </div>
                 </div>

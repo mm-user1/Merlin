@@ -24,6 +24,14 @@ const SCORE_DEFAULT_ENABLED = {
 const SCORE_DEFAULT_INVERT = {
   ulcer: true
 };
+const SCORE_DEFAULT_BOUNDS = {
+  romad: { min: 0, max: 10 },
+  sharpe: { min: -1, max: 3 },
+  pf: { min: 0, max: 5 },
+  ulcer: { min: 0, max: 20 },
+  sqn: { min: -2, max: 7 },
+  consistency: { min: 0, max: 100 }
+};
 
 function toggleWFSettings() {
   const wfToggle = document.getElementById('enableWF');
@@ -116,12 +124,26 @@ function readScoreUIState() {
     ? Math.min(100, Math.max(0, thresholdRaw))
     : SCORE_DEFAULT_THRESHOLD;
 
+  const bounds = {};
+  SCORE_METRICS.forEach((metric) => {
+    const defaults = SCORE_DEFAULT_BOUNDS[metric] || { min: 0, max: 100 };
+    const minInput = document.getElementById(`bound-min-${metric}`);
+    const maxInput = document.getElementById(`bound-max-${metric}`);
+    const minRaw = minInput ? Number(minInput.value) : NaN;
+    const maxRaw = maxInput ? Number(maxInput.value) : NaN;
+    bounds[metric] = {
+      min: Number.isFinite(minRaw) ? minRaw : defaults.min,
+      max: Number.isFinite(maxRaw) ? maxRaw : defaults.max
+    };
+  });
+
   return {
     scoreFilterEnabled: Boolean(checkbox && checkbox.checked),
     scoreThreshold: threshold,
     scoreWeights: weights,
     scoreEnabledMetrics: enabled,
-    scoreInvertMetrics: invert
+    scoreInvertMetrics: invert,
+    scoreMetricBounds: bounds
   };
 }
 
@@ -130,6 +152,10 @@ function applyScoreSettings(settings = {}) {
   const thresholdInput = document.getElementById('scoreThreshold');
 
   const defaultScoreConfig = window.defaults?.scoreConfig || {};
+  const baseBounds = {
+    ...SCORE_DEFAULT_BOUNDS,
+    ...(defaultScoreConfig.metric_bounds || {})
+  };
   const effectiveWeights = {
     ...SCORE_DEFAULT_WEIGHTS,
     ...(defaultScoreConfig.weights || {}),
@@ -182,6 +208,17 @@ function applyScoreSettings(settings = {}) {
     invertCheckbox.checked = Boolean(effectiveInvert.ulcer);
   }
 
+  SCORE_METRICS.forEach((metric) => {
+    const bounds = settings.scoreMetricBounds?.[metric] || {};
+    const base = baseBounds[metric] || { min: 0, max: 100 };
+    const minValue = Number.isFinite(Number(bounds.min)) ? Number(bounds.min) : base.min;
+    const maxValue = Number.isFinite(Number(bounds.max)) ? Number(bounds.max) : base.max;
+    const minInput = document.getElementById(`bound-min-${metric}`);
+    const maxInput = document.getElementById(`bound-max-${metric}`);
+    if (minInput) minInput.value = minValue;
+    if (maxInput) maxInput.value = maxValue;
+  });
+
   syncScoreFilterUI();
   updateScoreFormulaPreview();
 }
@@ -222,7 +259,8 @@ function collectScoreConfig() {
     weights: {},
     enabled_metrics: {},
     invert_metrics: {},
-    normalization_method: 'percentile'
+    normalization_method: 'minmax',
+    metric_bounds: state.scoreMetricBounds
   };
 
   SCORE_METRICS.forEach((metric) => {
@@ -1270,21 +1308,27 @@ function bindScoreControls() {
     invertCheckbox.addEventListener('change', updateScoreFormulaPreview);
   }
 
-  const resetButton = document.getElementById('scoreReset');
+  const resetButton = document.getElementById('resetScoreBtn');
   if (resetButton) {
     resetButton.addEventListener('click', () => {
       const defaultsConfig = window.defaults?.scoreConfig || {};
+      const mergedBounds = {
+        ...SCORE_DEFAULT_BOUNDS,
+        ...(defaultsConfig.metric_bounds || {})
+      };
       applyScoreSettings({
         scoreFilterEnabled: Boolean(defaultsConfig.filter_enabled),
         scoreThreshold: defaultsConfig.min_score_threshold ?? SCORE_DEFAULT_THRESHOLD,
         scoreWeights: clonePreset({ ...SCORE_DEFAULT_WEIGHTS, ...(defaultsConfig.weights || {}) }),
         scoreEnabledMetrics: clonePreset({ ...SCORE_DEFAULT_ENABLED, ...(defaultsConfig.enabled_metrics || {}) }),
-        scoreInvertMetrics: clonePreset({ ...SCORE_DEFAULT_INVERT, ...(defaultsConfig.invert_metrics || {}) })
+        scoreInvertMetrics: clonePreset({ ...SCORE_DEFAULT_INVERT, ...(defaultsConfig.invert_metrics || {}) }),
+        scoreMetricBounds: clonePreset(mergedBounds)
       });
       updateScoreFormulaPreview();
     });
   }
 
+  applyScoreSettings();
   syncScoreFilterUI();
   updateScoreFormulaPreview();
 }

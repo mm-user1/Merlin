@@ -90,7 +90,15 @@ DEFAULT_OPTIMIZER_SCORE_CONFIG: Dict[str, Any] = {
         "consistency": True,
     },
     "invert_metrics": {"ulcer": True},
-    "normalization_method": "percentile",
+    "normalization_method": "minmax",
+    "metric_bounds": {
+        "romad": {"min": 0.0, "max": 10.0},
+        "sharpe": {"min": -1.0, "max": 3.0},
+        "pf": {"min": 0.0, "max": 5.0},
+        "ulcer": {"min": 0.0, "max": 20.0},
+        "sqn": {"min": -2.0, "max": 7.0},
+        "consistency": {"min": 0.0, "max": 100.0},
+    },
 }
 
 PRESETS_DIR = Path(__file__).resolve().parent.parent / "presets"
@@ -1186,6 +1194,35 @@ def _build_optimization_config(
         normalization_value = source.get("normalization_method")
         if isinstance(normalization_value, str) and normalization_value.strip():
             normalized["normalization_method"] = normalization_value.strip().lower()
+
+        bounds_raw = source.get("metric_bounds")
+        if isinstance(bounds_raw, dict):
+            bounds: Dict[str, Dict[str, float]] = {}
+            for metric_key in SCORE_METRIC_KEYS:
+                if metric_key in bounds_raw and isinstance(bounds_raw[metric_key], dict):
+                    metric_bounds = bounds_raw[metric_key]
+                    try:
+                        bounds[metric_key] = {
+                            "min": float(
+                                metric_bounds.get(
+                                    "min", normalized["metric_bounds"][metric_key]["min"]
+                                )
+                            ),
+                            "max": float(
+                                metric_bounds.get(
+                                    "max", normalized["metric_bounds"][metric_key]["max"]
+                                )
+                            ),
+                        }
+                    except (TypeError, ValueError, KeyError):
+                        bounds[metric_key] = normalized["metric_bounds"].get(
+                            metric_key, {"min": 0.0, "max": 100.0}
+                        )
+                else:
+                    bounds[metric_key] = normalized["metric_bounds"].get(
+                        metric_key, {"min": 0.0, "max": 100.0}
+                    )
+            normalized["metric_bounds"] = bounds
 
         return normalized
 

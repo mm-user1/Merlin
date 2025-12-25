@@ -86,13 +86,23 @@ SCORE_METRIC_ATTRS: Dict[str, str] = {
     "consistency": "consistency_score",
 }
 
+DEFAULT_METRIC_BOUNDS: Dict[str, Dict[str, float]] = {
+    "romad": {"min": 0.0, "max": 10.0},
+    "sharpe": {"min": -1.0, "max": 3.0},
+    "pf": {"min": 0.0, "max": 5.0},
+    "ulcer": {"min": 0.0, "max": 20.0},
+    "sqn": {"min": -2.0, "max": 7.0},
+    "consistency": {"min": 0.0, "max": 100.0},
+}
+
 DEFAULT_SCORE_CONFIG: Dict[str, Any] = {
     "weights": {},
     "enabled_metrics": {},
     "invert_metrics": {},
-    "normalization_method": "percentile",
+    "normalization_method": "minmax",
     "filter_enabled": False,
     "min_score_threshold": 0.0,
+    "metric_bounds": DEFAULT_METRIC_BOUNDS,
 }
 
 
@@ -363,11 +373,115 @@ def _worker_process_entry(
         raise
 
 
+def _normalize_minmax(
+    results: List[OptimizationResult],
+    metrics_to_normalize: List[str],
+    invert_metrics: Dict[str, Any],
+    metric_bounds: Dict[str, Dict[str, float]],
+) -> Dict[str, Dict[int, float]]:
+    """
+    Normalize metrics using min-max scaling with fixed bounds.
+
+    Each value is scaled to 0-100 based on predefined min/max bounds.
+    Values outside bounds are clamped.
+    """
+    normalized_values: Dict[str, Dict[int, float]] = {}
+
+    def _as_bool(value: Any) -> bool:
+        if isinstance(value, bool):
+            return value
+        if isinstance(value, (int, float)):
+            return bool(value)
+        if isinstance(value, str):
+            return value.strip().lower() in {"true", "1", "yes", "y", "on"}
+        return False
+
+    for metric_name in metrics_to_normalize:
+        attr_name = SCORE_METRIC_ATTRS[metric_name]
+        bounds = metric_bounds.get(metric_name, {"min": 0.0, "max": 100.0})
+        min_bound = float(bounds.get("min", 0.0))
+        max_bound = float(bounds.get("max", 100.0))
+        invert = _as_bool(invert_metrics.get(metric_name, False))
+
+        normalized_values[metric_name] = {}
+
+        range_val = max_bound - min_bound
+        if range_val <= 0:
+            range_val = 1.0
+
+        for item in results:
+            value = getattr(item, attr_name)
+            if value is None:
+                normalized = 50.0
+            else:
+                clamped = max(min_bound, min(max_bound, float(value)))
+                normalized = ((clamped - min_bound) / range_val) * 100.0
+                if invert:
+                    normalized = 100.0 - normalized
+            normalized_values[metric_name][id(item)] = normalized
+
+    return normalized_values
+
+
+def _normalize_percentile(
+    results: List[OptimizationResult],
+    metrics_to_normalize: List[str],
+    invert_metrics: Dict[str, Any],
+) -> Dict[str, Dict[int, float]]:
+    """
+    Normalize metrics using percentile ranking across all results.
+
+    WARNING: Requires all results to be available; not suitable for multi-process mode.
+    """
+    normalized_values: Dict[str, Dict[int, float]] = {}
+
+    def _as_bool(value: Any) -> bool:
+        if isinstance(value, bool):
+            return value
+        if isinstance(value, (int, float)):
+            return bool(value)
+        if isinstance(value, str):
+            return value.strip().lower() in {"true", "1", "yes", "y", "on"}
+        return False
+
+    for metric_name in metrics_to_normalize:
+        attr_name = SCORE_METRIC_ATTRS[metric_name]
+        metric_values = [
+            getattr(item, attr_name)
+            for item in results
+            if getattr(item, attr_name) is not None
+        ]
+        if not metric_values:
+            normalized_values[metric_name] = {id(item): 50.0 for item in results}
+            continue
+
+        sorted_vals = sorted(float(value) for value in metric_values)
+        total = len(sorted_vals)
+        normalized_values[metric_name] = {}
+        invert = _as_bool(invert_metrics.get(metric_name, False))
+
+        for item in results:
+            value = getattr(item, attr_name)
+            if value is None:
+                rank = 50.0
+            else:
+                idx = bisect.bisect_left(sorted_vals, float(value))
+                rank = (idx / total) * 100.0
+                if invert:
+                    rank = 100.0 - rank
+            normalized_values[metric_name][id(item)] = rank
+
+    return normalized_values
+
+
 def calculate_score(
     results: List[OptimizationResult],
     config: Optional[Dict[str, Any]],
 ) -> List[OptimizationResult]:
-    """Calculate composite score for optimization results."""
+    """Calculate composite score for optimization results.
+
+    Supports "minmax" (deterministic, multi-process safe) and "percentile".
+    """
 
     if not results:
         return results
@@ -401,43 +515,44 @@ def calculate_score(
         min_score_threshold = 0.0
     min_score_threshold = max(0.0, min(100.0, min_score_threshold))
 
-    normalization_method_raw = normalized_config.get("normalization_method", "percentile")
+    normalization_method_raw = normalized_config.get("normalization_method", "minmax")
     normalization_method = (
-        str(normalization_method_raw).strip().lower() if normalization_method_raw is not None else "percentile"
+        str(normalization_method_raw).strip().lower() if normalization_method_raw is not None else "minmax"
     )
-    if normalization_method not in {"", "percentile"}:
-        normalization_method = "percentile"
+    if normalization_method not in {"minmax", "percentile"}:
+        normalization_method = "minmax"
+
+    metric_bounds: Dict[str, Dict[str, float]] = {
+        key: {"min": float(value.get("min", 0.0)), "max": float(value.get("max", 100.0))}
+        for key, value in DEFAULT_METRIC_BOUNDS.items()
+    }
+    metric_bounds_raw = normalized_config.get("metric_bounds")
+    if isinstance(metric_bounds_raw, dict):
+        for key, bounds in metric_bounds_raw.items():
+            if not isinstance(bounds, dict):
+                continue
+            current = metric_bounds.get(key, {"min": 0.0, "max": 100.0})
+            try:
+                min_val = float(bounds.get("min", current.get("min", 0.0)))
+                max_val = float(bounds.get("max", current.get("max", 100.0)))
+            except (TypeError, ValueError):
+                min_val = current.get("min", 0.0)
+                max_val = current.get("max", 100.0)
+            metric_bounds[key] = {"min": min_val, "max": max_val}
 
     metrics_to_normalize: List[str] = []
     for metric in SCORE_METRIC_ATTRS:
         if _as_bool(enabled_metrics.get(metric, False)):
             metrics_to_normalize.append(metric)
 
-    normalized_values: Dict[str, Dict[int, float]] = {}
-    for metric_name in metrics_to_normalize:
-        attr_name = SCORE_METRIC_ATTRS[metric_name]
-        metric_values = [
-            getattr(item, attr_name)
-            for item in results
-            if getattr(item, attr_name) is not None
-        ]
-        if not metric_values:
-            normalized_values[metric_name] = {id(item): 50.0 for item in results}
-            continue
-        sorted_vals = sorted(float(value) for value in metric_values)
-        total = len(sorted_vals)
-        normalized_values[metric_name] = {}
-        invert = _as_bool(invert_metrics.get(metric_name, False))
-        for item in results:
-            value = getattr(item, attr_name)
-            if value is None:
-                rank = 50.0
-            else:
-                idx = bisect.bisect_left(sorted_vals, float(value))
-                rank = (idx / total) * 100.0
-                if invert:
-                    rank = 100.0 - rank
-            normalized_values[metric_name][id(item)] = rank
+    if normalization_method == "minmax":
+        normalized_values = _normalize_minmax(
+            results, metrics_to_normalize, invert_metrics, metric_bounds
+        )
+    else:
+        normalized_values = _normalize_percentile(
+            results, metrics_to_normalize, invert_metrics
+        )
 
     for item in results:
         item.score = 0.0
@@ -737,18 +852,16 @@ class OptunaOptimizer:
             self.pruned_trials += 1
             raise optuna.TrialPruned("Below minimum profit threshold")
 
-        # For composite score target, calculate score dynamically based on all results so far
+        # For composite score target, calculate score deterministically for this trial
         score_config = self.base_config.score_config or DEFAULT_SCORE_CONFIG
         objective_value: float
 
         if self.optuna_config.target == "score":
-            # Add current result to accumulated results
-            temp_results = self.trial_results + [result]
-            # Calculate scores for all results using percentile ranking
-            scored_results = calculate_score(temp_results, score_config)
-            # Get the score of the current (last) result
+            minmax_config = score_config.copy()
+            minmax_config["normalization_method"] = "minmax"
+            scored_results = calculate_score([result], minmax_config)
             if scored_results:
-                result = scored_results[-1]
+                result = scored_results[0]
                 objective_value = float(result.score)
             else:
                 objective_value = 0.0
@@ -803,8 +916,13 @@ class OptunaOptimizer:
         ):
             raise optuna.TrialPruned("Below minimum profit threshold")
 
+        score_config = self.base_config.score_config or DEFAULT_SCORE_CONFIG
+
         if self.optuna_config.target == "score":
-            objective_value = float(result.romad or 0.0)
+            minmax_config = score_config.copy()
+            minmax_config["normalization_method"] = "minmax"
+            scored_results = calculate_score([result], minmax_config)
+            objective_value = float(scored_results[0].score) if scored_results else 0.0
         elif self.optuna_config.target == "net_profit":
             objective_value = float(result.net_profit_pct)
         elif self.optuna_config.target == "romad":
