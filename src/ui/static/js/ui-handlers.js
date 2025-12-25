@@ -3,14 +3,14 @@
  * Dependencies: utils.js, api.js, strategy-config.js, presets.js
  */
 
-const SCORE_METRICS = ['romad', 'sharpe', 'pf', 'ulcer', 'recovery', 'consistency'];
+const SCORE_METRICS = ['romad', 'sharpe', 'pf', 'ulcer', 'sqn', 'consistency'];
 const SCORE_DEFAULT_THRESHOLD = 60;
 const SCORE_DEFAULT_WEIGHTS = {
   romad: 0.25,
   sharpe: 0.20,
   pf: 0.20,
   ulcer: 0.15,
-  recovery: 0.10,
+  sqn: 0.10,
   consistency: 0.10
 };
 const SCORE_DEFAULT_ENABLED = {
@@ -18,7 +18,7 @@ const SCORE_DEFAULT_ENABLED = {
   sharpe: true,
   pf: true,
   ulcer: true,
-  recovery: true,
+  sqn: true,
   consistency: true
 };
 const SCORE_DEFAULT_INVERT = {
@@ -199,7 +199,7 @@ function updateScoreFormulaPreview() {
         sharpe: 'Sharpe Ratio',
         pf: 'Profit Factor',
         ulcer: 'Ulcer Index',
-        recovery: 'Recovery Factor',
+        sqn: 'SQN',
         consistency: 'Consistency Score'
       };
       const label = labelMap[metric] || metric;

@@ -3,7 +3,7 @@ Metrics calculation module for S01 Trailing MA v26.
 
 This module provides:
 - BasicMetrics: Net profit, drawdown, trade statistics
-- AdvancedMetrics: Sharpe, RoMaD, Profit Factor, Ulcer Index, Consistency
+- AdvancedMetrics: Sharpe, RoMaD, Profit Factor, SQN, Ulcer Index, Consistency
 - Calculation functions that operate on StrategyResult
 
 Architectural note: This module ONLY calculates metrics.
@@ -86,7 +86,7 @@ class AdvancedMetrics:
 
     These metrics provide deeper insight into strategy quality:
     - Risk-adjusted returns (Sharpe, Sortino)
-    - Efficiency ratios (Profit Factor, RoMaD, Recovery Factor)
+    - Efficiency ratios (Profit Factor, RoMaD, SQN)
     - Volatility measures (Ulcer Index)
     - Consistency indicators (monthly profitability)
 
@@ -98,7 +98,7 @@ class AdvancedMetrics:
     sortino_ratio: Optional[float] = None
     profit_factor: Optional[float] = None
     romad: Optional[float] = None
-    recovery_factor: Optional[float] = None
+    sqn: Optional[float] = None
     ulcer_index: Optional[float] = None
     consistency_score: Optional[float] = None
 
@@ -109,7 +109,7 @@ class AdvancedMetrics:
             "sortino_ratio": self.sortino_ratio,
             "profit_factor": self.profit_factor,
             "romad": self.romad,
-            "recovery_factor": self.recovery_factor,
+            "sqn": self.sqn,
             "ulcer_index": self.ulcer_index,
             "consistency_score": self.consistency_score,
         }
@@ -258,6 +258,32 @@ def _calculate_consistency_score_value(monthly_returns: List[float]) -> Optional
     return consistency
 
 
+def _calculate_sqn_value(trades: List[TradeRecord]) -> Optional[float]:
+    """
+    Calculate System Quality Number (Van Tharp).
+
+    SQN = sqrt(N) * mean(trade_pnl) / std(trade_pnl)
+
+    Measures trading system quality by combining profitability and consistency.
+    Requires minimum 30 trades for statistical significance.
+    """
+    if len(trades) < 30:
+        return None
+
+    trade_pnl = np.array([t.net_pnl for t in trades], dtype=float)
+    if trade_pnl.size < 30:
+        return None
+
+    mean_pnl = float(np.mean(trade_pnl))
+    std_pnl = float(np.std(trade_pnl, ddof=1))
+
+    if std_pnl == 0.0 or std_pnl < 1e-10:
+        return None
+
+    sqn = math.sqrt(trade_pnl.size) * mean_pnl / std_pnl
+    return sqn
+
+
 # ============================================================================
 # Main Calculation Functions
 # ============================================================================
@@ -347,12 +373,13 @@ def calculate_advanced(
     sortino_ratio = None
     profit_factor = None
     romad = None
-    recovery_factor = None
+    sqn = None
     ulcer_index = None
     consistency_score = None
 
     if trades:
         profit_factor = _calculate_profit_factor_value(trades)
+        sqn = _calculate_sqn_value(trades)
 
     monthly_returns: List[float] = []
     if trades and timestamps:
@@ -380,15 +407,12 @@ def calculate_advanced(
     else:
         romad = 0.0
 
-    if basic.max_drawdown > 0:
-        recovery_factor = basic.net_profit / basic.max_drawdown
-
     return AdvancedMetrics(
         sharpe_ratio=sharpe_ratio,
         sortino_ratio=sortino_ratio,
         profit_factor=profit_factor,
         romad=romad,
-        recovery_factor=recovery_factor,
+        sqn=sqn,
         ulcer_index=ulcer_index,
         consistency_score=consistency_score,
     )

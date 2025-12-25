@@ -396,7 +396,7 @@ class S01TrailingMA(BaseStrategy):
         result.profit_factor = advanced_metrics.profit_factor
         result.romad = advanced_metrics.romad
         result.ulcer_index = advanced_metrics.ulcer_index
-        result.recovery_factor = advanced_metrics.recovery_factor
+        result.sqn = advanced_metrics.sqn
         result.consistency_score = advanced_metrics.consistency_score
 
         return result

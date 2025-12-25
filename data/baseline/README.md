@@ -1,11 +1,11 @@
-ï»¿# S01 Trailing MA v26 - Baseline Data
+# S01 Trailing MA v26 - Baseline Data
 
 ## Overview
 
 This directory contains baseline results for the S01 Trailing MA strategy.
 These results serve as the "golden standard" for regression testing during migration.
 
-**Generated:** 2025-11-28 12:52:33
+**Generated:** 2025-12-25 10:01:00
 
 ## Dataset
 
@@ -58,19 +58,19 @@ These results serve as the "golden standard" for regression testing during migra
 
 Based on user requirements, the baseline should produce:
 
-- **Net Profit:** 230.75% (Expected: ~230.75% +0.5%)
-- **Max Drawdown:** 20.03% (Expected: ~20.03% +0.5%)
-- **Total Trades:** 93 (Expected: ~93 +2)
+- **Net Profit:** 230.75% (Expected: ~230.75% ±0.5%)
+- **Max Drawdown:** 20.03% (Expected: ~20.03% ±0.5%)
+- **Total Trades:** 93 (Expected: ~93 ±2)
 
 ## Tolerance Levels for Regression Tests
 
 The following tolerances are used for regression validation:
 
-- **net_profit_pct:** +0.01% (floating point tolerance)
-- **max_drawdown_pct:** +0.01%
-- **total_trades:** exact match (+0)
+- **net_profit_pct:** ±0.01% (floating point tolerance)
+- **max_drawdown_pct:** ±0.01%
+- **total_trades:** exact match (±0)
 - **trade entry/exit times:** exact match
-- **trade PnL:** +0.0001 (floating point epsilon)
+- **trade PnL:** ±0.0001 (floating point epsilon)
 
 ## Files
 

@@ -66,7 +66,7 @@ SCORE_METRIC_KEYS: Tuple[str, ...] = (
     "sharpe",
     "pf",
     "ulcer",
-    "recovery",
+    "sqn",
     "consistency",
 )
 
@@ -78,7 +78,7 @@ DEFAULT_OPTIMIZER_SCORE_CONFIG: Dict[str, Any] = {
         "sharpe": 0.20,
         "pf": 0.20,
         "ulcer": 0.15,
-        "recovery": 0.10,
+        "sqn": 0.10,
         "consistency": 0.10,
     },
     "enabled_metrics": {
@@ -86,7 +86,7 @@ DEFAULT_OPTIMIZER_SCORE_CONFIG: Dict[str, Any] = {
         "sharpe": True,
         "pf": True,
         "ulcer": True,
-        "recovery": True,
+        "sqn": True,
         "consistency": True,
     },
     "invert_metrics": {"ulcer": True},

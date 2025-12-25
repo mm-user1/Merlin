@@ -25,6 +25,7 @@ from core.backtest_engine import (  # noqa: E402
 from core.metrics import (  # noqa: E402
     calculate_basic,
     calculate_advanced,
+    _calculate_sqn_value,
 )
 from strategies.s01_trailing_ma.strategy import S01Params, S01TrailingMA  # noqa: E402
 
@@ -93,6 +94,13 @@ class TestMetricsParity:
     def test_advanced_ulcer_matches(self, test_result):
         advanced = calculate_advanced(test_result)
         assert advanced.ulcer_index == pytest.approx(test_result.ulcer_index)
+
+    def test_advanced_sqn_matches(self, test_result):
+        advanced = calculate_advanced(test_result)
+        if test_result.sqn is None:
+            assert advanced.sqn is None
+        else:
+            assert advanced.sqn == pytest.approx(test_result.sqn)
 
     def test_advanced_consistency_matches(self, test_result):
         advanced = calculate_advanced(test_result)
@@ -206,6 +214,30 @@ class TestMetricsEdgeCases:
         assert basic.win_rate == 0.0
         assert advanced.profit_factor == 0.0
 
+    def test_calculate_sqn_sufficient_trades(self):
+        trades = [
+            TradeRecord(net_pnl=100 + i) for i in range(30)
+        ]
+        sqn = _calculate_sqn_value(trades)
+        assert sqn is not None
+        assert isinstance(sqn, float)
+
+    def test_calculate_sqn_insufficient_trades(self):
+        trades = [TradeRecord(net_pnl=100) for _ in range(29)]
+        sqn = _calculate_sqn_value(trades)
+        assert sqn is None
+
+    def test_calculate_sqn_zero_variance(self):
+        trades = [TradeRecord(net_pnl=100) for _ in range(30)]
+        sqn = _calculate_sqn_value(trades)
+        assert sqn is None
+
+    def test_calculate_sqn_negative_expectancy(self):
+        trades = [TradeRecord(net_pnl=-(10 + i)) for i in range(30)]
+        sqn = _calculate_sqn_value(trades)
+        assert sqn is not None
+        assert sqn < 0
+
 
 class TestMetricsRegression:
     """Regression checks against recorded baseline values."""
@@ -229,5 +261,10 @@ class TestMetricsRegression:
         assert abs((advanced.sharpe_ratio or 0) - baseline["sharpe_ratio"]) < 1e-6
         assert abs((advanced.profit_factor or 0) - baseline["profit_factor"]) < 1e-6
         assert abs((advanced.romad or 0) - baseline["romad"]) < 1e-6
+        baseline_sqn = baseline.get("sqn")
+        if baseline_sqn is None:
+            assert advanced.sqn is None
+        else:
+            assert abs((advanced.sqn or 0) - baseline_sqn) < 1e-6
         assert abs((advanced.ulcer_index or 0) - baseline["ulcer_index"]) < 1e-6
         assert abs((advanced.consistency_score or 0) - baseline["consistency_score"]) < 1e-6

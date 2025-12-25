@@ -24,7 +24,7 @@ class MockResult:
     sharpe_ratio: float = 0.92
     profit_factor: float = 1.76
     ulcer_index: float = 12.01
-    recovery_factor: float = 11.52
+    sqn: float = 2.35
     consistency_score: float = 66.67
 
     def __post_init__(self):
@@ -70,6 +70,16 @@ class TestExportOptunaResults:
         assert any("Net Profit%" in line for line in lines)
         assert "230.75%" in csv_content
         assert "Fixed Parameters" in csv_content
+
+    def test_export_optuna_results_includes_sqn_column(self):
+        results = [MockResult()]
+        csv_content = export_optuna_results(results, fixed_params={})
+
+        header_line = next(
+            line for line in csv_content.splitlines() if "Net Profit%" in line
+        )
+        assert "SQN" in header_line
+        assert "Recover" not in header_line
 
     def test_export_optuna_results_with_metadata(self):
         results = [MockResult()]

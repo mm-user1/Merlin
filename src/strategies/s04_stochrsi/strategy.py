@@ -340,7 +340,7 @@ class S04StochRSI(BaseStrategy):
         result.ulcer_index = advanced.ulcer_index
         result.consistency_score = advanced.consistency_score
         result.sharpe_ratio = advanced.sharpe_ratio
-        result.recovery_factor = advanced.recovery_factor
+        result.sqn = advanced.sqn
         result.sortino_ratio = advanced.sortino_ratio
 
         return result

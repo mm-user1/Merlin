@@ -6,9 +6,9 @@
   "profit_factor": 1.7611403271554718,
   "romad": 11.522958369601588,
   "ulcer_index": 12.008201030517265,
-  "recovery_factor": 11.522958369601588,
+  "sqn": 1.6574394278247304,
   "consistency_score": 66.66666666666666,
-  "generated_at": "2025-11-28T12:52:33.036504",
+  "generated_at": "2025-12-25T10:01:00.255704",
   "parameters": {
     "maType": "SMA",
     "maLength": 300,

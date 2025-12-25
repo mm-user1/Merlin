@@ -129,7 +129,7 @@ def _get_metric_columns() -> List[Tuple[str, Optional[str], str, Optional[str]]]
         ("Sharpe", None, "sharpe_ratio", "optional_float"),
         ("PF", None, "profit_factor", "optional_float"),
         ("Ulcer", None, "ulcer_index", "optional_float"),
-        ("Recover", None, "recovery_factor", "optional_float"),
+        ("SQN", None, "sqn", "optional_float"),
         ("Consist", None, "consistency_score", "optional_float"),
     ]
 

@@ -50,7 +50,7 @@ class StrategyResult:
     profit_factor: Optional[float] = None
     romad: Optional[float] = None  # Return Over Maximum Drawdown
     ulcer_index: Optional[float] = None
-    recovery_factor: Optional[float] = None
+    sqn: Optional[float] = None
     consistency_score: Optional[float] = None  # % of profitable months
 
     def to_dict(self) -> Dict[str, Any]:
@@ -74,7 +74,7 @@ class StrategyResult:
             "profit_factor": self.profit_factor,
             "romad": self.romad,
             "ulcer_index": self.ulcer_index,
-            "recovery_factor": self.recovery_factor,
+            "sqn": self.sqn,
             "consistency_score": self.consistency_score,
         }
 

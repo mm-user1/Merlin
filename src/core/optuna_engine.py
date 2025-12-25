@@ -68,7 +68,7 @@ class OptimizationResult:
     sharpe_ratio: Optional[float] = None
     profit_factor: Optional[float] = None
     ulcer_index: Optional[float] = None
-    recovery_factor: Optional[float] = None
+    sqn: Optional[float] = None
     consistency_score: Optional[float] = None
     score: float = 0.0
 
@@ -82,7 +82,7 @@ SCORE_METRIC_ATTRS: Dict[str, str] = {
     "sharpe": "sharpe_ratio",
     "pf": "profit_factor",
     "ulcer": "ulcer_index",
-    "recovery": "recovery_factor",
+    "sqn": "sqn",
     "consistency": "consistency_score",
 }
 
@@ -181,7 +181,7 @@ def _run_single_combination(
             profit_factor=None,
             romad=None,
             ulcer_index=None,
-            recovery_factor=None,
+            sqn=None,
             consistency_score=None,
         )
 
@@ -200,7 +200,7 @@ def _run_single_combination(
             sharpe_ratio=advanced_metrics.sharpe_ratio,
             profit_factor=advanced_metrics.profit_factor,
             ulcer_index=advanced_metrics.ulcer_index,
-            recovery_factor=advanced_metrics.recovery_factor,
+            sqn=advanced_metrics.sqn,
             consistency_score=advanced_metrics.consistency_score,
         )
     except Exception:
@@ -236,8 +236,8 @@ def _trial_set_result_attrs(
         trial.set_user_attr("merlin.profit_factor", float(result.profit_factor))
     if result.ulcer_index is not None:
         trial.set_user_attr("merlin.ulcer_index", float(result.ulcer_index))
-    if result.recovery_factor is not None:
-        trial.set_user_attr("merlin.recovery_factor", float(result.recovery_factor))
+    if result.sqn is not None:
+        trial.set_user_attr("merlin.sqn", float(result.sqn))
     if result.consistency_score is not None:
         trial.set_user_attr("merlin.consistency_score", float(result.consistency_score))
 
@@ -256,7 +256,7 @@ def _result_from_trial(trial: optuna.trial.FrozenTrial) -> OptimizationResult:
         sharpe_ratio=attrs.get("merlin.sharpe_ratio"),
         profit_factor=attrs.get("merlin.profit_factor"),
         ulcer_index=attrs.get("merlin.ulcer_index"),
-        recovery_factor=attrs.get("merlin.recovery_factor"),
+        sqn=attrs.get("merlin.sqn"),
         consistency_score=attrs.get("merlin.consistency_score"),
         score=0.0,
     )
