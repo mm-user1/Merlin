@@ -20,7 +20,6 @@ from pathlib import Path
 from typing import Any, Dict, Iterable, List, Mapping, Optional, Tuple, Union, TYPE_CHECKING
 from zipfile import ZIP_DEFLATED, ZipFile
 
-import numpy as np
 import pandas as pd
 
 from .backtest_engine import TradeRecord
@@ -480,32 +479,20 @@ def export_wfa_trades_history(
     wf_result: "WFResult",
     df: pd.DataFrame,
     symbol: str,
-    top_k: int,
     output_dir,
 ) -> List[str]:
     """
-    Export trade history for top-K parameter combinations with exact WFA replication.
+    Export trade history for each WFA window's best parameter set.
 
-    This function re-runs the strategy for each top-K combination on:
-    1. IS periods for windows where the combo appeared
-    2. OOS periods for windows where the combo appeared
-    3. Forward period (same for all combos)
+    This re-runs the strategy for each window on:
+    1. IS period
+    2. OOS period
 
-    All trades are combined into a single CSV per combination, sorted by entry time.
-
-    Args:
-        wf_result: WFResult object from walk-forward analysis
-        df: Original dataframe with all market data
-        symbol: Trading symbol (e.g., "OKX:LINKUSDT.P")
-        top_k: Number of top combinations to export (max 100)
-        output_dir: Directory to save trade CSV files
-
-    Returns:
-        List of generated CSV filenames
+    All trades for a window are combined into a single CSV per window,
+    sorted by entry time.
     """
     from .backtest_engine import prepare_dataset_with_warmup
     from strategies import get_strategy
-    from . import metrics
 
     strategy_id = getattr(wf_result, "strategy_id", "")
     if not strategy_id:
@@ -519,88 +506,52 @@ def export_wfa_trades_history(
 
     warmup_bars = getattr(wf_result, "warmup_bars", 1000)
 
-    trade_files = []
-    actual_top_k = min(top_k, len(wf_result.aggregated))
+    trade_files: List[str] = []
 
-    for rank, agg in enumerate(wf_result.aggregated[:actual_top_k], 1):
+    for window_result in wf_result.windows:
         all_trades = []
 
-        for window_id in agg.window_ids:
-            window = wf_result.windows[window_id - 1]
-
-            is_start_time = df.index[window.is_start]
-            is_end_time = df.index[window.is_end - 1]
-
-            is_df_prepared, trade_start_idx = prepare_dataset_with_warmup(
-                df, is_start_time, is_end_time, warmup_bars
-            )
-
-            params_dict = agg.params.copy()
-            params_dict["dateFilter"] = True
-            params_dict["start"] = is_start_time
-            params_dict["end"] = is_end_time
-
-            is_result = strategy_class.run(
-                is_df_prepared, params_dict, trade_start_idx
-            )
-
-            is_trades = [
-                trade for trade in is_result.trades
-                if is_start_time <= trade.entry_time <= is_end_time
-            ]
-            all_trades.extend(is_trades)
-
-            oos_start_time = df.index[window.oos_start]
-            oos_end_time = df.index[window.oos_end - 1]
-
-            oos_df_prepared, trade_start_idx = prepare_dataset_with_warmup(
-                df, oos_start_time, oos_end_time, warmup_bars
-            )
-
-            params_dict = agg.params.copy()
-            params_dict["dateFilter"] = True
-            params_dict["start"] = oos_start_time
-            params_dict["end"] = oos_end_time
-
-            oos_result = strategy_class.run(
-                oos_df_prepared, params_dict, trade_start_idx
-            )
-
-            oos_trades = [
-                trade for trade in oos_result.trades
-                if oos_start_time <= trade.entry_time <= oos_end_time
-            ]
-            all_trades.extend(oos_trades)
-
-        forward_start_time = df.index[wf_result.forward_start]
-        forward_end_time = df.index[wf_result.forward_end - 1]
-
-        fwd_df_prepared, trade_start_idx = prepare_dataset_with_warmup(
-            df, forward_start_time, forward_end_time, warmup_bars
+        is_df_prepared, is_trade_start_idx = prepare_dataset_with_warmup(
+            df, window_result.is_start, window_result.is_end, warmup_bars
         )
 
-        params_dict = agg.params.copy()
-        params_dict["dateFilter"] = True
-        params_dict["start"] = forward_start_time
-        params_dict["end"] = forward_end_time
+        is_params = window_result.best_params.copy()
+        is_params["dateFilter"] = True
+        is_params["start"] = window_result.is_start
+        is_params["end"] = window_result.is_end
 
-        fwd_result = strategy_class.run(
-            fwd_df_prepared, params_dict, trade_start_idx
+        is_result = strategy_class.run(
+            is_df_prepared, is_params, is_trade_start_idx
         )
 
-        fwd_trades = [
-            trade for trade in fwd_result.trades
-            if forward_start_time <= trade.entry_time <= forward_end_time
+        is_trades = [
+            trade for trade in is_result.trades
+            if window_result.is_start <= trade.entry_time <= window_result.is_end
         ]
-        all_trades.extend(fwd_trades)
+        all_trades.extend(is_trades)
+
+        oos_df_prepared, oos_trade_start_idx = prepare_dataset_with_warmup(
+            df, window_result.oos_start, window_result.oos_end, warmup_bars
+        )
+
+        oos_params = window_result.best_params.copy()
+        oos_params["dateFilter"] = True
+        oos_params["start"] = window_result.oos_start
+        oos_params["end"] = window_result.oos_end
+
+        oos_result = strategy_class.run(
+            oos_df_prepared, oos_params, oos_trade_start_idx
+        )
+
+        oos_trades = [
+            trade for trade in oos_result.trades
+            if window_result.oos_start <= trade.entry_time <= window_result.oos_end
+        ]
+        all_trades.extend(oos_trades)
 
         all_trades.sort(key=lambda t: t.entry_time)
 
-        basic_metrics = metrics.calculate_basic(fwd_result, initial_balance=100.0)
-        metrics.calculate_advanced(fwd_result, initial_balance=100.0)
-        fwd_profit_pct = basic_metrics.net_profit_pct
-
-        filename = f"rank{rank}_fwd{fwd_profit_pct:+.2f}.csv"
+        filename = f"window{window_result.window_id}_{window_result.param_id}.csv"
         filepath = Path(output_dir) / filename
 
         _export_wfa_trades_to_csv(all_trades, symbol, str(filepath))
@@ -611,139 +562,75 @@ def export_wfa_trades_history(
 
 
 def export_wf_results_csv(result: "WFResult", df: Optional[pd.DataFrame] = None) -> str:
-    """Export Walk-Forward results to CSV string
-
-    Args:
-        result: WFResult object containing walk-forward analysis results
-        df: Optional DataFrame with datetime index for converting bar numbers to dates
-    """
-    from .walkforward_engine import WalkForwardEngine
-
+    """Export Walk-Forward results to CSV string."""
     output = StringIO()
     writer = csv.writer(output, lineterminator="\n")
 
-    def bar_to_date(bar_idx: int) -> str:
-        """Convert bar index to date string (YYYY-MM-DD)"""
-        if df is not None and 0 <= bar_idx < len(df):
-            timestamp = df.index[bar_idx]
-            return timestamp.strftime("%Y-%m-%d")
-        return str(bar_idx)
+    def format_ts(value: pd.Timestamp) -> str:
+        if isinstance(value, pd.Timestamp):
+            return value.strftime("%Y-%m-%d")
+        return str(value)
 
     writer.writerow(["=== WALK-FORWARD ANALYSIS - RESULTS ==="])
     writer.writerow([])
 
-    writer.writerow(["=== SUMMARY ===", "", "", ""])
-    writer.writerow(["Total Windows", len(result.windows), "Start", "End"])
-    writer.writerow(
-        [
-            "WF Zone",
-            f"{result.config.wf_zone_pct}%",
-            bar_to_date(result.wf_zone_start),
-            bar_to_date(result.wf_zone_end - 1),
-        ]
-    )
-    writer.writerow(
-        [
-            "Forward Reserve",
-            f"{result.config.forward_pct}%",
-            bar_to_date(result.forward_start),
-            bar_to_date(result.forward_end - 1),
-        ]
-    )
-    writer.writerow(["Gap Between IS/OOS", f"{result.config.gap_bars} bars", "", ""])
-    writer.writerow(["Top-K Per Window", result.config.topk_per_window])
+    writer.writerow(["=== CONFIGURATION ==="])
+    writer.writerow(["Strategy ID", result.strategy_id])
+    writer.writerow(["IS Period (days)", result.config.is_period_days])
+    writer.writerow(["OOS Period (days)", result.config.oos_period_days])
+    writer.writerow(["Warmup Bars", result.warmup_bars])
+    writer.writerow(["Trading Start", format_ts(result.trading_start_date)])
+    writer.writerow(["Trading End", format_ts(result.trading_end_date)])
+    writer.writerow(["Total Windows", result.total_windows])
     writer.writerow([])
 
-    writer.writerow(["=== TOP 10 PARAMETER SETS (by Avg OOS Profit) ==="])
-    writer.writerow(
-        [
-            "Rank",
-            "Param ID",
-            "OOS Win Rate",
-            "Avg IS Profit %",
-            "Avg OOS Profit %",
-            "Forward Profit %",
-        ]
-    )
-
-    for rank, agg in enumerate(result.aggregated[:10], 1):
-        forward_profit = (
-            result.forward_profits[rank - 1]
-            if rank <= len(result.forward_profits)
-            else "N/A"
-        )
-
-        writer.writerow(
-            [
-                rank,
-                agg.param_id,
-                f"{agg.oos_win_rate * 100:.1f}%",
-                f"{agg.avg_is_profit:.2f}%",
-                f"{agg.avg_oos_profit:.2f}%",
-                f"{forward_profit:.2f}%"
-                if isinstance(forward_profit, float)
-                else forward_profit,
-            ]
-        )
-
+    writer.writerow(["=== STITCHED OOS PERFORMANCE ==="])
+    writer.writerow(["Final OOS Net Profit %", f"{result.stitched_oos.final_net_profit_pct:.2f}%"])
+    writer.writerow(["Max Drawdown %", f"{result.stitched_oos.max_drawdown_pct:.2f}%"])
+    writer.writerow(["Total Trades", result.stitched_oos.total_trades])
+    writer.writerow(["WFE (Annualized)", f"{result.stitched_oos.wfe:.2f}%"])
+    writer.writerow(["OOS Win Rate", f"{result.stitched_oos.oos_win_rate:.1f}%"])
     writer.writerow([])
 
-    writer.writerow(["=== WINDOW DETAILS ==="])
+    writer.writerow(["=== PER-WINDOW RESULTS ==="])
     writer.writerow(
         [
             "Window",
             "IS Start",
             "IS End",
-            "Gap Start",
-            "Gap End",
             "OOS Start",
             "OOS End",
-            "Top Param ID",
-            "OOS Profit %",
+            "Param ID",
+            "IS Net Profit %",
+            "IS Max DD %",
+            "IS Trades",
+            "OOS Net Profit %",
+            "OOS Max DD %",
+            "OOS Trades",
         ]
     )
 
-    helper_engine = WalkForwardEngine(result.config, {}, {})
-
-    for window_result in result.window_results:
-        window = result.windows[window_result.window_id - 1]
-
-        if window_result.oos_profits:
-            best_index = int(np.argmax(window_result.oos_profits))
-            best_param = window_result.top_params[best_index]
-            best_param_id = helper_engine._create_param_id(best_param)
-            best_oos_profit = window_result.oos_profits[best_index]
-        else:
-            best_param_id = "N/A"
-            best_oos_profit = 0.0
-
+    for window_result in result.windows:
         writer.writerow(
             [
-                window.window_id,
-                bar_to_date(window.is_start),
-                bar_to_date(window.is_end),
-                bar_to_date(window.gap_start),
-                bar_to_date(window.gap_end),
-                bar_to_date(window.oos_start),
-                bar_to_date(window.oos_end),
-                best_param_id,
-                f"{best_oos_profit:.2f}%",
+                window_result.window_id,
+                format_ts(window_result.is_start),
+                format_ts(window_result.is_end),
+                format_ts(window_result.oos_start),
+                format_ts(window_result.oos_end),
+                window_result.param_id,
+                f"{window_result.is_net_profit_pct:.2f}%",
+                f"{window_result.is_max_drawdown_pct:.2f}%",
+                window_result.is_total_trades,
+                f"{window_result.oos_net_profit_pct:.2f}%",
+                f"{window_result.oos_max_drawdown_pct:.2f}%",
+                window_result.oos_total_trades,
             ]
         )
 
     writer.writerow([])
 
-    writer.writerow(["=== FORWARD TEST RESULTS ==="])
-    writer.writerow(["Rank", "Param ID", "Forward Profit %"])
-
-    for rank, agg in enumerate(result.aggregated[:10], 1):
-        if rank <= len(result.forward_profits):
-            forward_profit = result.forward_profits[rank - 1]
-            writer.writerow([rank, agg.param_id, f"{forward_profit:.2f}%"])
-
-    writer.writerow([])
-
-    writer.writerow(["=== DETAILED PARAMETERS FOR TOP 10 ==="])
+    writer.writerow(["=== WINDOW PARAMETERS ==="])
     writer.writerow([])
 
     try:
@@ -754,12 +641,15 @@ def export_wf_results_csv(result: "WFResult", df: Optional[pd.DataFrame] = None)
     except Exception:
         param_definitions = {}
 
-    for rank, agg in enumerate(result.aggregated[:10], 1):
-        writer.writerow([f"--- Rank #{rank}: {agg.param_id} ---"])
-        params = agg.params
+    ordered_param_names = list(param_definitions.keys()) if param_definitions else []
+
+    for window_result in result.windows:
+        writer.writerow([f"--- Window #{window_result.window_id}: {window_result.param_id} ---"])
         writer.writerow(["Parameter", "Value"])
-        if param_definitions:
-            for param_name, param_spec in param_definitions.items():
+        params = window_result.best_params
+        if ordered_param_names:
+            for param_name in ordered_param_names:
+                param_spec = param_definitions.get(param_name)
                 label = param_spec.get("label", param_name) if isinstance(param_spec, dict) else param_name
                 value = params.get(param_name, "N/A")
                 writer.writerow([label, value])
@@ -769,30 +659,12 @@ def export_wf_results_csv(result: "WFResult", df: Optional[pd.DataFrame] = None)
 
         writer.writerow([])
         writer.writerow(["Performance Metrics", ""])
-        writer.writerow(["Avg IS Profit %", f"{agg.avg_is_profit:.2f}%"])
-        writer.writerow(
-            [
-                "IS Profits by Window",
-                ", ".join([f"{profit:.2f}%" for profit in agg.is_profits]),
-            ]
-        )
-        writer.writerow(["Avg OOS Profit %", f"{agg.avg_oos_profit:.2f}%"])
-        writer.writerow(["OOS Win Rate", f"{agg.oos_win_rate * 100:.1f}%"])
-        writer.writerow(
-            [
-                "OOS Profits by Window",
-                ", ".join([f"{profit:.2f}%" for profit in agg.oos_profits]),
-            ]
-        )
-        rank_index = rank - 1
-        if rank_index < len(result.forward_profits):
-            writer.writerow(
-                [
-                    "Forward Test Profit %",
-                    f"{result.forward_profits[rank_index]:.2f}%",
-                ]
-            )
-
+        writer.writerow(["IS Net Profit %", f"{window_result.is_net_profit_pct:.2f}%"])
+        writer.writerow(["IS Max DD %", f"{window_result.is_max_drawdown_pct:.2f}%"])
+        writer.writerow(["IS Trades", window_result.is_total_trades])
+        writer.writerow(["OOS Net Profit %", f"{window_result.oos_net_profit_pct:.2f}%"])
+        writer.writerow(["OOS Max DD %", f"{window_result.oos_max_drawdown_pct:.2f}%"])
+        writer.writerow(["OOS Trades", window_result.oos_total_trades])
         writer.writerow([])
         writer.writerow([])
 

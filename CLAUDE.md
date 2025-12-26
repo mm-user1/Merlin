@@ -40,6 +40,7 @@ Key: Flask, pandas, numpy, matplotlib, optuna==4.4.0
 2. **camelCase naming** - End-to-end: Pine Script → config.json → Python → CSV
 3. **Optuna-only optimization** - Grid search removed
 4. **Strategy isolation** - Each strategy owns its params dataclass
+5. **Rolling WFA (Phase 2)** - Calendar-based IS/OOS windows, stitched OOS equity, annualized WFE
 
 ### Directory Structure
 
@@ -117,6 +118,20 @@ result = S01TrailingMA.run(df_prepared, params, trade_start_idx)
 from core import metrics
 basic = metrics.calculate_basic(result, initial_capital=100.0)
 advanced = metrics.calculate_advanced(result)
+```
+
+### Walk-Forward Analysis (Rolling)
+```python
+from core.walkforward_engine import WFConfig, WalkForwardEngine
+
+wf_config = WFConfig(
+    strategy_id="s01_trailing_ma",
+    is_period_days=180,
+    oos_period_days=60,
+    warmup_bars=1000,
+)
+engine = WalkForwardEngine(wf_config, base_config_template, optuna_settings)
+wf_result = engine.run_wf_optimization(df)
 ```
 
 ### Using Indicators

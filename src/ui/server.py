@@ -813,25 +813,22 @@ def run_walkforward_optimization() -> object:
     }
 
     try:
-        num_windows = int(data.get("wf_num_windows", 5))
-        gap_bars = int(data.get("wf_gap_bars", 100))
-        topk = int(data.get("wf_topk", 20))
+        is_period_days = int(data.get("wf_is_period_days", 90))
+        oos_period_days = int(data.get("wf_oos_period_days", 30))
     except (TypeError, ValueError):
         if opened_file:
             opened_file.close()
         return jsonify({"error": "Invalid Walk-Forward parameters."}), HTTPStatus.BAD_REQUEST
 
-    num_windows = max(1, min(20, num_windows))
-    gap_bars = max(0, gap_bars)
-    topk = max(1, min(200, topk))
+    is_period_days = max(1, min(3650, is_period_days))
+    oos_period_days = max(1, min(3650, oos_period_days))
 
     from core.walkforward_engine import WFConfig, WalkForwardEngine
     from core.export import export_wf_results_csv
 
     wf_config = WFConfig(
-        num_windows=num_windows,
-        gap_bars=gap_bars,
-        topk_per_window=topk,
+        is_period_days=is_period_days,
+        oos_period_days=oos_period_days,
         warmup_bars=warmup_bars,
         strategy_id=strategy_id,
     )
@@ -852,31 +849,24 @@ def run_walkforward_optimization() -> object:
     # Generate CSV content without saving to disk
     csv_content = export_wf_results_csv(result, df)
 
-    # Build top10 summary (common for both modes)
-    top10: List[Dict[str, Any]] = []
-    for rank, agg in enumerate(result.aggregated[:10], 1):
-        forward_profit = result.forward_profits[rank - 1] if rank <= len(result.forward_profits) else None
-        top10.append(
+    window_rows: List[Dict[str, Any]] = []
+    for window_result in result.windows:
+        window_rows.append(
             {
-                "rank": rank,
-                "param_id": agg.param_id,
-                "avg_oos_profit": round(agg.avg_oos_profit, 2),
-                "oos_win_rate": round(agg.oos_win_rate * 100, 1),
-                "forward_profit": round(forward_profit, 2) if isinstance(forward_profit, (int, float)) else None,
+                "window_id": window_result.window_id,
+                "param_id": window_result.param_id,
+                "is_net_profit_pct": round(window_result.is_net_profit_pct, 2),
+                "oos_net_profit_pct": round(window_result.oos_net_profit_pct, 2),
+                "oos_trades": window_result.oos_total_trades,
             }
         )
 
     # Get export trades settings from request
     export_trades = data.get("exportTrades") == "true"
-    top_k_str = data.get("topK", "10")
-    try:
-        top_k = min(100, max(1, int(top_k_str)))
-    except (ValueError, TypeError):
-        top_k = 10
 
     # Get dates for filename generation
-    start_date = df.index[0]
-    end_date = df.index[-1]
+    start_date = result.trading_start_date
+    end_date = result.trading_end_date
 
     # Get original CSV filename
     original_csv_name = csv_file.filename if csv_file and hasattr(csv_file, 'filename') else ""
@@ -917,7 +907,6 @@ def run_walkforward_optimization() -> object:
                 wf_result=result,
                 df=df,
                 symbol=symbol,
-                top_k=top_k,
                 output_dir=temp_dir
             )
 
@@ -952,11 +941,12 @@ def run_walkforward_optimization() -> object:
             response_payload = {
                 "status": "success",
                 "summary": {
-                    "total_windows": len(result.windows),
-                    "top_param_id": result.aggregated[0].param_id if result.aggregated else "N/A",
-                    "top_avg_oos_profit": round(result.aggregated[0].avg_oos_profit, 2) if result.aggregated else 0.0,
+                    "total_windows": result.total_windows,
+                    "stitched_oos_net_profit_pct": round(result.stitched_oos.final_net_profit_pct, 2),
+                    "wfe": round(result.stitched_oos.wfe, 2),
+                    "oos_win_rate": round(result.stitched_oos.oos_win_rate, 1),
                 },
-                "top10": top10,
+                "windows": window_rows,
                 "csv_content": csv_content,
                 "csv_filename": csv_filename,
                 "export_trades": True,
@@ -980,11 +970,12 @@ def run_walkforward_optimization() -> object:
         response_payload = {
             "status": "success",
             "summary": {
-                "total_windows": len(result.windows),
-                "top_param_id": result.aggregated[0].param_id if result.aggregated else "N/A",
-                "top_avg_oos_profit": round(result.aggregated[0].avg_oos_profit, 2) if result.aggregated else 0.0,
+                "total_windows": result.total_windows,
+                "stitched_oos_net_profit_pct": round(result.stitched_oos.final_net_profit_pct, 2),
+                "wfe": round(result.stitched_oos.wfe, 2),
+                "oos_win_rate": round(result.stitched_oos.oos_win_rate, 1),
             },
-            "top10": top10,
+            "windows": window_rows,
             "csv_content": csv_content,
             "csv_filename": csv_filename,
         }

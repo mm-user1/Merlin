@@ -116,7 +116,7 @@ project-root/
 |--------|---------|
 | `backtest_engine.py` | Bar-by-bar trade simulation, position management, data preparation |
 | `optuna_engine.py` | Bayesian optimization using Optuna, trial management, pruning |
-| `walkforward_engine.py` | Walk-forward analysis: window splitting, IS optimization, OOS testing |
+| `walkforward_engine.py` | Rolling walk-forward analysis with calendar-based IS/OOS windows, stitched OOS equity, and annualized WFE |
 | `metrics.py` | Calculate BasicMetrics and AdvancedMetrics (Sharpe, RoMaD, Profit Factor, SQN, Ulcer Index, Consistency) |
 | `export.py` | Export results to CSV (Optuna results, WFA summary, trades) |
 

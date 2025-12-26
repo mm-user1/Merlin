@@ -102,18 +102,7 @@
                   <div class="filter-group" id="exportTradesFilterGroup">
                     <div class="checkbox-group">
                       <input type="checkbox" id="wfExportTrades" />
-                      <label for="wfExportTrades">Export Trades</label>
-                    </div>
-                    <div class="filter-input-group">
-                      <label for="wfExportTopK">Top</label>
-                      <input
-                        type="number"
-                        id="wfExportTopK"
-                        min="1"
-                        max="100"
-                        step="1"
-                        value="10"
-                      />
+                      <label for="wfExportTrades">Export Trades (all windows)</label>
                     </div>
                   </div>
                 </div>
@@ -459,7 +448,7 @@
           <div class="content">
             <!-- Walk-Forward Analysis Section -->
             <div class="wf-section" style="margin-top: 0; padding: 20px; border: 2px solid #3498db; border-radius: 8px; background-color: #f8f9fa;">
-              <h3 style="color: #3498db; margin-bottom: 12px;">⚡ Walk-Forward Analysis</h3>
+              <h3 style="color: #3498db; margin-bottom: 12px;">? Walk-Forward Analysis</h3>
 
               <div class="form-group vertical" style="align-items: flex-start;">
                 <label style="margin-bottom: 8px;">
@@ -473,30 +462,24 @@
 
               <div id="wfSettings" style="display: none; margin-top: 20px;">
                 <div class="form-group" style="margin-bottom: 12px;">
-                  <label style="min-width: 150px;">Number of Windows:</label>
-                  <input type="number" id="wfNumWindows" value="5" min="3" max="10" style="width: 100px;" />
-                  <span style="font-size: 12px; color: #666; margin-left: 10px;">(Recommended: 5-6 for 1-2 years of data)</span>
+                  <label style="min-width: 150px;">In-Sample (days):</label>
+                  <input type="number" id="wfIsPeriodDays" value="90" min="30" max="3650" style="width: 100px;" />
+                  <span style="font-size: 12px; color: #666; margin-left: 10px;">(Optimization window length)</span>
                 </div>
 
                 <div class="form-group" style="margin-bottom: 12px;">
-                  <label style="min-width: 150px;">Gap (bars):</label>
-                  <input type="number" id="wfGapBars" value="100" min="0" max="500" style="width: 100px;" />
-                  <span style="font-size: 12px; color: #666; margin-left: 10px;">(Bars between training and testing to prevent look-ahead bias)</span>
-                </div>
-
-                <div class="form-group" style="margin-bottom: 12px;">
-                  <label style="min-width: 150px;">Top-K per Window:</label>
-                  <input type="number" id="wfTopK" value="20" min="5" max="50" style="width: 100px;" />
-                  <span style="font-size: 12px; color: #666; margin-left: 10px;">(Best parameter sets to test on each window)</span>
+                  <label style="min-width: 150px;">Out-of-Sample (days):</label>
+                  <input type="number" id="wfOosPeriodDays" value="30" min="15" max="3650" style="width: 100px;" />
+                  <span style="font-size: 12px; color: #666; margin-left: 10px;">(Testing window length)</span>
                 </div>
 
                 <div style="background-color: #e8f4f8; padding: 15px; border-radius: 5px;">
-                  <strong>Fixed Settings (Stage 1):</strong>
+                  <strong>Behavior (Phase 2):</strong>
                   <ul style="margin-top: 10px; font-size: 13px; color: #555; padding-left: 18px;">
-                    <li>WF Zone: 80% of data</li>
-                    <li>Forward Reserve: 20% of data</li>
-                    <li>Each window: 70% training (IS), 30% testing (OOS)</li>
-                    <li>Rolling window mode</li>
+                    <li>Rolling windows (shift forward by OOS period)</li>
+                    <li>Calendar-based sizing (days)</li>
+                    <li>Single best parameter set per window</li>
+                    <li>Stitched OOS equity curve + annualized WFE</li>
                   </ul>
                 </div>
               </div>
@@ -536,15 +519,15 @@
 
               <div id="wfSummary" style="background-color: #d4edda; padding: 15px; border-radius: 5px; margin-bottom: 20px;"></div>
 
-              <h4 style="margin-bottom: 10px;">Top 10 Parameter Sets</h4>
+              <h4 style="margin-bottom: 10px;">Window Results</h4>
               <table id="wfTable" style="width: 100%; border-collapse: collapse;">
                 <thead>
                   <tr style="background-color: #3498db; color: white;">
-                    <th style="padding: 10px; border: 1px solid #ddd;">Rank</th>
+                    <th style="padding: 10px; border: 1px solid #ddd;">Window</th>
                     <th style="padding: 10px; border: 1px solid #ddd;">Param ID</th>
-                    <th style="padding: 10px; border: 1px solid #ddd;">Avg OOS Profit %</th>
-                    <th style="padding: 10px; border: 1px solid #ddd;">OOS Win Rate</th>
-                    <th style="padding: 10px; border: 1px solid #ddd;">Forward Profit %</th>
+                    <th style="padding: 10px; border: 1px solid #ddd;">IS Profit %</th>
+                    <th style="padding: 10px; border: 1px solid #ddd;">OOS Profit %</th>
+                    <th style="padding: 10px; border: 1px solid #ddd;">OOS Trades</th>
                   </tr>
                 </thead>
                 <tbody id="wfTableBody"></tbody>
@@ -571,3 +554,4 @@
   <script src="/static/js/main.js"></script>
 </body>
 </html>
+

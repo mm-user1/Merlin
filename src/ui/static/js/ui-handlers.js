@@ -687,36 +687,36 @@ function displayWFResults(data) {
   const summary = data.summary || {};
   const totalWindowsValue = Number(summary.total_windows);
   const totalWindows = Number.isFinite(totalWindowsValue) ? totalWindowsValue : 0;
-  const topParamId = summary.top_param_id || 'N/A';
-  const topAvgValue = Number(summary.top_avg_oos_profit);
-  const topAvgProfit = Number.isFinite(topAvgValue) ? topAvgValue : 0;
+  const stitchedProfitValue = Number(summary.stitched_oos_net_profit_pct);
+  const stitchedProfit = Number.isFinite(stitchedProfitValue) ? stitchedProfitValue : 0;
+  const wfeValue = Number(summary.wfe);
+  const wfe = Number.isFinite(wfeValue) ? wfeValue : 0;
+  const winRateValue = Number(summary.oos_win_rate);
+  const winRate = Number.isFinite(winRateValue) ? winRateValue : 0;
 
   wfSummaryEl.innerHTML = `
           <strong>Summary:</strong><br>
           Total Windows: ${totalWindows}<br>
-          Best Parameter Set: ${topParamId}<br>
-          Best Avg OOS Profit: ${topAvgProfit.toFixed(2)}%
+          Stitched OOS Net Profit: ${stitchedProfit.toFixed(2)}%<br>
+          WFE (Annualized): ${wfe.toFixed(2)}%<br>
+          OOS Win Rate: ${winRate.toFixed(1)}%
         `;
 
   wfTableBody.innerHTML = '';
-  (data.top10 || []).forEach((row) => {
-    const avgValue = Number(row.avg_oos_profit);
-    const winValue = Number(row.oos_win_rate);
-    const forwardValue = row.forward_profit === null || row.forward_profit === undefined
-      ? null
-      : Number(row.forward_profit);
+  (data.windows || []).forEach((row) => {
+    const isValue = Number(row.is_net_profit_pct);
+    const oosValue = Number(row.oos_net_profit_pct);
+    const tradesValue = Number(row.oos_trades);
     const tr = document.createElement('tr');
-    const avgOos = Number.isFinite(avgValue) ? avgValue.toFixed(2) : row.avg_oos_profit;
-    const winRate = Number.isFinite(winValue) ? winValue.toFixed(1) : row.oos_win_rate;
-    const forward = forwardValue === null || forwardValue === undefined || Number.isNaN(forwardValue)
-      ? 'N/A'
-      : `${forwardValue.toFixed(2)}%`;
+    const isProfit = Number.isFinite(isValue) ? isValue.toFixed(2) : row.is_net_profit_pct;
+    const oosProfit = Number.isFinite(oosValue) ? oosValue.toFixed(2) : row.oos_net_profit_pct;
+    const oosTrades = Number.isFinite(tradesValue) ? tradesValue : row.oos_trades;
     tr.innerHTML = `
-            <td style="padding: 10px; border: 1px solid #ddd; text-align: center;">${row.rank}</td>
+            <td style="padding: 10px; border: 1px solid #ddd; text-align: center;">${row.window_id}</td>
             <td style="padding: 10px; border: 1px solid #ddd;">${row.param_id}</td>
-            <td style="padding: 10px; border: 1px solid #ddd; text-align: center;">${avgOos}%</td>
-            <td style="padding: 10px; border: 1px solid #ddd; text-align: center;">${winRate}%</td>
-            <td style="padding: 10px; border: 1px solid #ddd; text-align: center;">${forward}</td>
+            <td style="padding: 10px; border: 1px solid #ddd; text-align: center;">${isProfit}%</td>
+            <td style="padding: 10px; border: 1px solid #ddd; text-align: center;">${oosProfit}%</td>
+            <td style="padding: 10px; border: 1px solid #ddd; text-align: center;">${oosTrades}</td>
           `;
     wfTableBody.appendChild(tr);
   });
@@ -774,11 +774,9 @@ async function runWalkForward({ sources, state }) {
     return;
   }
 
-  const wfNumWindows = document.getElementById('wfNumWindows').value;
-  const wfGapBars = document.getElementById('wfGapBars').value;
-  const wfTopK = document.getElementById('wfTopK').value;
+  const wfIsPeriodDays = document.getElementById('wfIsPeriodDays').value;
+  const wfOosPeriodDays = document.getElementById('wfOosPeriodDays').value;
   const exportTrades = document.getElementById('wfExportTrades').checked;
-  const exportTopK = document.getElementById('wfExportTopK').value;
 
   const statusMessages = new Array(totalSources).fill('');
   const updateStatus = (index, message) => {
@@ -826,11 +824,9 @@ async function runWalkForward({ sources, state }) {
     }
 
     formData.append('config', JSON.stringify(config));
-    formData.append('wf_num_windows', wfNumWindows);
-    formData.append('wf_gap_bars', wfGapBars);
-    formData.append('wf_topk', wfTopK);
+    formData.append('wf_is_period_days', wfIsPeriodDays);
+    formData.append('wf_oos_period_days', wfOosPeriodDays);
     formData.append('exportTrades', exportTrades ? 'true' : 'false');
-    formData.append('topK', exportTopK);
 
     try {
       const data = await runWalkForwardRequest(formData);
