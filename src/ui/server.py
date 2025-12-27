@@ -1,7 +1,10 @@
+import hashlib
 import io
 import json
 import re
 import sys
+import tempfile
+import threading
 import time
 from datetime import datetime
 from http import HTTPStatus
@@ -23,6 +26,68 @@ app = Flask(
     template_folder="templates",
     static_url_path="/static",
 )
+
+OPTIMIZATION_STATE_LOCK = threading.Lock()
+LAST_OPTIMIZATION_STATE: Dict[str, Any] = {
+    "status": "idle",
+    "updated_at": None,
+}
+
+
+def _set_optimization_state(payload: Dict[str, Any]) -> None:
+    with OPTIMIZATION_STATE_LOCK:
+        normalized = json.loads(json.dumps(payload))
+        normalized["updated_at"] = datetime.utcnow().isoformat() + "Z"
+        LAST_OPTIMIZATION_STATE.clear()
+        LAST_OPTIMIZATION_STATE.update(normalized)
+
+
+def _get_optimization_state() -> Dict[str, Any]:
+    with OPTIMIZATION_STATE_LOCK:
+        return json.loads(json.dumps(LAST_OPTIMIZATION_STATE))
+
+
+def _persist_csv_upload(file_storage) -> str:
+    temp_dir = Path(tempfile.gettempdir()) / "merlin_uploads"
+    temp_dir.mkdir(exist_ok=True)
+    suffix = Path(file_storage.filename or "upload.csv").suffix or ".csv"
+    temp_path = temp_dir / f"upload_{int(time.time())}_{id(file_storage)}{suffix}"
+    file_storage.seek(0)
+    content = file_storage.read()
+    if isinstance(content, str):
+        content = content.encode("utf-8")
+    temp_path.write_bytes(content)
+    return str(temp_path)
+
+
+def _create_param_id_for_strategy(strategy_id: str, params: Dict[str, Any]) -> str:
+    param_str = json.dumps(params, sort_keys=True)
+    param_hash = hashlib.md5(param_str.encode()).hexdigest()[:8]
+
+    try:
+        from strategies import get_strategy_config
+
+        config = get_strategy_config(strategy_id)
+        parameters = config.get("parameters", {}) if isinstance(config, dict) else {}
+
+        optimizable: List[str] = []
+        for param_name, param_spec in parameters.items():
+            if not isinstance(param_spec, dict):
+                continue
+            optimize_cfg = param_spec.get("optimize", {})
+            if isinstance(optimize_cfg, dict) and optimize_cfg.get("enabled", False):
+                optimizable.append(param_name)
+            if len(optimizable) == 2:
+                break
+
+        label_parts = [str(params.get(param_name, "?")) for param_name in optimizable]
+        if label_parts:
+            label = " ".join(label_parts)
+            return f"{label}_{param_hash}"
+    except Exception:
+        pass
+
+    return param_hash
 
 
 def _get_parameter_types(strategy_id: str) -> Dict[str, str]:
@@ -497,6 +562,24 @@ def index() -> object:
     return render_template("index.html")
 
 
+@app.route("/results")
+def results_page() -> object:
+    return render_template("results.html")
+
+
+@app.get("/api/optimization/status")
+def optimization_status() -> object:
+    return jsonify(_get_optimization_state())
+
+
+@app.post("/api/optimization/cancel")
+def optimization_cancel() -> object:
+    state = _get_optimization_state()
+    state["status"] = "cancelled"
+    _set_optimization_state(state)
+    return jsonify({"status": "cancelled"})
+
+
 @app.get("/api/presets")
 def list_presets_endpoint() -> object:
     presets = _list_presets()
@@ -639,15 +722,16 @@ def run_walkforward_optimization() -> object:
     csv_file = request.files.get("file")
     csv_path_raw = (data.get("csvPath") or "").strip()
     data_source = None
-    opened_file = None
+    data_path = ""
 
     try:
         if csv_file and csv_file.filename:
-            data_source = csv_file
+            data_path = _persist_csv_upload(csv_file)
+            data_source = data_path
         elif csv_path_raw:
             resolved_path = _resolve_csv_path(csv_path_raw)
-            opened_file = resolved_path.open("rb")
-            data_source = opened_file
+            data_source = str(resolved_path)
+            data_path = str(resolved_path)
         else:
             return jsonify({"error": "CSV file is required."}), HTTPStatus.BAD_REQUEST
     except (FileNotFoundError, IsADirectoryError, ValueError):
@@ -657,15 +741,11 @@ def run_walkforward_optimization() -> object:
 
     config_raw = data.get("config")
     if not config_raw:
-        if opened_file:
-            opened_file.close()
         return jsonify({"error": "Missing optimization config."}), HTTPStatus.BAD_REQUEST
 
     try:
         config_payload = json.loads(config_raw)
     except json.JSONDecodeError:
-        if opened_file:
-            opened_file.close()
         return jsonify({"error": "Invalid optimization config JSON."}), HTTPStatus.BAD_REQUEST
 
     strategy_id, error_response = _resolve_strategy_id_from_request()
@@ -687,18 +767,12 @@ def run_walkforward_optimization() -> object:
             strategy_id=strategy_id,
         )
     except ValueError as exc:
-        if opened_file:
-            opened_file.close()
         return jsonify({"error": str(exc)}), HTTPStatus.BAD_REQUEST
     except Exception:  # pragma: no cover - defensive
-        if opened_file:
-            opened_file.close()
         app.logger.exception("Failed to build optimization config for walk-forward")
         return jsonify({"error": "Failed to prepare optimization config."}), HTTPStatus.INTERNAL_SERVER_ERROR
 
     if optimization_config.optimization_mode != "optuna":
-        if opened_file:
-            opened_file.close()
         return jsonify({"error": "Walk-Forward requires Optuna optimization mode."}), HTTPStatus.BAD_REQUEST
 
     if hasattr(data_source, "seek"):
@@ -710,12 +784,8 @@ def run_walkforward_optimization() -> object:
     try:
         df = load_data(data_source)
     except ValueError as exc:
-        if opened_file:
-            opened_file.close()
         return jsonify({"error": str(exc)}), HTTPStatus.BAD_REQUEST
     except Exception:  # pragma: no cover - defensive
-        if opened_file:
-            opened_file.close()
         app.logger.exception("Failed to load CSV for walk-forward")
         return jsonify({"error": "Failed to load CSV data."}), HTTPStatus.INTERNAL_SERVER_ERROR
 
@@ -764,8 +834,6 @@ def run_walkforward_optimization() -> object:
             # Check that we have enough data in the ACTUAL trading period (start_ts to end_ts)
             df_trading_period = df[(df.index >= start_ts) & (df.index <= end_ts)]
             if len(df_trading_period) < 1000:
-                if opened_file:
-                    opened_file.close()
                 return jsonify({
                     "error": f"Selected date range contains only {len(df_trading_period)} bars. Need at least 1000 bars for Walk-Forward Analysis."
                 }), HTTPStatus.BAD_REQUEST
@@ -777,8 +845,6 @@ def run_walkforward_optimization() -> object:
             print(f"  Trading period: {len(df_trading_period)} bars from {start_ts} to {end_ts}")
 
         except Exception as e:
-            if opened_file:
-                opened_file.close()
             return jsonify({"error": f"Failed to apply date filter: {str(e)}"}), HTTPStatus.BAD_REQUEST
 
     optimization_config.warmup_bars = warmup_bars
@@ -816,8 +882,6 @@ def run_walkforward_optimization() -> object:
         is_period_days = int(data.get("wf_is_period_days", 90))
         oos_period_days = int(data.get("wf_oos_period_days", 30))
     except (TypeError, ValueError):
-        if opened_file:
-            opened_file.close()
         return jsonify({"error": "Invalid Walk-Forward parameters."}), HTTPStatus.BAD_REQUEST
 
     is_period_days = max(1, min(3650, is_period_days))
@@ -834,15 +898,41 @@ def run_walkforward_optimization() -> object:
     )
     engine = WalkForwardEngine(wf_config, base_template, optuna_settings)
 
+    _set_optimization_state(
+        {
+            "status": "running",
+            "mode": "wfa",
+            "strategy_id": strategy_id,
+            "data_path": data_path,
+            "config": config_payload,
+            "wfa": {
+                "is_period_days": is_period_days,
+                "oos_period_days": oos_period_days,
+            },
+        }
+    )
+
     try:
         result = engine.run_wf_optimization(df)
     except ValueError as exc:
-        if opened_file:
-            opened_file.close()
+        _set_optimization_state(
+            {
+                "status": "error",
+                "mode": "wfa",
+                "strategy_id": strategy_id,
+                "error": str(exc),
+            }
+        )
         return jsonify({"error": str(exc)}), HTTPStatus.BAD_REQUEST
     except Exception:  # pragma: no cover - defensive
-        if opened_file:
-            opened_file.close()
+        _set_optimization_state(
+            {
+                "status": "error",
+                "mode": "wfa",
+                "strategy_id": strategy_id,
+                "error": "Walk-forward optimization failed.",
+            }
+        )
         app.logger.exception("Walk-forward optimization failed")
         return jsonify({"error": "Walk-forward optimization failed."}), HTTPStatus.INTERNAL_SERVER_ERROR
 
@@ -855,11 +945,30 @@ def run_walkforward_optimization() -> object:
             {
                 "window_id": window_result.window_id,
                 "param_id": window_result.param_id,
+                "best_params": json.loads(json.dumps(window_result.best_params)),
                 "is_net_profit_pct": round(window_result.is_net_profit_pct, 2),
+                "is_max_drawdown_pct": round(window_result.is_max_drawdown_pct, 2),
+                "is_total_trades": window_result.is_total_trades,
                 "oos_net_profit_pct": round(window_result.oos_net_profit_pct, 2),
-                "oos_trades": window_result.oos_total_trades,
+                "oos_max_drawdown_pct": round(window_result.oos_max_drawdown_pct, 2),
+                "oos_total_trades": window_result.oos_total_trades,
             }
         )
+
+    stitched_oos = result.stitched_oos
+    stitched_payload = {
+        "final_net_profit_pct": round(stitched_oos.final_net_profit_pct, 2),
+        "max_drawdown_pct": round(stitched_oos.max_drawdown_pct, 2),
+        "total_trades": stitched_oos.total_trades,
+        "wfe": round(stitched_oos.wfe, 2),
+        "oos_win_rate": round(stitched_oos.oos_win_rate, 1),
+        "equity_curve": list(stitched_oos.equity_curve or []),
+        "timestamps": [
+            ts.isoformat() if hasattr(ts, "isoformat") else str(ts)
+            for ts in (stitched_oos.timestamps or [])
+        ],
+        "window_ids": list(stitched_oos.window_ids or []),
+    }
 
     # Get export trades settings from request
     export_trades = data.get("exportTrades") == "true"
@@ -933,26 +1042,40 @@ def run_walkforward_optimization() -> object:
             # Cleanup temporary directory
             shutil.rmtree(temp_dir, ignore_errors=True)
 
-            # Close opened file before sending response
-            if opened_file:
-                opened_file.close()
-
             # Return JSON with embedded ZIP
             response_payload = {
                 "status": "success",
                 "summary": {
                     "total_windows": result.total_windows,
                     "stitched_oos_net_profit_pct": round(result.stitched_oos.final_net_profit_pct, 2),
+                    "stitched_oos_max_drawdown_pct": round(result.stitched_oos.max_drawdown_pct, 2),
+                    "stitched_oos_total_trades": result.stitched_oos.total_trades,
                     "wfe": round(result.stitched_oos.wfe, 2),
                     "oos_win_rate": round(result.stitched_oos.oos_win_rate, 1),
                 },
+                "stitched_oos": stitched_payload,
                 "windows": window_rows,
                 "csv_content": csv_content,
                 "csv_filename": csv_filename,
                 "export_trades": True,
                 "zip_filename": zip_filename,
                 "zip_base64": zip_base64,
+                "mode": "wfa",
+                "strategy_id": strategy_id,
+                "data_path": data_path,
             }
+
+            _set_optimization_state(
+                {
+                    "status": "completed",
+                    "mode": "wfa",
+                    "strategy_id": strategy_id,
+                    "data_path": data_path,
+                    "summary": response_payload.get("summary", {}),
+                    "stitched_oos": stitched_payload,
+                    "windows": window_rows,
+                }
+            )
 
             return jsonify(response_payload)
 
@@ -960,8 +1083,6 @@ def run_walkforward_optimization() -> object:
             # Cleanup on error
             if temp_dir.exists():
                 shutil.rmtree(temp_dir, ignore_errors=True)
-            if opened_file:
-                opened_file.close()
             app.logger.exception("Failed to export trades history")
             return jsonify({"error": f"Failed to export trades: {str(e)}"}), HTTPStatus.INTERNAL_SERVER_ERROR
 
@@ -972,16 +1093,31 @@ def run_walkforward_optimization() -> object:
             "summary": {
                 "total_windows": result.total_windows,
                 "stitched_oos_net_profit_pct": round(result.stitched_oos.final_net_profit_pct, 2),
+                "stitched_oos_max_drawdown_pct": round(result.stitched_oos.max_drawdown_pct, 2),
+                "stitched_oos_total_trades": result.stitched_oos.total_trades,
                 "wfe": round(result.stitched_oos.wfe, 2),
                 "oos_win_rate": round(result.stitched_oos.oos_win_rate, 1),
             },
+            "stitched_oos": stitched_payload,
             "windows": window_rows,
             "csv_content": csv_content,
             "csv_filename": csv_filename,
+            "mode": "wfa",
+            "strategy_id": strategy_id,
+            "data_path": data_path,
         }
 
-        if opened_file:
-            opened_file.close()
+        _set_optimization_state(
+            {
+                "status": "completed",
+                "mode": "wfa",
+                "strategy_id": strategy_id,
+                "data_path": data_path,
+                "summary": response_payload.get("summary", {}),
+                "stitched_oos": stitched_payload,
+                "windows": window_rows,
+            }
+        )
 
         return jsonify(response_payload)
 
@@ -1528,11 +1664,12 @@ def generate_output_filename(csv_filename: str, config: OptimizationConfig, mode
 def run_optimization_endpoint() -> object:
     csv_file = request.files.get("file")
     csv_path_raw = (request.form.get("csvPath") or "").strip()
-    opened_file = None
+    data_path = ""
     source_name = ""
 
     if csv_file and csv_file.filename:
-        data_source = csv_file
+        data_path = _persist_csv_upload(csv_file)
+        data_source = data_path
         source_name = csv_file.filename
     elif csv_path_raw:
         try:
@@ -1545,11 +1682,8 @@ def run_optimization_endpoint() -> object:
             return ("CSV file is required.", HTTPStatus.BAD_REQUEST)
         except OSError:
             return ("Failed to access CSV file.", HTTPStatus.BAD_REQUEST)
-        try:
-            opened_file = resolved_path.open("rb")
-        except OSError:
-            return ("Failed to access CSV file.", HTTPStatus.BAD_REQUEST)
-        data_source = opened_file
+        data_source = str(resolved_path)
+        data_path = str(resolved_path)
         source_name = str(resolved_path)
     else:
         return ("CSV file is required.", HTTPStatus.BAD_REQUEST)
@@ -1564,8 +1698,6 @@ def run_optimization_endpoint() -> object:
 
     strategy_id, error_response = _resolve_strategy_id_from_request()
     if error_response:
-        if opened_file:
-            opened_file.close()
         return error_response
 
     warmup_bars_raw = request.form.get("warmupBars", "1000")
@@ -1599,16 +1731,30 @@ def run_optimization_endpoint() -> object:
             warmup_bars,
         )
     except ValueError as exc:
-        if opened_file:
-            opened_file.close()
-            opened_file = None
+        _set_optimization_state({
+            "status": "error",
+            "mode": "optuna",
+            "error": str(exc),
+        })
         return (str(exc), HTTPStatus.BAD_REQUEST)
-    except Exception as exc:  # pragma: no cover - defensive
-        if opened_file:
-            opened_file.close()
-            opened_file = None
+    except Exception:  # pragma: no cover - defensive
+        _set_optimization_state({
+            "status": "error",
+            "mode": "optuna",
+            "error": "Failed to prepare optimization config.",
+        })
         app.logger.exception("Failed to construct optimization config")
         return ("Failed to prepare optimization config.", HTTPStatus.INTERNAL_SERVER_ERROR)
+
+    _set_optimization_state({
+        "status": "running",
+        "mode": "optuna",
+        "strategy_id": optimization_config.strategy_id,
+        "data_path": data_path,
+        "source_name": source_name,
+        "warmup_bars": warmup_bars,
+        "config": config_payload,
+    })
 
     results: List[OptimizationResult] = []
     optimization_metadata: Optional[Dict[str, Any]] = None
@@ -1667,23 +1813,22 @@ def run_optimization_endpoint() -> object:
             "optimization_time": optimization_time_str,
         }
     except ValueError as exc:
-        if opened_file:
-            opened_file.close()
-            opened_file = None
+        _set_optimization_state({
+            "status": "error",
+            "mode": "optuna",
+            "strategy_id": optimization_config.strategy_id,
+            "error": str(exc),
+        })
         return (str(exc), HTTPStatus.BAD_REQUEST)
-    except Exception as exc:  # pragma: no cover - defensive
-        if opened_file:
-            opened_file.close()
-            opened_file = None
+    except Exception:  # pragma: no cover - defensive
+        _set_optimization_state({
+            "status": "error",
+            "mode": "optuna",
+            "strategy_id": optimization_config.strategy_id,
+            "error": "Optimization execution failed.",
+        })
         app.logger.exception("Optimization run failed")
         return ("Optimization execution failed.", HTTPStatus.INTERNAL_SERVER_ERROR)
-    finally:
-        if opened_file:
-            try:
-                opened_file.close()
-            except OSError:  # pragma: no cover - defensive
-                pass
-            opened_file = None
 
     fixed_parameters = []
 
@@ -1705,15 +1850,53 @@ def run_optimization_endpoint() -> object:
         optimization_metadata=optimization_metadata,
         strategy_id=optimization_config.strategy_id,
     )
+
+    serialized_results: List[Dict[str, Any]] = []
+    for item in results:
+        params = dict(getattr(item, "params", {}) or {})
+        serialized_results.append(
+            {
+                "param_id": _create_param_id_for_strategy(optimization_config.strategy_id, params),
+                "params": params,
+                "net_profit_pct": item.net_profit_pct,
+                "max_drawdown_pct": item.max_drawdown_pct,
+                "total_trades": item.total_trades,
+                "romad": item.romad,
+                "sharpe_ratio": item.sharpe_ratio,
+                "profit_factor": item.profit_factor,
+                "ulcer_index": item.ulcer_index,
+                "sqn": item.sqn,
+                "consistency_score": item.consistency_score,
+                "score": item.score,
+            }
+        )
+
+    _set_optimization_state(
+        {
+            "status": "completed",
+            "mode": "optuna",
+            "strategy_id": optimization_config.strategy_id,
+            "data_path": data_path,
+            "source_name": source_name,
+            "warmup_bars": optimization_config.warmup_bars,
+            "config": config_payload,
+            "summary": optimization_metadata or {},
+            "results": serialized_results,
+        }
+    )
     buffer = io.BytesIO(csv_content.encode("utf-8"))
     filename = generate_output_filename(source_name, optimization_config)
     buffer.seek(0)
-    return send_file(
+    response = send_file(
         buffer,
         mimetype="text/csv",
         as_attachment=True,
         download_name=filename,
     )
+    if data_path:
+        response.headers["X-Merlin-Data-Path"] = data_path
+    response.headers["X-Merlin-Mode"] = "optuna"
+    return response
 
 
 # ============================================

@@ -1,0 +1,210 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Strategy Backtester &amp; Optimizer - Results</title>
+  <link rel="stylesheet" href="/static/css/style.css" />
+</head>
+<body>
+  <nav class="top-nav">
+    <div class="nav-tabs">
+      <a href="/" class="nav-tab" data-nav="start">Start</a>
+      <a href="/results" class="nav-tab active" data-nav="results">Results</a>
+    </div>
+    <div class="nav-spacer"></div>
+  </nav>
+
+  <div class="main-container">
+    <div class="sidebar">
+      <div class="collapsible open">
+        <div class="collapsible-header">
+          <span class="collapsible-icon">&#9660;</span>
+          <span class="collapsible-title">Status &amp; Controls</span>
+        </div>
+        <div class="collapsible-content">
+          <div class="status-row">
+            <span class="status-badge idle" id="statusBadge">Idle</span>
+            <div class="control-buttons">
+              <button class="control-btn pause">Pause</button>
+              <button class="control-btn stop">Stop</button>
+              <button class="control-btn cancel">Cancel</button>
+            </div>
+          </div>
+
+          <div class="progress-compact">
+            <div class="progress-bar-small">
+              <div class="progress-fill-small" style="width: 0%"></div>
+            </div>
+            <div class="progress-info">
+              <span id="progressLabel">Trial 0 / 0</span>
+              <span id="progressPercent">0%</span>
+            </div>
+          </div>
+
+          <div class="loadsave-buttons">
+            <button class="loadsave-btn">Load</button>
+            <button class="loadsave-btn">Save</button>
+          </div>
+        </div>
+      </div>
+
+      <div class="collapsible open" id="wfa-progress-section" style="display: none;">
+        <div class="collapsible-header">
+          <span class="collapsible-icon">&#9660;</span>
+          <span class="collapsible-title">Walk-Forward Progress</span>
+        </div>
+        <div class="collapsible-content">
+          <div class="settings-list">
+            <div class="setting-item">
+              <span class="key">Current Window</span>
+              <span class="val" id="wfa-current-window">- / -</span>
+            </div>
+            <div class="setting-item">
+              <span class="key">Phase</span>
+              <span class="val" id="wfa-phase">-</span>
+            </div>
+          </div>
+          <div class="window-indicator"></div>
+        </div>
+      </div>
+
+      <div class="collapsible open">
+        <div class="collapsible-header">
+          <span class="collapsible-icon">&#9660;</span>
+          <span class="collapsible-title">Optuna Settings</span>
+        </div>
+        <div class="collapsible-content">
+          <div class="settings-list">
+            <div class="setting-item">
+              <span class="key">Target</span>
+              <span class="val" id="optuna-target">-</span>
+            </div>
+            <div class="setting-item">
+              <span class="key">Budget</span>
+              <span class="val" id="optuna-budget">-</span>
+            </div>
+            <div class="setting-item">
+              <span class="key">Sampler</span>
+              <span class="val" id="optuna-sampler">-</span>
+            </div>
+            <div class="setting-item">
+              <span class="key">Pruner</span>
+              <span class="val" id="optuna-pruner">-</span>
+            </div>
+            <div class="setting-item">
+              <span class="key">Workers</span>
+              <span class="val" id="optuna-workers">-</span>
+            </div>
+          </div>
+        </div>
+      </div>
+
+      <div class="collapsible" id="wfa-settings-section" style="display: none;">
+        <div class="collapsible-header">
+          <span class="collapsible-icon">&#9660;</span>
+          <span class="collapsible-title">WFA Settings</span>
+        </div>
+        <div class="collapsible-content">
+          <div class="settings-list">
+            <div class="setting-item">
+              <span class="key">IS (days)</span>
+              <span class="val" id="wfa-is-days">-</span>
+            </div>
+            <div class="setting-item">
+              <span class="key">OOS (days)</span>
+              <span class="val" id="wfa-oos-days">-</span>
+            </div>
+          </div>
+        </div>
+      </div>
+
+      <div class="collapsible open">
+        <div class="collapsible-header">
+          <span class="collapsible-icon">&#9660;</span>
+          <span class="collapsible-title">Strategy</span>
+        </div>
+        <div class="collapsible-content">
+          <div class="settings-list">
+            <div class="setting-item">
+              <span class="key">Name</span>
+              <span class="val" id="strategy-name">-</span>
+            </div>
+            <div class="setting-item">
+              <span class="key">Version</span>
+              <span class="val" id="strategy-version">-</span>
+            </div>
+            <div class="setting-item">
+              <span class="key">Dataset</span>
+              <span class="val" id="strategy-dataset">-</span>
+            </div>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <div class="main-area">
+      <div class="results-header">
+        <h2>Optimization Results</h2>
+        <div class="header-actions">
+          <button class="btn btn-secondary">Download Trades</button>
+        </div>
+      </div>
+
+      <div class="chart-card">
+        <div class="chart-card-header">
+          <h3>Equity Curve</h3>
+        </div>
+        <div class="chart-body">
+          <svg class="chart-svg" viewBox="0 0 800 260" preserveAspectRatio="none">
+            <text x="400" y="130" text-anchor="middle" fill="#999" font-size="14">
+              No data to display
+            </text>
+          </svg>
+        </div>
+      </div>
+
+      <div class="summary-row" style="display: none;"></div>
+
+      <div class="table-card">
+        <div class="table-card-header">
+          <h3>Top Parameter Sets</h3>
+          <span style="font-size: 12px; color: #777;">By Optimization Target</span>
+        </div>
+        <div class="table-scroll">
+          <table class="data-table">
+            <thead>
+              <tr>
+                <th>#</th>
+                <th>Param ID</th>
+                <th>Net Profit %</th>
+                <th>Max DD %</th>
+                <th>Trades</th>
+                <th>Sharpe</th>
+                <th>PF</th>
+                <th>Score</th>
+              </tr>
+            </thead>
+            <tbody></tbody>
+          </table>
+        </div>
+      </div>
+
+      <div class="param-details-section" id="paramDetailsSection">
+        <div class="param-details-card">
+          <div class="param-details-header" id="paramDetailsTitle">
+            Parameter Details
+          </div>
+          <div class="param-details-body">
+            <table class="param-details-table" id="paramDetailsContent"></table>
+          </div>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <script src="/static/js/utils.js"></script>
+  <script src="/static/js/api.js"></script>
+  <script src="/static/js/results.js"></script>
+</body>
+</html>

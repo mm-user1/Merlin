@@ -33,6 +33,179 @@ const SCORE_DEFAULT_BOUNDS = {
   consistency: { min: 0, max: 100 }
 };
 
+const OPT_STATE_KEY = 'merlinOptimizationState';
+const OPT_CONTROL_KEY = 'merlinOptimizationControl';
+let optimizationAbortController = null;
+
+function saveOptimizationState(state) {
+  try {
+    const payload = JSON.stringify(state || {});
+    sessionStorage.setItem(OPT_STATE_KEY, payload);
+    localStorage.setItem(OPT_STATE_KEY, payload);
+  } catch (error) {
+    console.warn('Failed to store optimization state', error);
+  }
+}
+
+function loadOptimizationState() {
+  const fromSession = sessionStorage.getItem(OPT_STATE_KEY);
+  const fromLocal = localStorage.getItem(OPT_STATE_KEY);
+  const raw = fromSession || fromLocal;
+  if (!raw) return null;
+  try {
+    return JSON.parse(raw);
+  } catch (error) {
+    return null;
+  }
+}
+
+function updateOptimizationState(patch) {
+  const current = loadOptimizationState() || {};
+  const updated = { ...current, ...patch };
+  saveOptimizationState(updated);
+  return updated;
+}
+
+function openResultsPage() {
+  try {
+    window.open('/results', '_blank', 'noopener');
+  } catch (error) {
+    window.location.href = '/results';
+  }
+}
+
+function getStrategySummary() {
+  const config = window.currentStrategyConfig || {};
+  return {
+    id: window.currentStrategyId || '',
+    name: config.name || '',
+    version: config.version || '',
+    description: config.description || ''
+  };
+}
+
+function getDatasetLabel() {
+  const fileInput = document.getElementById('csvFile');
+  const file = fileInput && fileInput.files && fileInput.files[0];
+  if (file && file.name) return file.name;
+  if (window.selectedCsvPath) return window.selectedCsvPath;
+  return '';
+}
+
+function parseCsvLine(line) {
+  const values = [];
+  let current = '';
+  let inQuotes = false;
+  for (let i = 0; i < line.length; i += 1) {
+    const ch = line[i];
+    if (ch === '"') {
+      if (inQuotes && line[i + 1] === '"') {
+        current += '"';
+        i += 1;
+      } else {
+        inQuotes = !inQuotes;
+      }
+      continue;
+    }
+    if (ch === ',' && !inQuotes) {
+      values.push(current);
+      current = '';
+      continue;
+    }
+    current += ch;
+  }
+  values.push(current);
+  return values;
+}
+
+function parseOptunaCsv(csvText, strategyConfig) {
+  const results = [];
+  if (!csvText) return results;
+
+  const lines = csvText.split(/\r?\n/);
+  let headerIndex = -1;
+  for (let i = 0; i < lines.length; i += 1) {
+    const line = lines[i].trim();
+    if (!line) continue;
+    if (line.includes('Net Profit%') && line.includes('Max DD%')) {
+      headerIndex = i;
+      break;
+    }
+  }
+  if (headerIndex === -1) return results;
+
+  const header = parseCsvLine(lines[headerIndex]);
+  const paramLabelMap = {};
+  const paramsConfig = (strategyConfig && strategyConfig.parameters) || {};
+  Object.entries(paramsConfig).forEach(([name, def]) => {
+    const label = (def && def.label) ? String(def.label) : name;
+    paramLabelMap[label] = name;
+    paramLabelMap[name] = name;
+  });
+
+  const metricMap = {
+    'Net Profit%': 'net_profit_pct',
+    'Max DD%': 'max_drawdown_pct',
+    'Trades': 'total_trades',
+    'Score': 'score',
+    'RoMaD': 'romad',
+    'Sharpe': 'sharpe_ratio',
+    'PF': 'profit_factor',
+    'Ulcer': 'ulcer_index',
+    'SQN': 'sqn',
+    'Consist': 'consistency_score'
+  };
+
+  for (let i = headerIndex + 1; i < lines.length; i += 1) {
+    const line = lines[i];
+    if (!line || !line.trim()) break;
+    const values = parseCsvLine(line);
+    const params = {};
+    const metrics = {};
+    header.forEach((col, idx) => {
+      const value = values[idx] ?? '';
+      const trimmed = String(value).trim();
+      if (metricMap[col]) {
+        const metricKey = metricMap[col];
+        const cleaned = trimmed.replace('%', '');
+        const num = Number(cleaned);
+        metrics[metricKey] = Number.isFinite(num) ? num : trimmed;
+        return;
+      }
+      const paramName = paramLabelMap[col];
+      if (!paramName) return;
+      const def = paramsConfig[paramName] || {};
+      if (def.type === 'int') {
+        const num = Number(trimmed);
+        params[paramName] = Number.isFinite(num) ? Math.round(num) : trimmed;
+      } else if (def.type === 'float') {
+        const num = Number(trimmed);
+        params[paramName] = Number.isFinite(num) ? num : trimmed;
+      } else if (def.type === 'bool') {
+        params[paramName] = trimmed.toLowerCase() === 'true';
+      } else {
+        params[paramName] = trimmed;
+      }
+    });
+    results.push({ params, ...metrics });
+  }
+
+  return results;
+}
+
+async function refreshOptimizationStateFromServer() {
+  try {
+    const state = await fetchOptimizationStatus();
+    if (state && state.status) {
+      saveOptimizationState(state);
+      return state;
+    }
+  } catch (error) {
+    console.warn('Failed to refresh optimization status from server', error);
+  }
+  return null;
+}
+
 function toggleWFSettings() {
   const wfToggle = document.getElementById('enableWF');
   const wfSettings = document.getElementById('wfSettings');
@@ -706,11 +879,11 @@ function displayWFResults(data) {
   (data.windows || []).forEach((row) => {
     const isValue = Number(row.is_net_profit_pct);
     const oosValue = Number(row.oos_net_profit_pct);
-    const tradesValue = Number(row.oos_trades);
+    const tradesValue = Number(row.oos_total_trades ?? row.oos_trades);
     const tr = document.createElement('tr');
     const isProfit = Number.isFinite(isValue) ? isValue.toFixed(2) : row.is_net_profit_pct;
     const oosProfit = Number.isFinite(oosValue) ? oosValue.toFixed(2) : row.oos_net_profit_pct;
-    const oosTrades = Number.isFinite(tradesValue) ? tradesValue : row.oos_trades;
+    const oosTrades = Number.isFinite(tradesValue) ? tradesValue : (row.oos_total_trades ?? row.oos_trades);
     tr.innerHTML = `
             <td style="padding: 10px; border: 1px solid #ddd; text-align: center;">${row.window_id}</td>
             <td style="padding: 10px; border: 1px solid #ddd;">${row.param_id}</td>
@@ -777,6 +950,40 @@ async function runWalkForward({ sources, state }) {
   const wfIsPeriodDays = document.getElementById('wfIsPeriodDays').value;
   const wfOosPeriodDays = document.getElementById('wfOosPeriodDays').value;
   const exportTrades = document.getElementById('wfExportTrades').checked;
+  const warmupValue = document.getElementById('warmupBars')?.value || '1000';
+  const strategySummary = getStrategySummary();
+
+  optimizationAbortController = new AbortController();
+  window.optimizationAbortController = optimizationAbortController;
+  saveOptimizationState({
+    status: 'running',
+    mode: 'wfa',
+    strategy: strategySummary,
+    dataset: {
+      label: getDatasetLabel()
+    },
+    warmupBars: Number(warmupValue) || 1000,
+    dateFilter: state.payload.dateFilter,
+    start: state.start,
+    end: state.end,
+    optuna: {
+      target: config.optuna_target,
+      budgetMode: config.optuna_budget_mode,
+      nTrials: config.optuna_n_trials,
+      timeLimit: config.optuna_time_limit,
+      convergence: config.optuna_convergence,
+      sampler: config.optuna_sampler,
+      pruner: config.optuna_pruner,
+      workers: config.worker_processes
+    },
+    wfa: {
+      isPeriodDays: Number(wfIsPeriodDays),
+      oosPeriodDays: Number(wfOosPeriodDays)
+    },
+    fixedParams: clonePreset(config.fixed_params || {}),
+    strategyConfig: clonePreset(window.currentStrategyConfig || {})
+  });
+  openResultsPage();
 
   const statusMessages = new Array(totalSources).fill('');
   const updateStatus = (index, message) => {
@@ -815,7 +1022,6 @@ async function runWalkForward({ sources, state }) {
 
     const formData = new FormData();
     formData.append('strategy', window.currentStrategyId);
-    const warmupValue = document.getElementById('warmupBars')?.value || '1000';
     formData.append('warmupBars', warmupValue);
     if (isFileObject) {
       formData.append('file', source, source.name);
@@ -829,7 +1035,7 @@ async function runWalkForward({ sources, state }) {
     formData.append('exportTrades', exportTrades ? 'true' : 'false');
 
     try {
-      const data = await runWalkForwardRequest(formData);
+      const data = await runWalkForwardRequest(formData, optimizationAbortController.signal);
 
       if (data.csv_content && totalSources > 1) {
         try {
@@ -873,6 +1079,11 @@ async function runWalkForward({ sources, state }) {
       successCount += 1;
       lastSuccessfulData = data;
     } catch (err) {
+      if (err && err.name === 'AbortError') {
+        updateStatus(index, `Cancelled: Source ${sourceNumber} of ${totalSources} (${sourceName}).`);
+        updateOptimizationState({ status: 'cancelled', mode: 'wfa' });
+        break;
+      }
       const message = err && err.message ? err.message : 'Walk-Forward failed.';
       console.error(`Walk-Forward failed for source ${sourceName}`, err);
       errors.push({ file: sourceName, message });
@@ -899,6 +1110,18 @@ async function runWalkForward({ sources, state }) {
     } else if (totalSources > 1 && wfSummaryEl) {
       wfSummaryEl.innerHTML = `<strong>Multi-file Walk-Forward Analysis completed!</strong><br>Processed ${totalSources} files. Check downloaded CSV/ZIP files for detailed results.`;
     }
+
+    if (lastSuccessfulData) {
+      updateOptimizationState({
+        status: 'completed',
+        mode: 'wfa',
+        results: lastSuccessfulData.windows || [],
+        summary: lastSuccessfulData.summary || {},
+        stitched_oos: lastSuccessfulData.stitched_oos || {},
+        dataPath: lastSuccessfulData.data_path || '',
+        strategyId: lastSuccessfulData.strategy_id || strategySummary.id || ''
+      });
+    }
   } else if (successCount > 0) {
     const summaryMsg = `Partial: ${successCount} of ${totalSources} files processed successfully, ${errors.length} failed.`;
     if (wfStatusEl) {
@@ -907,12 +1130,26 @@ async function runWalkForward({ sources, state }) {
 
     if (successCount === 1 && lastSuccessfulData) {
       displayWFResults(lastSuccessfulData);
+      updateOptimizationState({
+        status: 'completed',
+        mode: 'wfa',
+        results: lastSuccessfulData.windows || [],
+        summary: lastSuccessfulData.summary || {},
+        stitched_oos: lastSuccessfulData.stitched_oos || {},
+        dataPath: lastSuccessfulData.data_path || '',
+        strategyId: lastSuccessfulData.strategy_id || strategySummary.id || ''
+      });
     }
   } else {
     const summaryMsg = `Error: All ${totalSources} files failed.`;
     if (wfStatusEl) {
       wfStatusEl.textContent = summaryMsg + '\n\n' + statusMessages.filter(Boolean).join('\n');
     }
+    updateOptimizationState({
+      status: 'error',
+      mode: 'wfa',
+      error: 'All walk-forward runs failed.'
+    });
   }
 }
 
@@ -1068,6 +1305,37 @@ async function submitOptimization(event) {
     optimizerResultsEl.style.display = 'block';
     return;
   }
+
+  const warmupValue = document.getElementById('warmupBars')?.value || '1000';
+  const strategySummary = getStrategySummary();
+
+  optimizationAbortController = new AbortController();
+  window.optimizationAbortController = optimizationAbortController;
+  saveOptimizationState({
+    status: 'running',
+    mode: 'optuna',
+    strategy: strategySummary,
+    dataset: {
+      label: getDatasetLabel()
+    },
+    warmupBars: Number(warmupValue) || 1000,
+    dateFilter: state.payload.dateFilter,
+    start: state.start,
+    end: state.end,
+    optuna: {
+      target: config.optuna_target,
+      budgetMode: config.optuna_budget_mode,
+      nTrials: config.optuna_n_trials,
+      timeLimit: config.optuna_time_limit,
+      convergence: config.optuna_convergence,
+      sampler: config.optuna_sampler,
+      pruner: config.optuna_pruner,
+      workers: config.worker_processes
+    },
+    fixedParams: clonePreset(config.fixed_params || {}),
+    strategyConfig: clonePreset(window.currentStrategyConfig || {})
+  });
+  openResultsPage();
   const totalSources = sources.length;
   const statusMessages = new Array(totalSources).fill('');
   const updateStatus = (index, message) => {
@@ -1109,6 +1377,8 @@ async function submitOptimization(event) {
 
   const errors = [];
   let successCount = 0;
+  let lastResults = null;
+  let lastDataPath = '';
   const optunaBudgetMode = config.optuna_budget_mode;
   const plannedTrials = optunaBudgetMode === 'trials' ? config.optuna_n_trials : null;
 
@@ -1137,7 +1407,6 @@ async function submitOptimization(event) {
 
     const formData = new FormData();
     formData.append('strategy', window.currentStrategyId);
-    const warmupValue = document.getElementById('warmupBars')?.value || '1000';
     formData.append('warmupBars', warmupValue);
     if (isFileObject) {
       formData.append('file', source, source.name);
@@ -1147,7 +1416,10 @@ async function submitOptimization(event) {
     formData.append('config', JSON.stringify(config));
 
     try {
-      const { blob, headers } = await runOptimizationRequest(formData);
+      const { blob, headers } = await runOptimizationRequest(formData, optimizationAbortController.signal);
+      const csvText = await blob.text();
+      lastResults = parseOptunaCsv(csvText, window.currentStrategyConfig);
+      lastDataPath = headers.get('X-Merlin-Data-Path') || lastDataPath;
 
       const url = window.URL.createObjectURL(blob);
       const link = document.createElement('a');
@@ -1191,6 +1463,11 @@ async function submitOptimization(event) {
       updateStatus(index, `Success: Source ${sourceNumber} of ${totalSources} (${sourceName}) processed successfully.`);
       successCount += 1;
     } catch (err) {
+      if (err && err.name === 'AbortError') {
+        updateStatus(index, `Cancelled: Source ${sourceNumber} of ${totalSources} (${sourceName}).`);
+        updateOptimizationState({ status: 'cancelled', mode: 'optuna' });
+        break;
+      }
       const message = err && err.message ? err.message : 'Optimization failed.';
       console.error(`Optimization failed for source ${sourceName}`, err);
       errors.push({ file: sourceName, message });
@@ -1216,12 +1493,39 @@ async function submitOptimization(event) {
   const summaryMessages = statusMessages.filter(Boolean);
   if (successCount === totalSources) {
     summaryMessages.push(`Optimization complete! All ${totalSources} data source(s) processed successfully.`);
+    const serverState = await refreshOptimizationStateFromServer();
+    if (!serverState) {
+      updateOptimizationState({
+        status: 'completed',
+        mode: 'optuna',
+        results: lastResults || [],
+        dataPath: lastDataPath,
+        strategyId: strategySummary.id || ''
+      });
+    }
   } else if (successCount > 0) {
     summaryMessages.push(
       `Optimization finished with ${successCount} successful data source(s) and ${errors.length} error(s).`
     );
+    if (lastResults) {
+      const serverState = await refreshOptimizationStateFromServer();
+      if (!serverState) {
+        updateOptimizationState({
+          status: 'completed',
+          mode: 'optuna',
+          results: lastResults,
+          dataPath: lastDataPath,
+          strategyId: strategySummary.id || ''
+        });
+      }
+    }
   } else {
     summaryMessages.push('Optimization failed for all selected data sources. See error details above.');
+    updateOptimizationState({
+      status: 'error',
+      mode: 'optuna',
+      error: 'Optimization failed for all selected data sources.'
+    });
   }
   optimizerResultsEl.textContent = summaryMessages.join('\n');
 }

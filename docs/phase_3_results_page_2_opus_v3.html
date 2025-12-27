@@ -1,0 +1,1159 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Strategy Backtester & Optimizer - Results</title>
+  <style>
+    * {
+      margin: 0;
+      padding: 0;
+      box-sizing: border-box;
+    }
+
+    html, body {
+      margin: 0;
+      padding: 0;
+      background: #e8e8e8;
+      font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
+      color: #2a2a2a;
+      height: 100%;
+    }
+
+    /* ============================================ */
+    /* TOP NAVIGATION TABS */
+    /* ============================================ */
+    .top-nav {
+      background: #ebebeb;
+      padding: 0;
+      display: flex;
+      align-items: stretch;
+      height: 40px;
+      border-bottom: 1px solid #bbbbbb;
+    }
+
+    .nav-tabs {
+      display: flex;
+      gap: 0;
+      height: 100%;
+    }
+
+    .nav-tab {
+      padding: 0 30px;
+      height: 100%;
+      display: flex;
+      align-items: center;
+      color: #5a5a5a;
+      text-decoration: none;
+      font-size: 14px;
+      font-weight: 500;
+      background: #ebebeb;
+      border-right: 1px solid #bbbbbb;
+      transition: all 0.2s ease;
+      cursor: pointer;
+    }
+
+    .nav-tab:hover {
+      background: #c0c0c0;
+    }
+
+    .nav-tab.active {
+      background: #f5f5f5;
+      color: #2a2a2a;
+      font-weight: 600;
+      border-bottom: 2px solid #4a90e2;
+      margin-bottom: -1px;
+    }
+
+    .nav-spacer {
+      flex: 1;
+      background: #ebebeb;
+    }
+
+    /* ============================================ */
+    /* MAIN LAYOUT */
+    /* ============================================ */
+    .main-container {
+      display: grid;
+      grid-template-columns: 368px 1fr;
+      gap: 0;
+      height: calc(100vh - 40px);
+    }
+
+    .sidebar {
+      background: #f5f5f5;
+      border-right: 1px solid #4a4a4a;
+      height: 100%;
+      overflow-y: auto;
+    }
+
+    .main-area {
+      background: #f5f5f5;
+      height: 100%;
+      overflow-y: auto;
+      padding: 20px;
+    }
+
+    /* ============================================ */
+    /* SIDEBAR - COLLAPSIBLE SECTIONS */
+    /* ============================================ */
+    .collapsible {
+      background: #e8e8e8;
+      border-bottom: 1px solid #bbbbbb;
+    }
+
+    .collapsible-header {
+      padding: 12px 16px;
+      cursor: pointer;
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      background: #e0e0e0;
+      border-bottom: 1px solid #bbbbbb;
+    }
+
+    .collapsible-header:hover {
+      background: #d8d8d8;
+    }
+
+    .collapsible-icon {
+      font-size: 10px;
+      color: #5a5a5a;
+      transition: transform 0.2s ease;
+    }
+
+    .collapsible.open .collapsible-icon {
+      transform: rotate(180deg);
+    }
+
+    .collapsible-title {
+      font-size: 12px;
+      font-weight: 600;
+      text-transform: uppercase;
+      letter-spacing: 0.5px;
+      color: #3a3a3a;
+    }
+
+    .collapsible-content {
+      padding: 12px 16px;
+      background: #f5f5f5;
+      display: none;
+    }
+
+    .collapsible.open .collapsible-content {
+      display: block;
+    }
+
+    /* Status & Controls */
+    .status-row {
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      margin-bottom: 12px;
+    }
+
+    .status-badge {
+      display: inline-flex;
+      align-items: center;
+      gap: 6px;
+      padding: 4px 10px;
+      border-radius: 10px;
+      font-size: 12px;
+      font-weight: 600;
+    }
+
+    .status-badge.running {
+      background: #d4edda;
+      color: #155724;
+    }
+
+    .status-badge.paused {
+      background: #fff3cd;
+      color: #856404;
+    }
+
+    .status-dot {
+      width: 6px;
+      height: 6px;
+      border-radius: 50%;
+      background: currentColor;
+      animation: pulse 1.5s infinite;
+    }
+
+    @keyframes pulse {
+      0%, 100% { opacity: 1; }
+      50% { opacity: 0.5; }
+    }
+
+    .control-buttons {
+      display: flex;
+      gap: 4px;
+    }
+
+    .control-btn {
+      padding: 4px 10px;
+      border-radius: 3px;
+      font-size: 12px;
+      cursor: pointer;
+      border: 1px solid transparent;
+      transition: all 0.2s ease;
+    }
+
+    .control-btn.pause {
+      background: #fff3cd;
+      color: #856404;
+      border-color: #ffc107;
+    }
+
+    .control-btn.stop {
+      background: #f8d7da;
+      color: #721c24;
+      border-color: #dc3545;
+    }
+
+    .control-btn.cancel {
+      background: #e8e8e8;
+      color: #5a5a5a;
+      border-color: #999;
+    }
+
+    .control-btn:hover {
+      opacity: 0.8;
+    }
+
+    /* Progress */
+    .progress-compact {
+      margin-bottom: 12px;
+    }
+
+    .progress-bar-small {
+      width: 100%;
+      height: 8px;
+      background: #dcdcdc;
+      border-radius: 4px;
+      overflow: hidden;
+      margin-bottom: 4px;
+    }
+
+    .progress-fill-small {
+      height: 100%;
+      width: 68%;
+      background: linear-gradient(90deg, #4a90e2, #357ab7);
+    }
+
+    .progress-info {
+      display: flex;
+      justify-content: space-between;
+      font-size: 13px;
+      color: #5a5a5a;
+    }
+
+    /* Compact Stats */
+    .stats-compact {
+      display: grid;
+      grid-template-columns: 1fr 1fr;
+      gap: 8px;
+    }
+
+    .stat-compact {
+      background: #ffffff;
+      border: 1px solid #cccccc;
+      border-radius: 3px;
+      padding: 8px;
+      text-align: center;
+    }
+
+    .stat-compact .value {
+      font-size: 16px;
+      font-weight: 600;
+      color: #2a2a2a;
+    }
+
+    .stat-compact .label {
+      font-size: 11px;
+      color: #777;
+      text-transform: uppercase;
+    }
+
+    /* Settings List */
+    .settings-list {
+      font-size: 14px;
+    }
+
+    .setting-item {
+      display: flex;
+      justify-content: space-between;
+      padding: 6px 0;
+      border-bottom: 1px solid #e8e8e8;
+    }
+
+    .setting-item:last-child {
+      border-bottom: none;
+    }
+
+    .setting-item .key {
+      color: #2a2a2a;
+    }
+
+    .setting-item .val {
+      font-weight: 600;
+      color: #2a2a2a;
+    }
+
+    /* ============================================ */
+    /* MAIN AREA - RESULTS */
+    /* ============================================ */
+    .results-header {
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      margin-bottom: 16px;
+    }
+
+    .results-header h2 {
+      font-size: 15px;
+      font-weight: 500;
+      color: #2a2a2a;
+    }
+
+    .header-actions {
+      display: flex;
+      gap: 8px;
+    }
+
+    .btn {
+      padding: 6px 14px;
+      border-radius: 3px;
+      font-size: 13px;
+      cursor: pointer;
+      border: none;
+      transition: all 0.2s ease;
+    }
+
+    .btn-primary {
+      background: #4a4a4a;
+      color: #ffffff;
+    }
+
+    .btn-primary:hover {
+      background: #3a3a3a;
+    }
+
+    .btn-secondary {
+      background: #cccccc;
+      color: #2a2a2a;
+    }
+
+    .btn-secondary:hover {
+      background: #bbbbbb;
+    }
+
+    /* Equity Chart Card */
+    .chart-card {
+      background: #ffffff;
+      border: 1px solid #cccccc;
+      border-radius: 4px;
+      margin-bottom: 16px;
+      overflow: hidden;
+    }
+
+    .chart-card-header {
+      background: #e8e8e8;
+      padding: 10px 16px;
+      border-bottom: 1px solid #cccccc;
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+    }
+
+    .chart-card-header h3 {
+      font-size: 14px;
+      font-weight: 600;
+      color: #2a2a2a;
+    }
+
+    .chart-type-toggle {
+      display: flex;
+      gap: 0;
+      border: 1px solid #999;
+      border-radius: 3px;
+      overflow: hidden;
+    }
+
+    .chart-toggle-btn {
+      padding: 4px 10px;
+      font-size: 12px;
+      background: #f5f5f5;
+      color: #5a5a5a;
+      border: none;
+      cursor: pointer;
+    }
+
+    .chart-toggle-btn:not(:last-child) {
+      border-right: 1px solid #999;
+    }
+
+    .chart-toggle-btn.active {
+      background: #4a90e2;
+      color: #ffffff;
+    }
+
+    .chart-body {
+      padding: 16px;
+      height: 432px;
+      position: relative;
+    }
+
+    /* Mock SVG Chart */
+    .chart-svg {
+      width: 100%;
+      height: 100%;
+    }
+
+    /* Summary Cards Row */
+    .summary-row {
+      display: grid;
+      grid-template-columns: repeat(5, 1fr);
+      gap: 12px;
+      margin-bottom: 16px;
+    }
+
+    .summary-card {
+      background: #ffffff;
+      border: 1px solid #cccccc;
+      border-radius: 4px;
+      padding: 12px;
+      text-align: center;
+    }
+
+    .summary-card.highlight {
+      border-color: #4a90e2;
+      background: #f0f8ff;
+    }
+
+    .summary-card .value {
+      font-size: 22px;
+      font-weight: 600;
+      color: #2a2a2a;
+    }
+
+    .summary-card .value.positive {
+      color: #27ae60;
+    }
+
+    .summary-card .value.negative {
+      color: #e74c3c;
+    }
+
+    .summary-card .label {
+      font-size: 12px;
+      color: #777;
+      text-transform: uppercase;
+      margin-top: 4px;
+    }
+
+    /* Results Table */
+    .table-card {
+      background: #ffffff;
+      border: 1px solid #cccccc;
+      border-radius: 4px;
+      overflow: hidden;
+    }
+
+    .table-card-header {
+      background: #e8e8e8;
+      padding: 10px 16px;
+      border-bottom: 1px solid #cccccc;
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+    }
+
+    .table-card-header h3 {
+      font-size: 14px;
+      font-weight: 600;
+    }
+
+    .table-scroll {
+      max-height: 280px;
+      overflow-y: auto;
+    }
+
+    .data-table {
+      width: 100%;
+      border-collapse: collapse;
+      font-size: 14px;
+    }
+
+    .data-table th {
+      background: #3498db;
+      color: #ffffff;
+      padding: 10px;
+      font-weight: 600;
+      text-align: left;
+      position: sticky;
+      top: 0;
+    }
+
+    .data-table td {
+      padding: 10px;
+      border-bottom: 1px solid #e8e8e8;
+    }
+
+    .data-table tr:nth-child(even) {
+      background: #fafafa;
+    }
+
+    .data-table tr:hover {
+      background: #e8f4ff;
+    }
+
+    .data-table tr.clickable {
+      cursor: pointer;
+    }
+
+    .data-table tr.selected {
+      background: #d4e9ff;
+      border-left: 3px solid #4a90e2;
+    }
+
+    .rank {
+      font-weight: 600;
+      color: #3498db;
+      text-align: center;
+    }
+
+    .param-hash {
+      font-size: 14px;
+    }
+
+    .val-positive {
+      color: #27ae60;
+      font-weight: 600;
+    }
+
+    .val-negative {
+      color: #e74c3c;
+      font-weight: 600;
+    }
+
+    /* Parameter Details Standalone Section */
+    .param-details-section {
+      display: none;
+      margin-top: 16px;
+    }
+
+    .param-details-section.show {
+      display: block;
+    }
+
+    .param-details-card {
+      background: #ffffff;
+      border: 1px solid #cccccc;
+      border-radius: 4px;
+      overflow: hidden;
+    }
+
+    .param-details-header {
+      background: #e8e8e8;
+      padding: 10px 16px;
+      border-bottom: 1px solid #cccccc;
+      font-size: 14px;
+      font-weight: 600;
+      color: #2a2a2a;
+    }
+
+    .param-details-body {
+      padding: 16px;
+    }
+
+    .param-details-table {
+      width: 100%;
+      border-collapse: collapse;
+      font-size: 14px;
+    }
+
+    .param-details-table td {
+      padding: 10px 12px;
+      border-bottom: 1px solid #e8e8e8;
+    }
+
+    .param-details-table td:first-child {
+      font-weight: 500;
+      color: #2a2a2a;
+      width: 40%;
+    }
+
+    .param-details-table td:last-child {
+      font-weight: 600;
+      color: #2a2a2a;
+      text-align: right;
+    }
+
+    .param-details-table tr:nth-child(even) {
+      background: #fafafa;
+    }
+
+    .param-details-table tr:nth-child(odd) {
+      background: #ffffff;
+    }
+
+    /* Window Indicator */
+    .window-indicator {
+      display: flex;
+      gap: 4px;
+      margin-top: 8px;
+    }
+
+    .window-dot {
+      width: 24px;
+      height: 6px;
+      border-radius: 3px;
+      background: #ddd;
+    }
+
+    .window-dot.completed {
+      background: #27ae60;
+    }
+
+    .window-dot.current {
+      background: #4a90e2;
+      animation: pulse 1s infinite;
+    }
+
+    .window-dot.pending {
+      background: #ddd;
+    }
+
+    /* Load/Save Buttons */
+    .loadsave-buttons {
+      display: flex;
+      gap: 6px;
+      margin-top: 12px;
+    }
+
+    .loadsave-btn {
+      flex: 1;
+      padding: 4px 10px;
+      border-radius: 4px;
+      font-size: 13px;
+      cursor: pointer;
+      border: 1px solid #999;
+      background: #e8e8e8;
+      color: #2a2a2a;
+      transition: all 0.2s ease;
+      font-weight: 500;
+    }
+
+    .loadsave-btn:hover {
+      background: #d8d8d8;
+      border-color: #777;
+    }
+  </style>
+</head>
+<body>
+  <!-- Top Navigation -->
+  <nav class="top-nav">
+    <div class="nav-tabs">
+      <a href="#" class="nav-tab">Start</a>
+      <a href="#" class="nav-tab active">Results</a>
+    </div>
+    <div class="nav-spacer"></div>
+  </nav>
+
+  <!-- Main Content -->
+  <div class="main-container">
+    <!-- Sidebar -->
+    <div class="sidebar">
+      <!-- Status & Controls -->
+      <div class="collapsible open">
+        <div class="collapsible-header">
+          <span class="collapsible-icon">&#9660;</span>
+          <span class="collapsible-title">Status & Controls</span>
+        </div>
+        <div class="collapsible-content">
+          <div class="status-row">
+            <span class="status-badge running">
+              <span class="status-dot"></span>
+              Running
+            </span>
+            <div class="control-buttons">
+              <button class="control-btn pause">Pause</button>
+              <button class="control-btn stop">Stop</button>
+              <button class="control-btn cancel">Cancel</button>
+            </div>
+          </div>
+
+          <div class="progress-compact">
+            <div class="progress-bar-small">
+              <div class="progress-fill-small"></div>
+            </div>
+            <div class="progress-info">
+              <span>Trial 340 / 500</span>
+              <span>68%</span>
+            </div>
+          </div>
+
+          <div class="loadsave-buttons">
+            <button class="loadsave-btn">Load</button>
+            <button class="loadsave-btn">Save</button>
+          </div>
+        </div>
+      </div>
+
+      <!-- WFA Progress -->
+      <div class="collapsible open">
+        <div class="collapsible-header">
+          <span class="collapsible-icon">&#9660;</span>
+          <span class="collapsible-title">Walk-Forward Progress</span>
+        </div>
+        <div class="collapsible-content">
+          <div class="settings-list">
+            <div class="setting-item">
+              <span class="key">Current Window</span>
+              <span class="val">3 / 5</span>
+            </div>
+            <div class="setting-item">
+              <span class="key">Phase</span>
+              <span class="val">Optimization (IS)</span>
+            </div>
+          </div>
+          <div class="window-indicator">
+            <div class="window-dot completed" title="Window 1 - Completed"></div>
+            <div class="window-dot completed" title="Window 2 - Completed"></div>
+            <div class="window-dot current" title="Window 3 - In Progress"></div>
+            <div class="window-dot pending" title="Window 4 - Pending"></div>
+            <div class="window-dot pending" title="Window 5 - Pending"></div>
+          </div>
+        </div>
+      </div>
+
+      <!-- Optimization Settings -->
+      <div class="collapsible">
+        <div class="collapsible-header">
+          <span class="collapsible-icon">&#9660;</span>
+          <span class="collapsible-title">Optuna Settings</span>
+        </div>
+        <div class="collapsible-content">
+          <div class="settings-list">
+            <div class="setting-item">
+              <span class="key">Target</span>
+              <span class="val">Composite Score</span>
+            </div>
+            <div class="setting-item">
+              <span class="key">Budget</span>
+              <span class="val">500 trials</span>
+            </div>
+            <div class="setting-item">
+              <span class="key">Sampler</span>
+              <span class="val">TPE</span>
+            </div>
+            <div class="setting-item">
+              <span class="key">Pruner</span>
+              <span class="val">Median</span>
+            </div>
+            <div class="setting-item">
+              <span class="key">Workers</span>
+              <span class="val">6</span>
+            </div>
+          </div>
+        </div>
+      </div>
+
+      <!-- WFA Settings -->
+      <div class="collapsible">
+        <div class="collapsible-header">
+          <span class="collapsible-icon">&#9660;</span>
+          <span class="collapsible-title">WFA Settings</span>
+        </div>
+        <div class="collapsible-content">
+          <div class="settings-list">
+            <div class="setting-item">
+              <span class="key">Windows</span>
+              <span class="val">5</span>
+            </div>
+            <div class="setting-item">
+              <span class="key">IS (days)</span>
+              <span class="val">90</span>
+            </div>
+            <div class="setting-item">
+              <span class="key">OOS (days)</span>
+              <span class="val">30</span>
+            </div>
+          </div>
+        </div>
+      </div>
+
+      <!-- Strategy Info -->
+      <div class="collapsible">
+        <div class="collapsible-header">
+          <span class="collapsible-icon">&#9660;</span>
+          <span class="collapsible-title">Strategy</span>
+        </div>
+        <div class="collapsible-content">
+          <div class="settings-list">
+            <div class="setting-item">
+              <span class="key">Name</span>
+              <span class="val">S01 Trailing MA</span>
+            </div>
+            <div class="setting-item">
+              <span class="key">Version</span>
+              <span class="val">v26</span>
+            </div>
+            <div class="setting-item">
+              <span class="key">Dataset</span>
+              <span class="val">LINKUSDT 15m</span>
+            </div>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <!-- Main Results Area -->
+    <div class="main-area">
+      <div class="results-header">
+        <h2>Optimization Results</h2>
+        <div class="header-actions">
+          <button class="btn btn-secondary">Download Trades</button>
+        </div>
+      </div>
+
+      <!-- Equity Chart -->
+      <div class="chart-card">
+        <div class="chart-card-header">
+          <h3>Equity Curve (OOS Stitched)</h3>
+        </div>
+        <div class="chart-body">
+          <svg class="chart-svg" viewBox="0 0 800 260" preserveAspectRatio="none">
+            <!-- Grid -->
+            <defs>
+              <pattern id="grid" width="80" height="52" patternUnits="userSpaceOnUse">
+                <path d="M 80 0 L 0 0 0 52" fill="none" stroke="#f0f0f0" stroke-width="1"/>
+              </pattern>
+            </defs>
+            <rect width="100%" height="100%" fill="#fafafa" />
+            <rect width="100%" height="100%" fill="url(#grid)" />
+
+            <!-- Vertical window separators -->
+            <line x1="160" y1="0" x2="160" y2="260" stroke="#e0e0e0" stroke-width="1" stroke-dasharray="4"/>
+            <line x1="320" y1="0" x2="320" y2="260" stroke="#e0e0e0" stroke-width="1" stroke-dasharray="4"/>
+            <line x1="480" y1="0" x2="480" y2="260" stroke="#e0e0e0" stroke-width="1" stroke-dasharray="4"/>
+            <line x1="640" y1="0" x2="640" y2="260" stroke="#e0e0e0" stroke-width="1" stroke-dasharray="4"/>
+
+            <!-- Window labels -->
+            <text x="80" y="20" font-size="10" fill="#999" text-anchor="middle">W1</text>
+            <text x="240" y="20" font-size="10" fill="#999" text-anchor="middle">W2</text>
+            <text x="400" y="20" font-size="10" fill="#999" text-anchor="middle">W3</text>
+            <text x="560" y="20" font-size="10" fill="#999" text-anchor="middle">W4</text>
+            <text x="720" y="20" font-size="10" fill="#999" text-anchor="middle">W5</text>
+
+            <!-- Equity curve -->
+            <polyline
+              fill="none"
+              stroke="#4a90e2"
+              stroke-width="1.5"
+              points="0,220 40,210 80,190 120,175 160,165 200,170 240,150 280,135 320,120 360,130 400,110 440,95 480,85 520,90 560,75 600,65 640,55 680,60 720,45 760,40 800,35"
+            />
+          </svg>
+        </div>
+      </div>
+
+      <!-- Results Table -->
+      <div class="table-card">
+        <div class="table-card-header">
+          <h3>Top Parameter Sets</h3>
+          <span style="font-size: 12px; color: #777;">Per-Window Results</span>
+        </div>
+        <div class="table-scroll">
+          <table class="data-table">
+            <thead>
+              <tr>
+                <th>#</th>
+                <th>Param ID</th>
+                <th>Avg OOS %</th>
+                <th>Win Rate</th>
+                <th>Max DD %</th>
+                <th>Sharpe</th>
+                <th>PF</th>
+                <th>Score</th>
+              </tr>
+            </thead>
+            <tbody>
+              <tr class="clickable" data-param-id="1" data-param-name="ALMA_425_9780e49a">
+                <td class="rank">1</td>
+                <td class="param-hash">ALMA_425_9780e49a</td>
+                <td class="val-positive">+47.38%</td>
+                <td>100.0%</td>
+                <td class="val-negative">-12.3%</td>
+                <td>1.85</td>
+                <td>2.41</td>
+                <td>72.5</td>
+              </tr>
+              <tr class="clickable" data-param-id="2" data-param-name="TMA_275_46f384dc">
+                <td class="rank">2</td>
+                <td class="param-hash">TMA_275_46f384dc</td>
+                <td class="val-positive">+37.28%</td>
+                <td>100.0%</td>
+                <td class="val-negative">-18.99%</td>
+                <td>1.62</td>
+                <td>2.15</td>
+                <td>68.2</td>
+              </tr>
+              <tr class="clickable" data-param-id="3" data-param-name="HMA_100_dc54d39c">
+                <td class="rank">3</td>
+                <td class="param-hash">HMA_100_dc54d39c</td>
+                <td class="val-positive">+24.20%</td>
+                <td>100.0%</td>
+                <td class="val-negative">-10.27%</td>
+                <td>1.45</td>
+                <td>1.98</td>
+                <td>65.8</td>
+              </tr>
+              <tr class="clickable" data-param-id="4" data-param-name="ALMA_500_64485673">
+                <td class="rank">4</td>
+                <td class="param-hash">ALMA_500_64485673</td>
+                <td class="val-positive">+17.54%</td>
+                <td>100.0%</td>
+                <td class="val-negative">-17.81%</td>
+                <td>1.32</td>
+                <td>1.76</td>
+                <td>62.1</td>
+              </tr>
+              <tr class="clickable" data-param-id="5" data-param-name="WMA_300_8b3d8c19">
+                <td class="rank">5</td>
+                <td class="param-hash">WMA_300_8b3d8c19</td>
+                <td class="val-positive">+16.60%</td>
+                <td>100.0%</td>
+                <td class="val-negative">-14.10%</td>
+                <td>1.28</td>
+                <td>1.68</td>
+                <td>60.5</td>
+              </tr>
+            </tbody>
+          </table>
+        </div>
+      </div>
+
+      <!-- Parameter Details Section (Standalone) -->
+      <div class="param-details-section" id="paramDetailsSection">
+        <div class="param-details-card">
+          <div class="param-details-header" id="paramDetailsTitle">
+            Parameter Details
+          </div>
+          <div class="param-details-body">
+            <table class="param-details-table" id="paramDetailsContent">
+              <!-- Content will be populated by JavaScript -->
+            </table>
+          </div>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <script>
+    // Toggle collapsible sections
+    document.querySelectorAll('.collapsible-header').forEach(header => {
+      header.addEventListener('click', () => {
+        header.parentElement.classList.toggle('open');
+      });
+    });
+
+    // Parameter data for each param ID
+    const paramData = {
+      '1': {
+        name: 'ALMA_425_9780e49a',
+        window: 1,
+        params: [
+          ['Trend MA Type', 'ALMA'],
+          ['MA Length', '425'],
+          ['Close Count Long', '3'],
+          ['Close Count Short', '10'],
+          ['Commission Rate', '0.0005'],
+          ['Contract Size', '0.01'],
+          ['Risk Per Trade %', '2.0'],
+          ['ATR Period', '14'],
+          ['Stop Long X', '1.0'],
+          ['Stop Long RR', '3.0'],
+          ['Stop Long LP', '6'],
+          ['Stop Short X', '2.3'],
+          ['Stop Short RR', '3.0'],
+          ['Stop Short LP', '3'],
+          ['Stop Long Max %', '4.0'],
+          ['Stop Short Max %', '7.0'],
+          ['Stop Long Max Days', '3'],
+          ['Stop Short Max Days', '2'],
+          ['Trail RR Long', '1.0'],
+          ['Trail RR Short', '1.0'],
+          ['Trail MA Type', 'ALMA'],
+          ['Trail MA Long Length', '75'],
+          ['Trail MA Long Offset %', '-2.5'],
+          ['Trail MA Short Length', '50'],
+          ['Trail MA Short Offset %', '0.0']
+        ]
+      },
+      '2': {
+        name: 'TMA_275_46f384dc',
+        window: 2,
+        params: [
+          ['Trend MA Type', 'TMA'],
+          ['MA Length', '275'],
+          ['Close Count Long', '5'],
+          ['Close Count Short', '8'],
+          ['Commission Rate', '0.0005'],
+          ['Contract Size', '0.01'],
+          ['Risk Per Trade %', '2.5'],
+          ['ATR Period', '14'],
+          ['Stop Long X', '1.2'],
+          ['Stop Long RR', '2.8'],
+          ['Stop Long LP', '5'],
+          ['Stop Short X', '2.0'],
+          ['Stop Short RR', '2.8'],
+          ['Stop Short LP', '4'],
+          ['Stop Long Max %', '3.5'],
+          ['Stop Short Max %', '6.5'],
+          ['Stop Long Max Days', '4'],
+          ['Stop Short Max Days', '3'],
+          ['Trail RR Long', '0.8'],
+          ['Trail RR Short', '0.8'],
+          ['Trail MA Type', 'TMA'],
+          ['Trail MA Long Length', '60'],
+          ['Trail MA Long Offset %', '-1.5'],
+          ['Trail MA Short Length', '45'],
+          ['Trail MA Short Offset %', '0.5']
+        ]
+      },
+      '3': {
+        name: 'HMA_100_dc54d39c',
+        window: 3,
+        params: [
+          ['Trend MA Type', 'HMA'],
+          ['MA Length', '100'],
+          ['Close Count Long', '4'],
+          ['Close Count Short', '12'],
+          ['Commission Rate', '0.0005'],
+          ['Contract Size', '0.01'],
+          ['Risk Per Trade %', '1.8'],
+          ['ATR Period', '14'],
+          ['Stop Long X', '0.9'],
+          ['Stop Long RR', '3.2'],
+          ['Stop Long LP', '7'],
+          ['Stop Short X', '2.5'],
+          ['Stop Short RR', '3.2'],
+          ['Stop Short LP', '2'],
+          ['Stop Long Max %', '4.5'],
+          ['Stop Short Max %', '7.5'],
+          ['Stop Long Max Days', '2'],
+          ['Stop Short Max Days', '1'],
+          ['Trail RR Long', '1.2'],
+          ['Trail RR Short', '1.2'],
+          ['Trail MA Type', 'HMA'],
+          ['Trail MA Long Length', '80'],
+          ['Trail MA Long Offset %', '-3.0'],
+          ['Trail MA Short Length', '55'],
+          ['Trail MA Short Offset %', '-0.5']
+        ]
+      },
+      '4': {
+        name: 'ALMA_500_64485673',
+        window: 4,
+        params: [
+          ['Trend MA Type', 'ALMA'],
+          ['MA Length', '500'],
+          ['Close Count Long', '2'],
+          ['Close Count Short', '9'],
+          ['Commission Rate', '0.0005'],
+          ['Contract Size', '0.01'],
+          ['Risk Per Trade %', '2.2'],
+          ['ATR Period', '14'],
+          ['Stop Long X', '1.1'],
+          ['Stop Long RR', '2.9'],
+          ['Stop Long LP', '8'],
+          ['Stop Short X', '1.8'],
+          ['Stop Short RR', '2.9'],
+          ['Stop Short LP', '5'],
+          ['Stop Long Max %', '3.8'],
+          ['Stop Short Max %', '6.8'],
+          ['Stop Long Max Days', '5'],
+          ['Stop Short Max Days', '4'],
+          ['Trail RR Long', '0.9'],
+          ['Trail RR Short', '0.9'],
+          ['Trail MA Type', 'ALMA'],
+          ['Trail MA Long Length', '70'],
+          ['Trail MA Long Offset %', '-2.0'],
+          ['Trail MA Short Length', '48'],
+          ['Trail MA Short Offset %', '0.2']
+        ]
+      },
+      '5': {
+        name: 'WMA_300_8b3d8c19',
+        window: 5,
+        params: [
+          ['Trend MA Type', 'WMA'],
+          ['MA Length', '300'],
+          ['Close Count Long', '6'],
+          ['Close Count Short', '11'],
+          ['Commission Rate', '0.0005'],
+          ['Contract Size', '0.01'],
+          ['Risk Per Trade %', '1.5'],
+          ['ATR Period', '14'],
+          ['Stop Long X', '1.3'],
+          ['Stop Long RR', '2.5'],
+          ['Stop Long LP', '4'],
+          ['Stop Short X', '2.1'],
+          ['Stop Short RR', '2.5'],
+          ['Stop Short LP', '6'],
+          ['Stop Long Max %', '3.2'],
+          ['Stop Short Max %', '6.2'],
+          ['Stop Long Max Days', '6'],
+          ['Stop Short Max Days', '5'],
+          ['Trail RR Long', '1.1'],
+          ['Trail RR Short', '1.1'],
+          ['Trail MA Type', 'WMA'],
+          ['Trail MA Long Length', '65'],
+          ['Trail MA Long Offset %', '-1.8'],
+          ['Trail MA Short Length', '52'],
+          ['Trail MA Short Offset %', '0.3']
+        ]
+      }
+    };
+
+    // Toggle parameter details on row click
+    document.querySelectorAll('.data-table tr.clickable').forEach(row => {
+      row.addEventListener('click', () => {
+        const paramId = row.getAttribute('data-param-id');
+        const data = paramData[paramId];
+        const detailsSection = document.getElementById('paramDetailsSection');
+        const detailsTitle = document.getElementById('paramDetailsTitle');
+        const detailsContent = document.getElementById('paramDetailsContent');
+
+        // Check if clicking the same row that's already selected
+        const isAlreadySelected = row.classList.contains('selected');
+
+        // Remove selected class from all rows
+        document.querySelectorAll('.data-table tr.clickable').forEach(otherRow => {
+          otherRow.classList.remove('selected');
+        });
+
+        if (isAlreadySelected) {
+          // Hide the details section if clicking the same row
+          detailsSection.classList.remove('show');
+        } else {
+          // Show details for the clicked row
+          row.classList.add('selected');
+
+          // Update title
+          detailsTitle.textContent = `Window #${data.window}: ${data.name} - Parameter Details`;
+
+          // Populate table
+          detailsContent.innerHTML = data.params.map(param =>
+            `<tr><td>${param[0]}</td><td>${param[1]}</td></tr>`
+          ).join('');
+
+          // Show the details section
+          detailsSection.classList.add('show');
+        }
+      });
+    });
+  </script>
+</body>
+</html>

@@ -43,10 +43,11 @@ async function runBacktestRequest(formData) {
   return response.json();
 }
 
-async function runOptimizationRequest(formData) {
+async function runOptimizationRequest(formData, signal = null) {
   const response = await fetch('/api/optimize', {
     method: 'POST',
-    body: formData
+    body: formData,
+    signal: signal || undefined
   });
 
   if (!response.ok) {
@@ -60,10 +61,11 @@ async function runOptimizationRequest(formData) {
   };
 }
 
-async function runWalkForwardRequest(formData) {
+async function runWalkForwardRequest(formData, signal = null) {
   const response = await fetch('/api/walkforward', {
     method: 'POST',
-    body: formData
+    body: formData,
+    signal: signal || undefined
   });
 
   const data = await response.json();
@@ -74,6 +76,22 @@ async function runWalkForwardRequest(formData) {
   }
 
   return data;
+}
+
+async function fetchOptimizationStatus() {
+  const response = await fetch('/api/optimization/status');
+  if (!response.ok) {
+    throw new Error(`Status request failed: ${response.status}`);
+  }
+  return response.json();
+}
+
+async function cancelOptimizationRequest() {
+  const response = await fetch('/api/optimization/cancel', { method: 'POST' });
+  if (!response.ok) {
+    throw new Error(`Cancel request failed: ${response.status}`);
+  }
+  return response.json();
 }
 
 async function fetchPresetsList() {
