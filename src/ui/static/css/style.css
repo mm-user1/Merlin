@@ -887,6 +887,10 @@
       display: block;
     }
 
+    .sidebar .collapsible-content.studies-manager {
+      padding: 12px 0;
+    }
+
     .status-row {
       display: flex;
       justify-content: space-between;
@@ -1012,10 +1016,11 @@
 
     .setting-item .key {
       color: #2a2a2a;
+      font-weight: 600;
     }
 
     .setting-item .val {
-      font-weight: 600;
+      font-weight: 400;
       color: #2a2a2a;
     }
 
@@ -1041,6 +1046,105 @@
     .loadsave-btn:hover {
       background: #d8d8d8;
       border-color: #777;
+    }
+
+    .studies-manager {
+      padding: 0;
+    }
+
+    .studies-list {
+      max-height: 280px;
+      overflow-y: auto;
+      background: #ffffff;
+      border: 1px solid #cccccc;
+      border-radius: 3px;
+      margin: 0 0 12px 0;
+    }
+
+    .study-item {
+      padding: 8px 12px;
+      border-bottom: 1px solid #e8e8e8;
+      cursor: pointer;
+      transition: background 0.15s ease;
+      font-size: 12px;
+      line-height: 1.4;
+      color: #2a2a2a;
+    }
+
+    .study-item:last-child {
+      border-bottom: none;
+    }
+
+    .study-item:hover {
+      background: #e8f4ff;
+    }
+
+    .study-item.selected {
+      background: #d4e9ff;
+      border-left: 3px solid #4a90e2;
+      padding-left: 9px;
+    }
+
+    .study-name {
+      display: block;
+      word-break: break-word;
+    }
+
+    .manager-buttons {
+      display: flex;
+      gap: 8px;
+      padding: 0 10px 5px;
+    }
+
+    .manager-btn {
+      flex: 1;
+      padding: 6px 14px;
+      border-radius: 3px;
+      font-size: 13px;
+      cursor: pointer;
+      border: 1px solid #b8b8b8;
+      background: #e0e0e0;
+      color: #2a2a2a;
+      font-weight: 400;
+      transition: all 0.15s ease;
+    }
+
+    .manager-btn:hover {
+      background: #d8d8d8;
+      border-color: #a8a8a8;
+    }
+
+    .manager-btn.active {
+      background: #c8c8c8;
+      border-color: #989898;
+    }
+
+    .manager-btn.delete-btn {
+      background: #e0e0e0;
+      color: #2a2a2a;
+      border-color: #b8b8b8;
+    }
+
+    .manager-btn.delete-btn:hover {
+      background: #d8d8d8;
+      border-color: #a8a8a8;
+    }
+
+    .studies-list::-webkit-scrollbar {
+      width: 8px;
+    }
+
+    .studies-list::-webkit-scrollbar-track {
+      background: #f0f0f0;
+    }
+
+    .studies-list::-webkit-scrollbar-thumb {
+      background: #c0c0c0;
+      border-radius: 4px;
+    }
+
+    .studies-list::-webkit-scrollbar-thumb:hover {
+      background: #a0a0a0;
     }
 
     /* Main area - Results */

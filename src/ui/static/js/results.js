@@ -520,6 +520,40 @@ function bindCollapsibles() {
   });
 }
 
+function bindStudiesManager() {
+  const selectBtn = document.querySelector('.manager-btn:not(.delete-btn)');
+  if (!selectBtn) return;
+
+  const items = Array.from(document.querySelectorAll('.study-item'));
+  if (!items.length) return;
+
+  let selectMode = false;
+
+  const clearSelections = () => {
+    items.forEach((item) => item.classList.remove('selected'));
+  };
+
+  items.forEach((item) => {
+    item.addEventListener('click', () => {
+      if (selectMode) {
+        item.classList.toggle('selected');
+        return;
+      }
+      clearSelections();
+      item.classList.add('selected');
+    });
+  });
+
+  selectBtn.addEventListener('click', () => {
+    selectMode = !selectMode;
+    selectBtn.classList.toggle('active', selectMode);
+    selectBtn.textContent = selectMode ? 'Cancel' : 'Select';
+    if (!selectMode) {
+      clearSelections();
+    }
+  });
+}
+
 function bindEventHandlers() {
   const cancelBtn = document.querySelector('.control-btn.cancel');
   if (cancelBtn) {
@@ -549,12 +583,6 @@ function bindEventHandlers() {
       alert('Stop functionality coming soon');
     });
   }
-
-  document.querySelectorAll('.loadsave-btn').forEach((btn) => {
-    btn.addEventListener('click', () => {
-      alert('Load/Save functionality coming soon');
-    });
-  });
 
   const downloadBtn = document.querySelector('.header-actions .btn-secondary');
   if (downloadBtn) {
@@ -609,6 +637,7 @@ function handleStorageUpdate(event) {
 
 function initResultsPage() {
   bindCollapsibles();
+  bindStudiesManager();
   bindEventHandlers();
 
   const stored = readStoredState();
