@@ -16,7 +16,7 @@ from core.walkforward_engine import (
     WalkForwardEngine,
     WindowResult,
 )
-from core.export import export_wfa_trades_history, export_wf_results_csv
+from core.export import export_wfa_trades_history
 from core.backtest_engine import StrategyResult, TradeRecord, load_data
 from strategies import get_strategy_config
 
@@ -238,35 +238,6 @@ def test_wfe_is_annualized():
     assert pytest.approx(stitched.wfe, rel=1e-3) == 120.0
 
 
-def test_wf_csv_export_includes_all_s01_params():
-    result, _, param_id = _build_wf_result("s01_trailing_ma")
-
-    csv_content = export_wf_results_csv(result)
-    config = get_strategy_config("s01_trailing_ma")
-    parameter_labels = [
-        spec.get("label", name) if isinstance(spec, dict) else name
-        for name, spec in config.get("parameters", {}).items()
-    ]
-
-    assert param_id in csv_content
-    for label in parameter_labels:
-        assert label in csv_content
-
-
-def test_wf_csv_export_includes_all_s04_params():
-    result, _, param_id = _build_wf_result("s04_stochrsi")
-
-    csv_content = export_wf_results_csv(result)
-    config = get_strategy_config("s04_stochrsi")
-    parameter_labels = [
-        spec.get("label", name) if isinstance(spec, dict) else name
-        for name, spec in config.get("parameters", {}).items()
-    ]
-
-    assert param_id in csv_content
-    for label in parameter_labels:
-        assert label in csv_content
-
 
 def test_export_trades_falls_back_to_config_strategy(monkeypatch, tmp_path):
     """Ensure export_wfa_trades_history uses wf_result.config when strategy_id is missing."""
@@ -383,7 +354,7 @@ def test_walkforward_integration_with_sample_data(monkeypatch):
     }
     engine = WalkForwardEngine(wf_config, base_template, {})
 
-    result = engine.run_wf_optimization(df)
+    result, _study_id = engine.run_wf_optimization(df)
 
     assert result.total_windows >= 2
     assert result.stitched_oos is not None

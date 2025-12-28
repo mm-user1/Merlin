@@ -24,41 +24,11 @@
         </div>
         <div class="collapsible-content studies-manager">
           <div class="studies-list">
-            <div class="study-item">
-              <span class="study-name">S01_OKX_LINKUSDT.P, 15 2025.06.15-2025.11.15_Optuna (3)</span>
-            </div>
-            <div class="study-item selected">
-              <span class="study-name">S01_OKX_LINKUSDT.P, 15 2025.06.15-2025.11.15_WFA</span>
-            </div>
-            <div class="study-item">
-              <span class="study-name">S04_OKX_ETHUSDT, 1h 2025.05.01-2025.11.01_Optuna</span>
-            </div>
-            <div class="study-item">
-              <span class="study-name">S01_OKX_LINKUSDT.P, 15 2025.05.15-2025.10.30_Optuna (2)</span>
-            </div>
-            <div class="study-item">
-              <span class="study-name">S01_OKX_LINKUSDT.P, 15 2025.05.15-2025.10.30_Optuna (1)</span>
-            </div>
-            <div class="study-item">
-              <span class="study-name">S04_OKX_BTCUSDT, 4h 2025.04.01-2025.10.15_WFA</span>
-            </div>
-            <div class="study-item">
-              <span class="study-name">S01_OKX_LINKUSDT.P, 15 2025.04.20-2025.10.10_Optuna</span>
-            </div>
-            <div class="study-item">
-              <span class="study-name">S04_OKX_ETHUSDT, 1h 2025.04.15-2025.09.30_Optuna (1)</span>
-            </div>
-            <div class="study-item">
-              <span class="study-name">S01_OKX_LINKUSDT.P, 30 2025.03.01-2025.09.15_WFA</span>
-            </div>
-            <div class="study-item">
-              <span class="study-name">S04_OKX_BTCUSDT, 1h 2025.02.15-2025.08.30_Optuna</span>
-            </div>
           </div>
 
           <div class="manager-buttons">
-            <button class="manager-btn">Select</button>
-            <button class="manager-btn delete-btn">Delete</button>
+            <button class="manager-btn" id="studySelectBtn">Select</button>
+            <button class="manager-btn delete-btn" id="studyDeleteBtn">Delete</button>
           </div>
         </div>
       </div>
@@ -247,5 +217,24 @@
   <script src="/static/js/utils.js"></script>
   <script src="/static/js/api.js"></script>
   <script src="/static/js/results.js"></script>
+
+  <div class="modal-overlay" id="missingCsvModal">
+    <div class="modal-card">
+      <div class="modal-header">
+        <h3>Market Data File Not Found</h3>
+      </div>
+      <div class="modal-body">
+        <p><strong>File:</strong> <span id="missingCsvName">Unknown</span></p>
+        <p><strong>Original path:</strong> <span id="missingCsvPath">Unknown</span></p>
+        <p class="modal-note">Select the CSV file or paste a new path to continue.</p>
+        <input type="file" id="missingCsvFile" accept=".csv" />
+        <input type="text" id="missingCsvInput" placeholder="Or paste CSV path" />
+      </div>
+      <div class="modal-actions">
+        <button class="btn btn-primary" id="missingCsvUpdate">Update</button>
+        <button class="btn btn-secondary" id="missingCsvCancel">Cancel</button>
+      </div>
+    </div>
+  </div>
 </body>
 </html>

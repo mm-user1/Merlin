@@ -1,9 +1,11 @@
-const OPT_STATE_KEY = 'merlinOptimizationState';
+﻿const OPT_STATE_KEY = 'merlinOptimizationState';
 const OPT_CONTROL_KEY = 'merlinOptimizationControl';
 
 const ResultsState = {
   status: 'idle',
   mode: 'optuna',
+  studyId: '',
+  studyName: '',
   strategy: {},
   strategyId: '',
   dataset: {},
@@ -19,7 +21,9 @@ const ResultsState = {
   results: [],
   stitched_oos: {},
   dataPath: '',
-  selectedRowId: null
+  selectedRowId: null,
+  multiSelect: false,
+  selectedStudies: []
 };
 
 function readStoredState() {
@@ -37,6 +41,8 @@ function applyState(state) {
   Object.assign(ResultsState, state);
   ResultsState.status = state.status || 'idle';
   ResultsState.mode = state.mode || 'optuna';
+  ResultsState.studyId = state.studyId || state.study_id || ResultsState.studyId;
+  ResultsState.studyName = state.studyName || state.study_name || ResultsState.studyName;
   ResultsState.strategy = state.strategy || ResultsState.strategy;
   ResultsState.strategyId = state.strategyId || state.strategy_id || ResultsState.strategyId;
   ResultsState.dataset = state.dataset || ResultsState.dataset;
@@ -70,6 +76,297 @@ function applyState(state) {
         window_ids: []
       };
     }
+  }
+}
+
+function getQueryStudyId() {
+  const params = new URLSearchParams(window.location.search);
+  return params.get('study') || '';
+}
+
+function setQueryStudyId(studyId) {
+  if (!studyId) return;
+  const params = new URLSearchParams(window.location.search);
+  params.set('study', studyId);
+  const newUrl = `${window.location.pathname}?${params.toString()}`;
+  window.history.replaceState({}, '', newUrl);
+}
+
+function updateResultsHeader() {
+  const header = document.querySelector('.results-header h2');
+  if (!header) return;
+  if (ResultsState.studyName) {
+    header.textContent = ResultsState.studyName;
+  } else {
+    header.textContent = 'Optimization Results';
+  }
+}
+
+function renderStudiesList(studies) {
+  const listEl = document.querySelector('.studies-list');
+  if (!listEl) return;
+  listEl.innerHTML = '';
+
+  if (!studies || !studies.length) {
+    const empty = document.createElement('div');
+    empty.className = 'study-item';
+    empty.textContent = 'No saved studies yet.';
+    listEl.appendChild(empty);
+    return;
+  }
+
+  studies.forEach((study) => {
+    const item = document.createElement('div');
+    item.className = 'study-item';
+    item.dataset.studyId = study.study_id;
+
+    if (study.study_id === ResultsState.studyId && !ResultsState.multiSelect) {
+      item.classList.add('selected');
+    }
+    if (ResultsState.multiSelect && ResultsState.selectedStudies.includes(study.study_id)) {
+      item.classList.add('selected');
+    }
+
+    item.innerHTML = `
+      <span class="study-name">${study.study_name}</span>
+    `;
+
+    item.addEventListener('click', (event) => {
+      if (ResultsState.multiSelect) {
+        event.preventDefault();
+        toggleStudySelection(study.study_id);
+      } else {
+        openStudy(study.study_id);
+      }
+    });
+
+    listEl.appendChild(item);
+  });
+}
+
+async function loadStudiesList() {
+  try {
+    const data = await fetchStudiesList();
+    renderStudiesList(data.studies || []);
+    return data.studies || [];
+  } catch (error) {
+    console.warn('Failed to load studies list', error);
+    renderStudiesList([]);
+    return [];
+  }
+}
+
+function buildStitchedFromWindows(windows) {
+  const stitched = [];
+  const windowIds = [];
+  let currentBalance = 100.0;
+
+  (windows || []).forEach((window, index) => {
+    const equity = window.oos_equity_curve || [];
+    if (!equity.length) return;
+
+    const startEquity = equity[0] || 100.0;
+    const startIdx = index === 0 ? 0 : 1;
+
+    for (let i = startIdx; i < equity.length; i += 1) {
+      const pctChange = (equity[i] / startEquity) - 1.0;
+      const newBalance = currentBalance * (1.0 + pctChange);
+      stitched.push(newBalance);
+      windowIds.push(window.window_number || window.window_id || index + 1);
+    }
+
+    if (stitched.length) {
+      currentBalance = stitched[stitched.length - 1];
+    }
+  });
+
+  return { equity_curve: stitched, window_ids: windowIds };
+}
+
+function calculateSummaryFromEquity(equityCurve) {
+  if (!equityCurve || !equityCurve.length) {
+    return { final_net_profit_pct: 0, max_drawdown_pct: 0 };
+  }
+  const finalValue = equityCurve[equityCurve.length - 1];
+  const finalNetProfitPct = (finalValue / 100.0 - 1.0) * 100.0;
+
+  let peak = equityCurve[0];
+  let maxDd = 0;
+  equityCurve.forEach((value) => {
+    if (value > peak) peak = value;
+    if (peak > 0) {
+      const dd = (peak - value) / peak * 100.0;
+      if (dd > maxDd) maxDd = dd;
+    }
+  });
+
+  return { final_net_profit_pct: finalNetProfitPct, max_drawdown_pct: maxDd };
+}
+
+async function applyStudyPayload(data) {
+  const study = data.study || {};
+  ResultsState.studyId = study.study_id || ResultsState.studyId;
+  ResultsState.studyName = study.study_name || ResultsState.studyName;
+  ResultsState.mode = study.optimization_mode || ResultsState.mode;
+  ResultsState.status = study.status || ResultsState.status;
+  ResultsState.strategyId = study.strategy_id || ResultsState.strategyId;
+  ResultsState.dataset = { label: study.csv_file_name || '' };
+  ResultsState.dataPath = study.csv_file_path || ResultsState.dataPath;
+
+  const config = study.config_json || {};
+  ResultsState.fixedParams = config.fixed_params || ResultsState.fixedParams;
+  ResultsState.dateFilter = Boolean(ResultsState.fixedParams.dateFilter ?? ResultsState.dateFilter);
+  ResultsState.start = ResultsState.fixedParams.start || ResultsState.start;
+  ResultsState.end = ResultsState.fixedParams.end || ResultsState.end;
+
+  if (ResultsState.mode === 'wfa') {
+    ResultsState.results = data.windows || [];
+  } else {
+    ResultsState.results = data.trials || [];
+  }
+  ResultsState.selectedRowId = null;
+
+  if (ResultsState.mode === 'wfa') {
+    const stitched = buildStitchedFromWindows(ResultsState.results);
+    const summary = calculateSummaryFromEquity(stitched.equity_curve);
+    const profitable = (ResultsState.results || []).filter((w) => (w.oos_net_profit_pct || 0) > 0).length;
+    const winRate = ResultsState.results && ResultsState.results.length
+      ? (profitable / ResultsState.results.length) * 100
+      : 0;
+    ResultsState.stitched_oos = {
+      final_net_profit_pct: summary.final_net_profit_pct,
+      max_drawdown_pct: summary.max_drawdown_pct,
+      total_trades: ResultsState.results.reduce((sum, w) => sum + (w.oos_total_trades || 0), 0),
+      wfe: study.best_value || 0,
+      oos_win_rate: winRate,
+      equity_curve: stitched.equity_curve,
+      timestamps: [],
+      window_ids: stitched.window_ids
+    };
+  }
+
+  if (ResultsState.strategyId) {
+    try {
+      const strategyConfig = await fetchStrategyConfig(ResultsState.strategyId);
+      ResultsState.strategyConfig = strategyConfig || {};
+      ResultsState.strategy = {
+        name: strategyConfig.name || ResultsState.strategyId,
+        version: strategyConfig.version || ''
+      };
+    } catch (error) {
+      console.warn('Failed to load strategy config', error);
+    }
+  }
+
+  const optunaConfig = config.optuna_config || {};
+  ResultsState.optuna = {
+    target: optunaConfig.target || study.target_metric || ResultsState.optuna.target,
+    budgetMode: optunaConfig.budget_mode || ResultsState.optuna.budgetMode,
+    nTrials: optunaConfig.n_trials || ResultsState.optuna.nTrials,
+    timeLimit: optunaConfig.time_limit || ResultsState.optuna.timeLimit,
+    convergence: optunaConfig.convergence_patience || ResultsState.optuna.convergence,
+    sampler: optunaConfig.sampler || ResultsState.optuna.sampler,
+    pruner: optunaConfig.pruner || ResultsState.optuna.pruner,
+    workers: study.worker_processes || ResultsState.optuna.workers
+  };
+
+  updateResultsHeader();
+}
+
+async function openStudy(studyId) {
+  if (!studyId) return;
+  try {
+    const data = await fetchStudyDetails(studyId);
+    ResultsState.studyId = studyId;
+    ResultsState.studyName = data.study?.study_name || ResultsState.studyName;
+
+    if (!data.csv_exists) {
+      showMissingCsvDialog(studyId, data.study?.csv_file_path || '', data.study?.csv_file_name || '');
+      return;
+    }
+
+    await applyStudyPayload(data);
+    setQueryStudyId(studyId);
+    await loadStudiesList();
+    refreshResultsView();
+  } catch (error) {
+    console.warn('Failed to open study', error);
+  }
+}
+
+const MissingCsvState = {
+  studyId: '',
+  originalPath: '',
+  originalName: ''
+};
+
+function showMissingCsvDialog(studyId, originalPath, originalName) {
+  MissingCsvState.studyId = studyId;
+  MissingCsvState.originalPath = originalPath || '';
+  MissingCsvState.originalName = originalName || '';
+
+  const modal = document.getElementById('missingCsvModal');
+  const pathEl = document.getElementById('missingCsvPath');
+  const nameEl = document.getElementById('missingCsvName');
+  if (pathEl) pathEl.textContent = MissingCsvState.originalPath || 'Unknown path';
+  if (nameEl) nameEl.textContent = MissingCsvState.originalName || 'Unknown file';
+  if (modal) modal.classList.add('show');
+}
+
+function hideMissingCsvDialog() {
+  const modal = document.getElementById('missingCsvModal');
+  if (modal) modal.classList.remove('show');
+  MissingCsvState.studyId = '';
+  MissingCsvState.originalPath = '';
+  MissingCsvState.originalName = '';
+}
+
+function bindMissingCsvDialog() {
+  const modal = document.getElementById('missingCsvModal');
+  const cancelBtn = document.getElementById('missingCsvCancel');
+  const updateBtn = document.getElementById('missingCsvUpdate');
+  const fileInput = document.getElementById('missingCsvFile');
+  const pathInput = document.getElementById('missingCsvInput');
+
+  if (cancelBtn) {
+    cancelBtn.addEventListener('click', () => {
+      hideMissingCsvDialog();
+    });
+  }
+
+  if (updateBtn) {
+    updateBtn.addEventListener('click', async () => {
+      if (!MissingCsvState.studyId) return;
+      const formData = new FormData();
+      if (fileInput && fileInput.files && fileInput.files.length) {
+        const file = fileInput.files[0];
+        formData.append('file', file, file.name);
+      } else if (pathInput && pathInput.value) {
+        formData.append('csvPath', pathInput.value.trim());
+      } else {
+        alert('Select a CSV file or provide a path.');
+        return;
+      }
+
+      try {
+        const response = await updateStudyCsvPathRequest(MissingCsvState.studyId, formData);
+        if (response.warnings && response.warnings.length) {
+          alert(`CSV updated with warnings:\n- ${response.warnings.join('\n- ')}`);
+        }
+        hideMissingCsvDialog();
+        await openStudy(MissingCsvState.studyId);
+      } catch (error) {
+        alert(error.message || 'Failed to update CSV path.');
+      }
+    });
+  }
+
+  if (modal) {
+    modal.addEventListener('click', (event) => {
+      if (event.target === modal) {
+        hideMissingCsvDialog();
+      }
+    });
   }
 }
 
@@ -138,7 +435,11 @@ function createParamId(params, strategyConfig, fixedParams) {
       optimizable.push(name);
     }
   });
-  const labelParts = optimizable.slice(0, 2).map((key) => {
+  const preferred = ['maType', 'maLength'];
+  const labelKeys = preferred.every((key) => Object.prototype.hasOwnProperty.call(merged, key))
+    ? preferred
+    : optimizable.slice(0, 2);
+  const labelParts = labelKeys.map((key) => {
     const value = Object.prototype.hasOwnProperty.call(merged, key) ? merged[key] : '?';
     return String(value);
   });
@@ -186,6 +487,8 @@ function renderOptunaTable(results) {
     const row = document.createElement('tr');
     row.className = 'clickable';
     row.dataset.index = index;
+    const trialNumber = result.trial_number ?? (index + 1);
+    row.dataset.trialNumber = trialNumber;
 
     const paramId = result.param_id
       || createParamId(result.params || {}, ResultsState.strategyConfig, ResultsState.fixedParams);
@@ -208,7 +511,7 @@ function renderOptunaTable(results) {
     `;
 
     row.addEventListener('click', async () => {
-      selectTableRow(index);
+      selectTableRow(index, trialNumber);
       showParameterDetails({ ...result, param_id: paramId });
       if (result.equity_curve && result.equity_curve.length) {
         renderEquityChart(result.equity_curve);
@@ -247,9 +550,10 @@ function renderWFATable(windows) {
     const row = document.createElement('tr');
     row.className = 'clickable';
     row.dataset.index = index;
+    row.dataset.windowNumber = window.window_number || index + 1;
 
     row.innerHTML = `
-      <td class="rank">${window.window_id}</td>
+      <td class="rank">${window.window_number || index + 1}</td>
       <td class="param-hash">${window.param_id}</td>
       <td class="${window.is_net_profit_pct >= 0 ? 'val-positive' : 'val-negative'}">
         ${window.is_net_profit_pct >= 0 ? '+' : ''}${Number(window.is_net_profit_pct || 0).toFixed(2)}%
@@ -263,7 +567,8 @@ function renderWFATable(windows) {
     `;
 
     row.addEventListener('click', () => {
-      selectTableRow(index);
+      const windowNumber = window.window_number || window.window_id || index + 1;
+      selectTableRow(index, windowNumber);
       showParameterDetails(window);
     });
 
@@ -271,7 +576,7 @@ function renderWFATable(windows) {
   });
 }
 
-function selectTableRow(index) {
+function selectTableRow(index, rowId) {
   document.querySelectorAll('.data-table tr.clickable').forEach((row) => {
     row.classList.remove('selected');
   });
@@ -279,7 +584,7 @@ function selectTableRow(index) {
   if (rows[index]) {
     rows[index].classList.add('selected');
   }
-  ResultsState.selectedRowId = index;
+  ResultsState.selectedRowId = rowId;
 }
 
 function showParameterDetails(result) {
@@ -491,6 +796,7 @@ async function fetchEquityCurve(result) {
 function refreshResultsView() {
   updateStatusBadge(ResultsState.status || 'idle');
   updateSidebarSettings();
+  updateResultsHeader();
 
   const progressLabel = document.getElementById('progressLabel');
   const progressPercent = document.getElementById('progressPercent');
@@ -521,39 +827,65 @@ function bindCollapsibles() {
 }
 
 function bindStudiesManager() {
-  const selectBtn = document.querySelector('.manager-btn:not(.delete-btn)');
-  if (!selectBtn) return;
+  const selectBtn = document.getElementById('studySelectBtn');
+  const deleteBtn = document.getElementById('studyDeleteBtn');
 
-  const items = Array.from(document.querySelectorAll('.study-item'));
-  if (!items.length) return;
+  if (selectBtn) {
+    selectBtn.textContent = ResultsState.multiSelect ? 'Cancel' : 'Select';
+    selectBtn.classList.toggle('active', ResultsState.multiSelect);
+    selectBtn.addEventListener('click', () => {
+      ResultsState.multiSelect = !ResultsState.multiSelect;
+      if (!ResultsState.multiSelect) {
+        ResultsState.selectedStudies = [];
+      }
+      selectBtn.classList.toggle('active', ResultsState.multiSelect);
+      selectBtn.textContent = ResultsState.multiSelect ? 'Cancel' : 'Select';
+      loadStudiesList();
+    });
+  }
 
-  let selectMode = false;
-
-  const clearSelections = () => {
-    items.forEach((item) => item.classList.remove('selected'));
-  };
-
-  items.forEach((item) => {
-    item.addEventListener('click', () => {
-      if (selectMode) {
-        item.classList.toggle('selected');
+  if (deleteBtn) {
+    deleteBtn.addEventListener('click', async () => {
+      const selected = ResultsState.multiSelect
+        ? ResultsState.selectedStudies.slice()
+        : (ResultsState.studyId ? [ResultsState.studyId] : []);
+      if (!selected.length) {
+        alert('Select a study first.');
         return;
       }
-      clearSelections();
-      item.classList.add('selected');
+      const confirmed = window.confirm(
+        selected.length > 1
+          ? `Delete ${selected.length} studies? This cannot be undone.`
+          : 'Delete this study? This cannot be undone.'
+      );
+      if (!confirmed) return;
+      try {
+        for (const studyId of selected) {
+          await deleteStudyRequest(studyId);
+        }
+        ResultsState.studyId = '';
+        ResultsState.studyName = '';
+        ResultsState.results = [];
+        ResultsState.selectedStudies = [];
+        refreshResultsView();
+        await loadStudiesList();
+      } catch (error) {
+        alert(error.message || 'Failed to delete study.');
+      }
     });
-  });
-
-  selectBtn.addEventListener('click', () => {
-    selectMode = !selectMode;
-    selectBtn.classList.toggle('active', selectMode);
-    selectBtn.textContent = selectMode ? 'Cancel' : 'Select';
-    if (!selectMode) {
-      clearSelections();
-    }
-  });
+  }
 }
 
+function toggleStudySelection(studyId) {
+  const selected = new Set(ResultsState.selectedStudies || []);
+  if (selected.has(studyId)) {
+    selected.delete(studyId);
+  } else {
+    selected.add(studyId);
+  }
+  ResultsState.selectedStudies = Array.from(selected);
+  loadStudiesList();
+}
 function bindEventHandlers() {
   const cancelBtn = document.querySelector('.control-btn.cancel');
   if (cancelBtn) {
@@ -586,8 +918,47 @@ function bindEventHandlers() {
 
   const downloadBtn = document.querySelector('.header-actions .btn-secondary');
   if (downloadBtn) {
-    downloadBtn.addEventListener('click', () => {
-      alert('Download Trades functionality coming soon');
+    downloadBtn.addEventListener('click', async () => {
+      if (ResultsState.mode !== 'optuna') {
+        alert('Trade export is available for Optuna studies only.');
+        return;
+      }
+      if (!ResultsState.studyId) {
+        alert('Select a study first.');
+        return;
+      }
+      if (!ResultsState.selectedRowId) {
+        alert('Select a trial in the table.');
+        return;
+      }
+      try {
+        const response = await fetch(`/api/studies/${encodeURIComponent(ResultsState.studyId)}/trials/${ResultsState.selectedRowId}/trades`, {
+          method: 'POST'
+        });
+        if (!response.ok) {
+          const message = await response.text();
+          throw new Error(message || 'Trade export failed.');
+        }
+        const blob = await response.blob();
+        const url = window.URL.createObjectURL(blob);
+        const link = document.createElement('a');
+        link.href = url;
+        const disposition = response.headers.get('Content-Disposition');
+        let filename = `trades_${Date.now()}.csv`;
+        if (disposition) {
+          const match = disposition.match(/filename="?([^";]+)"?/i);
+          if (match && match[1]) {
+            filename = match[1];
+          }
+        }
+        link.download = filename;
+        document.body.appendChild(link);
+        link.click();
+        link.remove();
+        window.URL.revokeObjectURL(url);
+      } catch (error) {
+        alert(error.message || 'Trade export failed.');
+      }
     });
   }
 }
@@ -616,7 +987,11 @@ async function hydrateFromServer() {
 
     if (shouldApply) {
       applyState(data);
-      refreshResultsView();
+      if (data.study_id) {
+        await openStudy(data.study_id);
+      } else {
+        refreshResultsView();
+      }
     }
   } catch (error) {
     return;
@@ -629,7 +1004,11 @@ function handleStorageUpdate(event) {
   try {
     const state = JSON.parse(event.newValue);
     applyState(state);
-    refreshResultsView();
+    if (state.study_id || state.studyId) {
+      openStudy(state.study_id || state.studyId);
+    } else {
+      refreshResultsView();
+    }
   } catch (error) {
     return;
   }
@@ -639,12 +1018,29 @@ function initResultsPage() {
   bindCollapsibles();
   bindStudiesManager();
   bindEventHandlers();
+  bindMissingCsvDialog();
 
   const stored = readStoredState();
   if (stored) {
     applyState(stored);
     refreshResultsView();
   }
+
+  loadStudiesList().then((studies) => {
+    const urlStudyId = getQueryStudyId();
+    if (urlStudyId) {
+      openStudy(urlStudyId);
+      return;
+    }
+    if (stored && (stored.study_id || stored.studyId)) {
+      openStudy(stored.study_id || stored.studyId);
+      return;
+    }
+    if (studies && studies.length && studies[0].study_id) {
+      openStudy(studies[0].study_id);
+    }
+  });
+
   hydrateFromServer();
 
   window.addEventListener('storage', handleStorageUpdate);
@@ -800,3 +1196,5 @@ function md5(string) {
 }
 
 document.addEventListener('DOMContentLoaded', initResultsPage);
+
+

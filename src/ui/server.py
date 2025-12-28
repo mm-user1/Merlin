@@ -17,8 +17,15 @@ from flask import Flask, jsonify, render_template, request, send_file
 sys.path.insert(0, str(Path(__file__).parent.parent))
 
 from core.backtest_engine import load_data, prepare_dataset_with_warmup
-from core.export import export_optuna_results
+from core.export import export_trades_csv
 from core.optuna_engine import OptimizationConfig, OptimizationResult, run_optimization
+from core.storage import (
+    delete_study,
+    get_study_trial,
+    list_studies,
+    load_study_from_db,
+    update_csv_path,
+)
 
 app = Flask(
     __name__,
@@ -557,6 +564,45 @@ def _resolve_csv_path(raw_path: str) -> Path:
     return resolved
 
 
+def _validate_csv_for_study(csv_path: str, study: Dict[str, Any]) -> Tuple[bool, List[str], Optional[str]]:
+    warnings: List[str] = []
+    try:
+        df = load_data(csv_path)
+    except Exception as exc:
+        return False, warnings, str(exc)
+
+    expected_start = study.get("dataset_start_date")
+    expected_end = study.get("dataset_end_date")
+    if expected_start:
+        try:
+            expected_start_ts = pd.Timestamp(expected_start).date()
+            if df.index[0].date() != expected_start_ts:
+                warnings.append(
+                    f"Dataset start date differs (expected {expected_start}, got {df.index[0].date()})."
+                )
+        except Exception:
+            warnings.append("Could not validate dataset start date.")
+    if expected_end:
+        try:
+            expected_end_ts = pd.Timestamp(expected_end).date()
+            if df.index[-1].date() != expected_end_ts:
+                warnings.append(
+                    f"Dataset end date differs (expected {expected_end}, got {df.index[-1].date()})."
+                )
+        except Exception:
+            warnings.append("Could not validate dataset end date.")
+
+    original_name = study.get("csv_file_name")
+    if original_name:
+        selected_name = Path(csv_path).name
+        if selected_name != original_name:
+            warnings.append(
+                f"Filename differs from original ({original_name} vs {selected_name})."
+            )
+
+    return True, warnings, None
+
+
 @app.route("/")
 def index() -> object:
     return render_template("index.html")
@@ -578,6 +624,135 @@ def optimization_cancel() -> object:
     state["status"] = "cancelled"
     _set_optimization_state(state)
     return jsonify({"status": "cancelled"})
+
+
+@app.get("/api/studies")
+def list_studies_endpoint() -> object:
+    return jsonify({"studies": list_studies()})
+
+
+@app.get("/api/studies/<string:study_id>")
+def get_study_endpoint(study_id: str) -> object:
+    study_data = load_study_from_db(study_id)
+    if not study_data:
+        return jsonify({"error": "Study not found."}), HTTPStatus.NOT_FOUND
+    return jsonify(study_data)
+
+
+@app.delete("/api/studies/<string:study_id>")
+def delete_study_endpoint(study_id: str) -> object:
+    deleted = delete_study(study_id)
+    if not deleted:
+        return jsonify({"error": "Study not found."}), HTTPStatus.NOT_FOUND
+    return ("", HTTPStatus.NO_CONTENT)
+
+
+@app.post("/api/studies/<string:study_id>/update-csv-path")
+def update_study_csv_path_endpoint(study_id: str) -> object:
+    study_data = load_study_from_db(study_id)
+    if not study_data:
+        return jsonify({"error": "Study not found."}), HTTPStatus.NOT_FOUND
+
+    csv_file = request.files.get("file")
+    csv_path_raw = None
+    if request.is_json:
+        payload = request.get_json(silent=True) or {}
+        if isinstance(payload, dict):
+            csv_path_raw = payload.get("csvPath") or payload.get("csv_file_path")
+    if csv_path_raw is None:
+        csv_path_raw = request.form.get("csvPath")
+
+    if csv_file and csv_file.filename:
+        new_path = _persist_csv_upload(csv_file)
+    elif csv_path_raw:
+        try:
+            new_path = str(_resolve_csv_path(csv_path_raw))
+        except (FileNotFoundError, IsADirectoryError, ValueError, OSError) as exc:
+            return jsonify({"error": str(exc)}), HTTPStatus.BAD_REQUEST
+    else:
+        return jsonify({"error": "CSV file or path is required."}), HTTPStatus.BAD_REQUEST
+
+    is_valid, warnings, error = _validate_csv_for_study(new_path, study_data["study"])
+    if not is_valid:
+        return jsonify({"error": error or "CSV validation failed."}), HTTPStatus.BAD_REQUEST
+
+    updated = update_csv_path(study_id, new_path)
+    if not updated:
+        return jsonify({"error": "Failed to update CSV path."}), HTTPStatus.INTERNAL_SERVER_ERROR
+
+    return jsonify({"status": "updated", "warnings": warnings, "csv_file_path": new_path})
+
+
+@app.post("/api/studies/<string:study_id>/trials/<int:trial_number>/trades")
+def download_trial_trades(study_id: str, trial_number: int) -> object:
+    study_data = load_study_from_db(study_id)
+    if not study_data:
+        return jsonify({"error": "Study not found."}), HTTPStatus.NOT_FOUND
+
+    study = study_data["study"]
+    if study.get("optimization_mode") != "optuna":
+        return jsonify({"error": "Trade export is only supported for Optuna studies."}), HTTPStatus.BAD_REQUEST
+
+    csv_path = study.get("csv_file_path")
+    if not csv_path or not Path(csv_path).exists():
+        return jsonify({"error": "CSV file is missing for this study."}), HTTPStatus.BAD_REQUEST
+
+    trial = get_study_trial(study_id, trial_number)
+    if not trial:
+        return jsonify({"error": "Trial not found."}), HTTPStatus.NOT_FOUND
+
+    config = study.get("config_json") or {}
+    fixed_params = config.get("fixed_params") or {}
+
+    params = {**fixed_params, **(trial.get("params") or {})}
+
+    start = params.get("start")
+    end = params.get("end")
+    if isinstance(start, str):
+        start = pd.Timestamp(start, tz="UTC")
+    if isinstance(end, str):
+        end = pd.Timestamp(end, tz="UTC")
+
+    warmup_bars = study.get("warmup_bars") or config.get("warmup_bars") or 1000
+
+    from strategies import get_strategy
+
+    try:
+        strategy_class = get_strategy(study.get("strategy_id"))
+    except ValueError as exc:
+        return jsonify({"error": str(exc)}), HTTPStatus.BAD_REQUEST
+
+    try:
+        df = load_data(csv_path)
+    except Exception as exc:
+        return jsonify({"error": str(exc)}), HTTPStatus.BAD_REQUEST
+
+    trade_start_idx = 0
+    if params.get("dateFilter"):
+        try:
+            df, trade_start_idx = prepare_dataset_with_warmup(df, start, end, int(warmup_bars))
+        except Exception:
+            return jsonify({"error": "Failed to prepare dataset with warmup."}), HTTPStatus.BAD_REQUEST
+
+    try:
+        result = strategy_class.run(df, params, trade_start_idx)
+    except Exception as exc:
+        return jsonify({"error": str(exc)}), HTTPStatus.BAD_REQUEST
+
+    from core.export import _extract_symbol_from_csv_filename
+
+    symbol = _extract_symbol_from_csv_filename(study.get("csv_file_name") or "")
+    csv_content = export_trades_csv(result.trades, symbol=symbol)
+    buffer = io.BytesIO(csv_content.encode("utf-8"))
+    buffer.seek(0)
+
+    filename = f"{study.get('study_name', 'study')}_trial_{trial_number}_trades.csv"
+    return send_file(
+        buffer,
+        mimetype="text/csv",
+        as_attachment=True,
+        download_name=filename,
+    )
 
 
 @app.get("/api/presets")
@@ -723,15 +898,18 @@ def run_walkforward_optimization() -> object:
     csv_path_raw = (data.get("csvPath") or "").strip()
     data_source = None
     data_path = ""
+    original_csv_name = ""
 
     try:
         if csv_file and csv_file.filename:
             data_path = _persist_csv_upload(csv_file)
             data_source = data_path
+            original_csv_name = csv_file.filename
         elif csv_path_raw:
             resolved_path = _resolve_csv_path(csv_path_raw)
             data_source = str(resolved_path)
             data_path = str(resolved_path)
+            original_csv_name = Path(resolved_path).name
         else:
             return jsonify({"error": "CSV file is required."}), HTTPStatus.BAD_REQUEST
     except (FileNotFoundError, IsADirectoryError, ValueError):
@@ -848,6 +1026,7 @@ def run_walkforward_optimization() -> object:
             return jsonify({"error": f"Failed to apply date filter: {str(e)}"}), HTTPStatus.BAD_REQUEST
 
     optimization_config.warmup_bars = warmup_bars
+    optimization_config.csv_original_name = original_csv_name
 
     base_template = {
         "enabled_params": json.loads(json.dumps(optimization_config.enabled_params)),
@@ -863,6 +1042,7 @@ def run_walkforward_optimization() -> object:
         "score_config": json.loads(json.dumps(optimization_config.score_config or {})),
         "strategy_id": optimization_config.strategy_id,
         "warmup_bars": optimization_config.warmup_bars,
+        "csv_original_name": original_csv_name,
     }
 
     optuna_settings = {
@@ -888,7 +1068,6 @@ def run_walkforward_optimization() -> object:
     oos_period_days = max(1, min(3650, oos_period_days))
 
     from core.walkforward_engine import WFConfig, WalkForwardEngine
-    from core.export import export_wf_results_csv
 
     wf_config = WFConfig(
         is_period_days=is_period_days,
@@ -896,7 +1075,7 @@ def run_walkforward_optimization() -> object:
         warmup_bars=warmup_bars,
         strategy_id=strategy_id,
     )
-    engine = WalkForwardEngine(wf_config, base_template, optuna_settings)
+    engine = WalkForwardEngine(wf_config, base_template, optuna_settings, csv_file_path=data_path)
 
     _set_optimization_state(
         {
@@ -913,7 +1092,7 @@ def run_walkforward_optimization() -> object:
     )
 
     try:
-        result = engine.run_wf_optimization(df)
+        result, study_id = engine.run_wf_optimization(df)
     except ValueError as exc:
         _set_optimization_state(
             {
@@ -936,39 +1115,7 @@ def run_walkforward_optimization() -> object:
         app.logger.exception("Walk-forward optimization failed")
         return jsonify({"error": "Walk-forward optimization failed."}), HTTPStatus.INTERNAL_SERVER_ERROR
 
-    # Generate CSV content without saving to disk
-    csv_content = export_wf_results_csv(result, df)
-
-    window_rows: List[Dict[str, Any]] = []
-    for window_result in result.windows:
-        window_rows.append(
-            {
-                "window_id": window_result.window_id,
-                "param_id": window_result.param_id,
-                "best_params": json.loads(json.dumps(window_result.best_params)),
-                "is_net_profit_pct": round(window_result.is_net_profit_pct, 2),
-                "is_max_drawdown_pct": round(window_result.is_max_drawdown_pct, 2),
-                "is_total_trades": window_result.is_total_trades,
-                "oos_net_profit_pct": round(window_result.oos_net_profit_pct, 2),
-                "oos_max_drawdown_pct": round(window_result.oos_max_drawdown_pct, 2),
-                "oos_total_trades": window_result.oos_total_trades,
-            }
-        )
-
     stitched_oos = result.stitched_oos
-    stitched_payload = {
-        "final_net_profit_pct": round(stitched_oos.final_net_profit_pct, 2),
-        "max_drawdown_pct": round(stitched_oos.max_drawdown_pct, 2),
-        "total_trades": stitched_oos.total_trades,
-        "wfe": round(stitched_oos.wfe, 2),
-        "oos_win_rate": round(stitched_oos.oos_win_rate, 1),
-        "equity_curve": list(stitched_oos.equity_curve or []),
-        "timestamps": [
-            ts.isoformat() if hasattr(ts, "isoformat") else str(ts)
-            for ts in (stitched_oos.timestamps or [])
-        ],
-        "window_ids": list(stitched_oos.window_ids or []),
-    }
 
     # Get export trades settings from request
     export_trades = data.get("exportTrades") == "true"
@@ -978,23 +1125,11 @@ def run_walkforward_optimization() -> object:
     end_date = result.trading_end_date
 
     # Get original CSV filename
-    original_csv_name = csv_file.filename if csv_file and hasattr(csv_file, 'filename') else ""
+    original_csv_name = csv_file.filename if csv_file and hasattr(csv_file, "filename") else ""
     if not original_csv_name and csv_path_raw:
-        original_csv_name = csv_path_raw
+        original_csv_name = Path(csv_path_raw).name
 
-    # Generate filenames
-    from core.export import (
-        _extract_symbol_from_csv_filename,
-        export_wfa_trades_history,
-        generate_wfa_output_filename,
-    )
-
-    csv_filename = generate_wfa_output_filename(
-        original_csv_name,
-        start_date,
-        end_date,
-        include_trades=False
-    )
+    from core.export import _extract_symbol_from_csv_filename, export_wfa_trades_history, generate_wfa_output_filename
 
     if export_trades:
         # Export trades history for top-K combinations
@@ -1053,16 +1188,13 @@ def run_walkforward_optimization() -> object:
                     "wfe": round(result.stitched_oos.wfe, 2),
                     "oos_win_rate": round(result.stitched_oos.oos_win_rate, 1),
                 },
-                "stitched_oos": stitched_payload,
-                "windows": window_rows,
-                "csv_content": csv_content,
-                "csv_filename": csv_filename,
                 "export_trades": True,
                 "zip_filename": zip_filename,
                 "zip_base64": zip_base64,
                 "mode": "wfa",
                 "strategy_id": strategy_id,
                 "data_path": data_path,
+                "study_id": study_id,
             }
 
             _set_optimization_state(
@@ -1072,8 +1204,7 @@ def run_walkforward_optimization() -> object:
                     "strategy_id": strategy_id,
                     "data_path": data_path,
                     "summary": response_payload.get("summary", {}),
-                    "stitched_oos": stitched_payload,
-                    "windows": window_rows,
+                    "study_id": study_id,
                 }
             )
 
@@ -1098,13 +1229,10 @@ def run_walkforward_optimization() -> object:
                 "wfe": round(result.stitched_oos.wfe, 2),
                 "oos_win_rate": round(result.stitched_oos.oos_win_rate, 1),
             },
-            "stitched_oos": stitched_payload,
-            "windows": window_rows,
-            "csv_content": csv_content,
-            "csv_filename": csv_filename,
             "mode": "wfa",
             "strategy_id": strategy_id,
             "data_path": data_path,
+            "study_id": study_id,
         }
 
         _set_optimization_state(
@@ -1114,8 +1242,7 @@ def run_walkforward_optimization() -> object:
                 "strategy_id": strategy_id,
                 "data_path": data_path,
                 "summary": response_payload.get("summary", {}),
-                "stitched_oos": stitched_payload,
-                "windows": window_rows,
+                "study_id": study_id,
             }
         )
 
@@ -1684,7 +1811,7 @@ def run_optimization_endpoint() -> object:
             return ("Failed to access CSV file.", HTTPStatus.BAD_REQUEST)
         data_source = str(resolved_path)
         data_path = str(resolved_path)
-        source_name = str(resolved_path)
+        source_name = Path(resolved_path).name
     else:
         return ("CSV file is required.", HTTPStatus.BAD_REQUEST)
 
@@ -1746,6 +1873,8 @@ def run_optimization_endpoint() -> object:
         app.logger.exception("Failed to construct optimization config")
         return ("Failed to prepare optimization config.", HTTPStatus.INTERNAL_SERVER_ERROR)
 
+    optimization_config.csv_original_name = source_name
+
     _set_optimization_state({
         "status": "running",
         "mode": "optuna",
@@ -1758,9 +1887,10 @@ def run_optimization_endpoint() -> object:
 
     results: List[OptimizationResult] = []
     optimization_metadata: Optional[Dict[str, Any]] = None
+    study_id: Optional[str] = None
     try:
         start_time = time.time()
-        results = run_optimization(optimization_config)
+        results, study_id = run_optimization(optimization_config)
         end_time = time.time()
 
         optimization_time_seconds = max(0.0, end_time - start_time)
@@ -1830,47 +1960,6 @@ def run_optimization_endpoint() -> object:
         app.logger.exception("Optimization run failed")
         return ("Optimization execution failed.", HTTPStatus.INTERNAL_SERVER_ERROR)
 
-    fixed_parameters = []
-
-    for name in _get_frontend_param_order(optimization_config.strategy_id):
-        if bool(optimization_config.enabled_params.get(name, False)):
-            continue
-
-        value = optimization_config.fixed_params.get(name)
-        if value is None:
-            if results:
-                value = getattr(results[0], "params", {}).get(name)
-        fixed_parameters.append((name, value))
-
-    csv_content = export_optuna_results(
-        results,
-        fixed_parameters,
-        filter_min_profit=optimization_config.filter_min_profit,
-        min_profit_threshold=optimization_config.min_profit_threshold,
-        optimization_metadata=optimization_metadata,
-        strategy_id=optimization_config.strategy_id,
-    )
-
-    serialized_results: List[Dict[str, Any]] = []
-    for item in results:
-        params = dict(getattr(item, "params", {}) or {})
-        serialized_results.append(
-            {
-                "param_id": _create_param_id_for_strategy(optimization_config.strategy_id, params),
-                "params": params,
-                "net_profit_pct": item.net_profit_pct,
-                "max_drawdown_pct": item.max_drawdown_pct,
-                "total_trades": item.total_trades,
-                "romad": item.romad,
-                "sharpe_ratio": item.sharpe_ratio,
-                "profit_factor": item.profit_factor,
-                "ulcer_index": item.ulcer_index,
-                "sqn": item.sqn,
-                "consistency_score": item.consistency_score,
-                "score": item.score,
-            }
-        )
-
     _set_optimization_state(
         {
             "status": "completed",
@@ -1881,22 +1970,20 @@ def run_optimization_endpoint() -> object:
             "warmup_bars": optimization_config.warmup_bars,
             "config": config_payload,
             "summary": optimization_metadata or {},
-            "results": serialized_results,
+            "study_id": study_id,
         }
     )
-    buffer = io.BytesIO(csv_content.encode("utf-8"))
-    filename = generate_output_filename(source_name, optimization_config)
-    buffer.seek(0)
-    response = send_file(
-        buffer,
-        mimetype="text/csv",
-        as_attachment=True,
-        download_name=filename,
+
+    return jsonify(
+        {
+            "status": "success",
+            "mode": "optuna",
+            "study_id": study_id,
+            "summary": optimization_metadata or {},
+            "strategy_id": optimization_config.strategy_id,
+            "data_path": data_path,
+        }
     )
-    if data_path:
-        response.headers["X-Merlin-Data-Path"] = data_path
-    response.headers["X-Merlin-Mode"] = "optuna"
-    return response
 
 
 # ============================================

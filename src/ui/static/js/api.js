@@ -55,10 +55,7 @@ async function runOptimizationRequest(formData, signal = null) {
     throw new Error(message || 'Optimization request failed.');
   }
 
-  return {
-    blob: await response.blob(),
-    headers: response.headers
-  };
+  return response.json();
 }
 
 async function runWalkForwardRequest(formData, signal = null) {
@@ -82,6 +79,44 @@ async function fetchOptimizationStatus() {
   const response = await fetch('/api/optimization/status');
   if (!response.ok) {
     throw new Error(`Status request failed: ${response.status}`);
+  }
+  return response.json();
+}
+
+async function fetchStudiesList() {
+  const response = await fetch('/api/studies');
+  if (!response.ok) {
+    throw new Error(`Failed to fetch studies: ${response.status}`);
+  }
+  return response.json();
+}
+
+async function fetchStudyDetails(studyId) {
+  const response = await fetch(`/api/studies/${encodeURIComponent(studyId)}`);
+  if (!response.ok) {
+    throw new Error(`Failed to fetch study: ${response.status}`);
+  }
+  return response.json();
+}
+
+async function deleteStudyRequest(studyId) {
+  const response = await fetch(`/api/studies/${encodeURIComponent(studyId)}`, {
+    method: 'DELETE'
+  });
+  if (!response.ok) {
+    const message = await response.text();
+    throw new Error(message || 'Failed to delete study.');
+  }
+}
+
+async function updateStudyCsvPathRequest(studyId, formData) {
+  const response = await fetch(`/api/studies/${encodeURIComponent(studyId)}/update-csv-path`, {
+    method: 'POST',
+    body: formData
+  });
+  if (!response.ok) {
+    const message = await response.text();
+    throw new Error(message || 'Failed to update CSV path.');
   }
   return response.json();
 }

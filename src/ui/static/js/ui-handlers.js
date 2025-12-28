@@ -876,37 +876,6 @@ function displayWFResults(data) {
         `;
 
   wfTableBody.innerHTML = '';
-  (data.windows || []).forEach((row) => {
-    const isValue = Number(row.is_net_profit_pct);
-    const oosValue = Number(row.oos_net_profit_pct);
-    const tradesValue = Number(row.oos_total_trades ?? row.oos_trades);
-    const tr = document.createElement('tr');
-    const isProfit = Number.isFinite(isValue) ? isValue.toFixed(2) : row.is_net_profit_pct;
-    const oosProfit = Number.isFinite(oosValue) ? oosValue.toFixed(2) : row.oos_net_profit_pct;
-    const oosTrades = Number.isFinite(tradesValue) ? tradesValue : (row.oos_total_trades ?? row.oos_trades);
-    tr.innerHTML = `
-            <td style="padding: 10px; border: 1px solid #ddd; text-align: center;">${row.window_id}</td>
-            <td style="padding: 10px; border: 1px solid #ddd;">${row.param_id}</td>
-            <td style="padding: 10px; border: 1px solid #ddd; text-align: center;">${isProfit}%</td>
-            <td style="padding: 10px; border: 1px solid #ddd; text-align: center;">${oosProfit}%</td>
-            <td style="padding: 10px; border: 1px solid #ddd; text-align: center;">${oosTrades}</td>
-          `;
-    wfTableBody.appendChild(tr);
-  });
-
-  if (data.csv_content) {
-    window.setTimeout(() => {
-      const blob = new Blob([data.csv_content], { type: 'text/csv;charset=utf-8;' });
-      const url = URL.createObjectURL(blob);
-      const link = document.createElement('a');
-      link.href = url;
-      link.download = data.csv_filename || `wf_results_${new Date().getTime()}.csv`;
-      document.body.appendChild(link);
-      link.click();
-      document.body.removeChild(link);
-      URL.revokeObjectURL(url);
-    }, 200);
-  }
 }
 
 async function runWalkForward({ sources, state }) {
@@ -1037,22 +1006,6 @@ async function runWalkForward({ sources, state }) {
     try {
       const data = await runWalkForwardRequest(formData, optimizationAbortController.signal);
 
-      if (data.csv_content && totalSources > 1) {
-        try {
-          const blob = new Blob([data.csv_content], { type: 'text/csv;charset=utf-8;' });
-          const url = window.URL.createObjectURL(blob);
-          const link = document.createElement('a');
-          link.href = url;
-          link.download = data.csv_filename || `wf_results_${Date.now()}.csv`;
-          document.body.appendChild(link);
-          link.click();
-          document.body.removeChild(link);
-          window.URL.revokeObjectURL(url);
-        } catch (csvError) {
-          console.error('Failed to download CSV:', csvError);
-        }
-      }
-
       if (data.export_trades && data.zip_base64) {
         try {
           const binaryString = atob(data.zip_base64);
@@ -1105,19 +1058,18 @@ async function runWalkForward({ sources, state }) {
 
       if (lastSuccessfulData.export_trades && wfSummaryEl) {
         const currentSummary = wfSummaryEl.innerHTML;
-        wfSummaryEl.innerHTML = currentSummary + '<br><strong>Trade history exported!</strong> Downloaded ZIP contains WFA results CSV and individual trade history files.';
+        wfSummaryEl.innerHTML = currentSummary + '<br><strong>Trade history exported!</strong> Downloaded ZIP contains WFA trade history files.';
       }
     } else if (totalSources > 1 && wfSummaryEl) {
-      wfSummaryEl.innerHTML = `<strong>Multi-file Walk-Forward Analysis completed!</strong><br>Processed ${totalSources} files. Check downloaded CSV/ZIP files for detailed results.`;
+      wfSummaryEl.innerHTML = `<strong>Multi-file Walk-Forward Analysis completed!</strong><br>Processed ${totalSources} files. Results are saved in the Studies Manager.`;
     }
 
     if (lastSuccessfulData) {
       updateOptimizationState({
         status: 'completed',
         mode: 'wfa',
-        results: lastSuccessfulData.windows || [],
+        study_id: lastSuccessfulData.study_id || '',
         summary: lastSuccessfulData.summary || {},
-        stitched_oos: lastSuccessfulData.stitched_oos || {},
         dataPath: lastSuccessfulData.data_path || '',
         strategyId: lastSuccessfulData.strategy_id || strategySummary.id || ''
       });
@@ -1133,9 +1085,8 @@ async function runWalkForward({ sources, state }) {
       updateOptimizationState({
         status: 'completed',
         mode: 'wfa',
-        results: lastSuccessfulData.windows || [],
+        study_id: lastSuccessfulData.study_id || '',
         summary: lastSuccessfulData.summary || {},
-        stitched_oos: lastSuccessfulData.stitched_oos || {},
         dataPath: lastSuccessfulData.data_path || '',
         strategyId: lastSuccessfulData.strategy_id || strategySummary.id || ''
       });
@@ -1377,7 +1328,8 @@ async function submitOptimization(event) {
 
   const errors = [];
   let successCount = 0;
-  let lastResults = null;
+  let lastStudyId = '';
+  let lastSummary = null;
   let lastDataPath = '';
   const optunaBudgetMode = config.optuna_budget_mode;
   const plannedTrials = optunaBudgetMode === 'trials' ? config.optuna_n_trials : null;
@@ -1416,35 +1368,10 @@ async function submitOptimization(event) {
     formData.append('config', JSON.stringify(config));
 
     try {
-      const { blob, headers } = await runOptimizationRequest(formData, optimizationAbortController.signal);
-      const csvText = await blob.text();
-      lastResults = parseOptunaCsv(csvText, window.currentStrategyConfig);
-      lastDataPath = headers.get('X-Merlin-Data-Path') || lastDataPath;
-
-      const url = window.URL.createObjectURL(blob);
-      const link = document.createElement('a');
-      link.href = url;
-
-      const disposition = headers.get('Content-Disposition');
-      let downloadName = `optimization_${Date.now()}.csv`;
-      if (disposition) {
-        const utf8Match = disposition.match(/filename\*=UTF-8''([^;]+)/i);
-        const asciiMatch = disposition.match(/filename="?([^";]+)"?/i);
-        if (utf8Match && utf8Match[1]) {
-          try {
-            downloadName = decodeURIComponent(utf8Match[1]);
-          } catch (err) {
-            downloadName = utf8Match[1];
-          }
-        } else if (asciiMatch && asciiMatch[1]) {
-          downloadName = asciiMatch[1];
-        }
-      }
-      link.download = downloadName;
-      document.body.appendChild(link);
-      link.click();
-      link.remove();
-      window.URL.revokeObjectURL(url);
+      const data = await runOptimizationRequest(formData, optimizationAbortController.signal);
+      lastStudyId = data.study_id || '';
+      lastSummary = data.summary || null;
+      lastDataPath = data.data_path || lastDataPath;
 
       if (optunaProgressFill) {
         optunaProgressFill.style.width = '100%';
@@ -1457,7 +1384,7 @@ async function submitOptimization(event) {
         }
       }
       if (optunaBestTrial) {
-        optunaBestTrial.textContent = 'Review the downloaded CSV to inspect the best trial and metrics.';
+        optunaBestTrial.textContent = 'Optimization completed. Results saved to Studies Manager.';
       }
 
       updateStatus(index, `Success: Source ${sourceNumber} of ${totalSources} (${sourceName}) processed successfully.`);
@@ -1498,7 +1425,8 @@ async function submitOptimization(event) {
       updateOptimizationState({
         status: 'completed',
         mode: 'optuna',
-        results: lastResults || [],
+        study_id: lastStudyId,
+        summary: lastSummary || {},
         dataPath: lastDataPath,
         strategyId: strategySummary.id || ''
       });
@@ -1507,17 +1435,16 @@ async function submitOptimization(event) {
     summaryMessages.push(
       `Optimization finished with ${successCount} successful data source(s) and ${errors.length} error(s).`
     );
-    if (lastResults) {
-      const serverState = await refreshOptimizationStateFromServer();
-      if (!serverState) {
-        updateOptimizationState({
-          status: 'completed',
-          mode: 'optuna',
-          results: lastResults,
-          dataPath: lastDataPath,
-          strategyId: strategySummary.id || ''
-        });
-      }
+    const serverState = await refreshOptimizationStateFromServer();
+    if (!serverState) {
+      updateOptimizationState({
+        status: 'completed',
+        mode: 'optuna',
+        study_id: lastStudyId,
+        summary: lastSummary || {},
+        dataPath: lastDataPath,
+        strategyId: strategySummary.id || ''
+      });
     }
   } else {
     summaryMessages.push('Optimization failed for all selected data sources. See error details above.');

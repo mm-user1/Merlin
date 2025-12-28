@@ -1193,6 +1193,61 @@
       background: #bbbbbb;
     }
 
+    .modal-overlay {
+      position: fixed;
+      inset: 0;
+      background: rgba(0, 0, 0, 0.35);
+      display: none;
+      align-items: center;
+      justify-content: center;
+      z-index: 2000;
+    }
+
+    .modal-overlay.show {
+      display: flex;
+    }
+
+    .modal-card {
+      background: #f5f5f5;
+      border: 1px solid #bbbbbb;
+      border-radius: 6px;
+      padding: 18px 20px;
+      width: min(520px, 90vw);
+      box-shadow: 0 8px 24px rgba(0, 0, 0, 0.2);
+    }
+
+    .modal-header h3 {
+      font-size: 15px;
+      margin-bottom: 8px;
+    }
+
+    .modal-body {
+      font-size: 13px;
+      color: #2a2a2a;
+    }
+
+    .modal-body p {
+      margin-bottom: 8px;
+    }
+
+    .modal-note {
+      color: #5a5a5a;
+      font-size: 12px;
+    }
+
+    .modal-body input[type="file"],
+    .modal-body input[type="text"] {
+      width: 100%;
+      margin-top: 8px;
+    }
+
+    .modal-actions {
+      display: flex;
+      justify-content: flex-end;
+      gap: 8px;
+      margin-top: 14px;
+    }
+
     .chart-card {
       background: #ffffff;
       border: 1px solid #cccccc;

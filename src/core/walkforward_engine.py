@@ -3,18 +3,20 @@ Walk-Forward Analysis Engine - Rolling WFA (Phase 2)
 """
 
 from dataclasses import dataclass
-from typing import List, Dict, Any
+from typing import List, Dict, Any, Optional
 from copy import deepcopy
 import hashlib
 import io
 import json
 import logging
+import time
 
 import pandas as pd
 
 from . import metrics
 from .backtest_engine import prepare_dataset_with_warmup
 from .optuna_engine import OptunaConfig, OptimizationConfig, run_optuna_optimization
+from .storage import save_wfa_study_to_db
 
 logger = logging.getLogger(__name__)
 
@@ -72,6 +74,10 @@ class WindowResult:
     oos_equity_curve: List[float]
     oos_timestamps: List[pd.Timestamp]
 
+    # Optional IS details
+    is_best_trial_number: Optional[int] = None
+    is_equity_curve: Optional[List[float]] = None
+
 
 @dataclass
 class OOSStitchedResult:
@@ -106,10 +112,17 @@ class WFResult:
 class WalkForwardEngine:
     """Main engine for Walk-Forward Analysis"""
 
-    def __init__(self, config: WFConfig, base_config_template: Dict[str, Any], optuna_settings: Dict[str, Any]):
+    def __init__(
+        self,
+        config: WFConfig,
+        base_config_template: Dict[str, Any],
+        optuna_settings: Dict[str, Any],
+        csv_file_path: Optional[str] = None,
+    ):
         self.config = config
         self.base_config_template = deepcopy(base_config_template)
         self.optuna_settings = deepcopy(optuna_settings)
+        self.csv_file_path = csv_file_path
 
         from strategies import get_strategy
 
@@ -268,7 +281,7 @@ class WalkForwardEngine:
         print(f"Created {len(windows)} windows successfully")
         return windows
 
-    def run_wf_optimization(self, df: pd.DataFrame) -> WFResult:
+    def run_wf_optimization(self, df: pd.DataFrame) -> tuple[WFResult, Optional[str]]:
         """
         Run complete Walk-Forward Analysis.
 
@@ -279,6 +292,7 @@ class WalkForwardEngine:
         4. Return results
         """
         print("Starting Walk-Forward Analysis...")
+        start_time = time.time()
 
         fixed_params = self.base_config_template.get("fixed_params", {})
         use_date_filter = fixed_params.get("dateFilter", False)
@@ -319,6 +333,7 @@ class WalkForwardEngine:
             best_result = optimization_results[0]
             best_params = self._result_to_params(best_result)
             param_id = self._create_param_id(best_params)
+            best_trial_number = getattr(best_result, "optuna_trial_number", None)
 
             print(f"Best param ID: {param_id}")
 
@@ -376,6 +391,8 @@ class WalkForwardEngine:
                     is_net_profit_pct=is_metrics.net_profit_pct,
                     is_max_drawdown_pct=is_metrics.max_drawdown_pct,
                     is_total_trades=is_metrics.total_trades,
+                    is_best_trial_number=best_trial_number,
+                    is_equity_curve=list(is_result.balance_curve or []),
                     oos_net_profit_pct=oos_metrics.net_profit_pct,
                     oos_max_drawdown_pct=oos_metrics.max_drawdown_pct,
                     oos_total_trades=oos_metrics.total_trades,
@@ -398,7 +415,19 @@ class WalkForwardEngine:
             warmup_bars=self.config.warmup_bars,
         )
 
-        return wf_result
+        study_id = None
+        if self.csv_file_path:
+            study_id = save_wfa_study_to_db(
+                wf_result=wf_result,
+                config=self.base_config_template,
+                csv_file_path=self.csv_file_path,
+                start_time=start_time,
+                score_config=self.base_config_template.get("score_config")
+                if isinstance(self.base_config_template, dict)
+                else None,
+            )
+
+        return wf_result, study_id
 
     def _build_stitched_oos_equity(self, windows: List[WindowResult]) -> OOSStitchedResult:
         """Build stitched OOS equity curve from stored per-window equity curves."""
@@ -514,7 +543,7 @@ class WalkForwardEngine:
             filter_min_profit=bool(self.base_config_template["filter_min_profit"]),
             min_profit_threshold=float(self.base_config_template["min_profit_threshold"]),
             score_config=deepcopy(self.base_config_template.get("score_config", {})),
-            optimization_mode="optuna",
+            optimization_mode="wfa",
         )
 
         optuna_cfg = OptunaConfig(
@@ -531,7 +560,8 @@ class WalkForwardEngine:
             study_name=None,
         )
 
-        return run_optuna_optimization(base_config, optuna_cfg)
+        results, _study_id = run_optuna_optimization(base_config, optuna_cfg)
+        return results
 
     def _dataframe_to_csv_buffer(self, df_window: pd.DataFrame) -> io.StringIO:
         buffer = io.StringIO()

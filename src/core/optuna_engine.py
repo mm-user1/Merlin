@@ -19,6 +19,7 @@ import pandas as pd
 
 from . import metrics
 from .backtest_engine import load_data
+from .storage import JOURNAL_DIR, save_optuna_study_to_db
 
 logger = logging.getLogger(__name__)
 
@@ -43,6 +44,7 @@ class OptimizationConfig:
     # Execution settings
     worker_processes: int = 1
     warmup_bars: int = 1000
+    csv_original_name: Optional[str] = None
 
     # Strategy-specific execution defaults
     contract_size: float = 1.0
@@ -71,6 +73,7 @@ class OptimizationResult:
     sqn: Optional[float] = None
     consistency_score: Optional[float] = None
     score: float = 0.0
+    optuna_trial_number: Optional[int] = None
 
 
 # ============================================================================
@@ -269,8 +272,8 @@ def _result_from_trial(trial: optuna.trial.FrozenTrial) -> OptimizationResult:
         sqn=attrs.get("merlin.sqn"),
         consistency_score=attrs.get("merlin.consistency_score"),
         score=0.0,
+        optuna_trial_number=trial.number,
     )
-    setattr(result, "optuna_trial_number", trial.number)
     setattr(result, "optuna_value", trial.value)
     return result
 
@@ -308,6 +311,14 @@ def _materialize_csv_to_temp(csv_source: Any) -> Tuple[str, bool]:
         return str(temp_path), True
 
     return str(csv_source), False
+
+
+def _resolve_csv_path_for_study(csv_source: Any) -> str:
+    if isinstance(csv_source, (str, Path)):
+        return str(csv_source)
+    if hasattr(csv_source, "name") and csv_source.name:
+        return str(csv_source.name)
+    return ""
 
 
 def _worker_process_entry(
@@ -890,7 +901,7 @@ class OptunaOptimizer:
                 raise optuna.TrialPruned("Pruned by Optuna")
 
         self.trial_results.append(result)
-        setattr(result, "optuna_trial_number", trial.number)
+        result.optuna_trial_number = trial.number
         setattr(result, "optuna_value", objective_value)
         _trial_set_result_attrs(trial, result, objective_value, self.optuna_config.target)
 
@@ -1053,8 +1064,8 @@ class OptunaOptimizer:
         from optuna.storages import JournalStorage
         from optuna.storages.journal import JournalFileBackend, JournalFileOpenLock
 
-        journal_dir = Path(tempfile.gettempdir()) / "merlin_optuna_journals"
-        journal_dir.mkdir(exist_ok=True)
+        journal_dir = JOURNAL_DIR
+        journal_dir.mkdir(parents=True, exist_ok=True)
         timestamp = int(time.time())
         study_name = self.optuna_config.study_name or f"strategy_opt_{timestamp}"
         storage_path = str(journal_dir / f"{study_name}_{timestamp}.journal.log")
@@ -1221,14 +1232,35 @@ class OptunaOptimizer:
         return self.trial_results
 
 
-def run_optuna_optimization(base_config, optuna_config: OptunaConfig) -> List[OptimizationResult]:
+def run_optuna_optimization(
+    base_config, optuna_config: OptunaConfig
+) -> Tuple[List[OptimizationResult], Optional[str]]:
     """Execute Optuna optimisation using the provided configuration."""
 
     optimizer = OptunaOptimizer(base_config, optuna_config)
-    return optimizer.optimize()
+    results = optimizer.optimize()
+
+    study_id: Optional[str] = None
+    if getattr(base_config, "optimization_mode", "optuna") == "optuna":
+        csv_path = _resolve_csv_path_for_study(getattr(base_config, "csv_file", ""))
+        try:
+            study_id = save_optuna_study_to_db(
+                study=optimizer.study,
+                config=base_config,
+                optuna_config=optuna_config,
+                trial_results=results,
+                csv_file_path=csv_path,
+                start_time=optimizer.start_time or time.time(),
+                score_config=getattr(base_config, "score_config", None),
+            )
+        except Exception:
+            logger.exception("Failed to save Optuna study to database")
+            raise
+
+    return results, study_id
 
 
-def run_optimization(config: OptimizationConfig) -> List[OptimizationResult]:
+def run_optimization(config: OptimizationConfig) -> Tuple[List[OptimizationResult], Optional[str]]:
     """Compat wrapper that executes Optuna optimization only."""
 
     if not getattr(config, "strategy_id", ""):

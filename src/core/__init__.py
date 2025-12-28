@@ -34,10 +34,8 @@ from .walkforward_engine import (
 )
 
 from .export import (
-    export_optuna_results,
     export_trades_csv,
     export_trades_zip,
-    export_wf_results_csv,
     export_wfa_trades_history,
     generate_wfa_output_filename,
     _extract_symbol_from_csv_filename,
@@ -71,10 +69,8 @@ __all__ = [
     "WalkForwardEngine",
 
     # export
-    "export_optuna_results",
     "export_trades_csv",
     "export_trades_zip",
-    "export_wf_results_csv",
     "export_wfa_trades_history",
     "generate_wfa_output_filename",
     "_extract_symbol_from_csv_filename",
