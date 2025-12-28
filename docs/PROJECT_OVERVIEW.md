@@ -1,6 +1,6 @@
 # Merlin - Project Overview
 
-Config-driven backtesting and Optuna optimization platform for cryptocurrency trading strategies.
+Config-driven backtesting and Optuna optimization platform for cryptocurrency trading strategies with SQLite database persistence and web-based studies management.
 
 ## Project Structure
 
@@ -45,7 +45,8 @@ project-root/
     │   ├── optuna_engine.py     # Optuna optimization engine
     │   ├── walkforward_engine.py # Walk-forward analysis engine
     │   ├── metrics.py           # Metrics calculation
-    │   └── export.py            # CSV export functions
+    │   ├── storage.py           # SQLite database functions
+    │   └── export.py            # Trade CSV export functions
     │
     ├── indicators/              # Technical indicator library
     │   ├── ma.py                # Moving averages (11 types)
@@ -62,14 +63,21 @@ project-root/
     │       ├── config.json
     │       └── strategy.py
     │
+    ├── storage/                 # Database storage (gitignored)
+    │   ├── .gitkeep             # Directory marker
+    │   ├── studies.db           # SQLite database (WAL mode)
+    │   └── journals/            # SQLite journal files
+    │
     ├── ui/                      # Web interface
     │   ├── server.py            # Flask HTTP API
     │   ├── templates/
-    │   │   └── index.html       # Main HTML page
+    │   │   ├── index.html       # Start page (configuration)
+    │   │   └── results.html     # Results page (studies browser)
     │   └── static/
     │       ├── js/              # Frontend JavaScript
-    │       │   ├── main.js
-    │       │   ├── api.js
+    │       │   ├── main.js      # Start page logic
+    │       │   ├── results.js   # Results page logic
+    │       │   ├── api.js       # API client functions
     │       │   ├── strategy-config.js
     │       │   ├── ui-handlers.js
     │       │   ├── presets.js
@@ -88,11 +96,10 @@ project-root/
 1. **Config-Driven Design**
    - Backend loads parameter schemas from each strategy's `config.json`
    - Frontend renders UI controls dynamically from `config.json`
-   - CSV export builds headers from `config.json`
    - Core modules remain strategy-agnostic
 
 2. **camelCase Naming Convention**
-   - Parameter names use camelCase end-to-end: Pine Script → `config.json` → Python → CSV
+   - Parameter names use camelCase end-to-end: Pine Script → `config.json` → Python → Database
    - Examples: `maType`, `closeCountLong`, `rsiLen`
    - Internal control fields (`use_backtester`, `start`, `end`) may use snake_case but are excluded from UI/config
 
@@ -108,6 +115,12 @@ project-root/
    - Supports multiple targets: score, net_profit, romad, sharpe, max_drawdown
    - Budget modes: n_trials, timeout, patience
 
+5. **Database Persistence**
+   - All optimization results automatically saved to SQLite database
+   - Studies browsable through web UI Results page
+   - Trade exports generated on-demand from stored parameters
+   - Original CSV files referenced, not duplicated
+
 ### Module Responsibilities
 
 #### Core Engines (`src/core/`)
@@ -115,10 +128,11 @@ project-root/
 | Module | Purpose |
 |--------|---------|
 | `backtest_engine.py` | Bar-by-bar trade simulation, position management, data preparation |
-| `optuna_engine.py` | Bayesian optimization using Optuna, trial management, pruning |
-| `walkforward_engine.py` | Rolling walk-forward analysis with calendar-based IS/OOS windows, stitched OOS equity, and annualized WFE |
+| `optuna_engine.py` | Bayesian optimization using Optuna, trial management, pruning, database persistence |
+| `walkforward_engine.py` | Rolling walk-forward analysis with calendar-based IS/OOS windows, stitched OOS equity, annualized WFE, database persistence |
 | `metrics.py` | Calculate BasicMetrics and AdvancedMetrics (Sharpe, RoMaD, Profit Factor, SQN, Ulcer Index, Consistency) |
-| `export.py` | Export results to CSV (Optuna results, WFA summary, trades) |
+| `storage.py` | SQLite database operations: save/load studies, manage trials/windows, handle CSV file references |
+| `export.py` | Export trade history to CSV/ZIP (TradingView format) |
 
 #### Indicators (`src/indicators/`)
 
@@ -141,57 +155,161 @@ Strategies auto-discovered by `strategies/__init__.py` if both files exist.
 
 #### UI (`src/ui/`)
 
-- `server.py` - Flask API endpoints for backtest, optimization, presets
-- `templates/index.html` - SPA frontend
-- `static/js/` - Modular JavaScript (API calls, form generation, event handlers)
-- `static/css/style.css` - Light theme styling
+- `server.py` - Flask API endpoints for backtest, optimization, studies management, presets
+- `templates/index.html` - Start page: strategy configuration and optimization launch
+- `templates/results.html` - Results page: studies browser, trials/windows display, trade downloads
+- `static/js/main.js` - Start page logic and form handling
+- `static/js/results.js` - Results page logic and studies management
+- `static/js/api.js` - API client functions for both pages
+- `static/css/style.css` - Light theme styling for both pages
 
 ### Data Flow
 
+#### Optimization Flow (Optuna/WFA)
 ```
-User Input (UI/CLI)
+Start Page (index.html)
+       │
+       ▼
+User submits optimization
        │
        ▼
 ┌─────────────────┐
-│   server.py     │  ← Transforms input, calls engines
+│   server.py     │  ← Builds OptimizationConfig
 └────────┬────────┘
          │
          ▼
-┌─────────────────┐     ┌─────────────────┐
-│ backtest_engine │ ◄── │   Strategy      │
-│                 │     │ (s01/s04/...)   │
-└────────┬────────┘     └─────────────────┘
-         │                      │
-         │              ┌───────┴───────┐
-         │              │  indicators/  │
-         │              └───────────────┘
-         ▼
+┌─────────────────────┐     ┌─────────────────┐
+│ optuna_engine/      │ ◄── │   Strategy      │
+│ walkforward_engine  │     │ (s01/s04/...)   │
+└──────────┬──────────┘     └────────┬────────┘
+           │                         │
+           │                 ┌───────┴───────┐
+           │                 │  indicators/  │
+           │                 └───────────────┘
+           ▼
 ┌─────────────────┐
-│   metrics.py    │  ← Calculates Basic/Advanced metrics
-└────────┬────────┘
-         │
-         ▼
-┌─────────────────┐
-│   export.py     │  ← CSV export
-└─────────────────┘
-```
-
-For optimization:
-```
-┌─────────────────┐
-│ optuna_engine   │  ← Manages trials
-└────────┬────────┘
-         │
-         ▼ (per trial)
-┌─────────────────┐
-│ backtest_engine │
+│ backtest_engine │  ← Trade simulation per trial
 └────────┬────────┘
          │
          ▼
 ┌─────────────────┐
 │   metrics.py    │  ← Score calculation
+└────────┬────────┘
+         │
+         ▼
+┌─────────────────┐
+│   storage.py    │  ← Save study to SQLite database
+└────────┬────────┘
+         │
+         ▼
+   studies.db (SQLite)
+```
+
+#### Results Viewing Flow
+```
+Results Page (results.html)
+       │
+       ▼
+GET /api/studies
+       │
+       ▼
+┌─────────────────┐
+│   storage.py    │  ← Load study + trials/windows
+└────────┬────────┘
+         │
+         ▼
+   Display in UI
+       │
+       ├─ Click trial → Generate trades on-demand
+       ├─ Delete study → Remove from database
+       └─ Update CSV path → Update file reference
+```
+
+#### Trade Export (On-Demand)
+```
+User clicks "Download Trades"
+       │
+       ▼
+POST /api/studies/{id}/trials/{n}/trades
+       │
+       ▼
+┌─────────────────┐
+│   storage.py    │  ← Load trial params from DB
+└────────┬────────┘
+         │
+         ▼
+┌─────────────────┐
+│ backtest_engine │  ← Re-run strategy with saved params
+└────────┬────────┘
+         │
+         ▼
+┌─────────────────┐
+│   export.py     │  ← Export trades to CSV
 └─────────────────┘
 ```
+
+### Database Schema
+
+SQLite database stored at `src/storage/studies.db` with WAL (Write-Ahead Logging) mode enabled.
+
+#### Tables
+
+**studies** - Optimization study metadata
+- Primary key: `study_id` (UUID)
+- Unique constraint: `study_name`
+- Fields: strategy_id, strategy_version, optimization_mode ('optuna'/'wfa'), status, trial counts, best value, filters applied, configuration JSON, CSV file path, timestamps
+
+**trials** - Individual Optuna trial results (for Optuna mode studies)
+- Foreign key: `study_id` → studies
+- Unique constraint: (study_id, trial_number)
+- Fields: trial parameters (JSON), metrics (net_profit_pct, max_drawdown_pct, sharpe_ratio, romad, etc.), composite score
+
+**wfa_windows** - Walk-Forward Analysis window results (for WFA mode studies)
+- Foreign key: `study_id` → studies
+- Unique constraint: (study_id, window_number)
+- Fields: best parameters (JSON), IS/OOS metrics, IS/OOS equity curves (JSON arrays), WFE
+
+### API Endpoints
+
+#### Page Routes
+| Endpoint | Method | Purpose |
+|----------|--------|---------|
+| `/` | GET | Serve Start page (optimization configuration) |
+| `/results` | GET | Serve Results page (studies browser) |
+
+#### Optimization
+| Endpoint | Method | Purpose |
+|----------|--------|---------|
+| `/api/backtest` | POST | Run single backtest (no storage) |
+| `/api/optimize` | POST | Run Optuna optimization, save to database |
+| `/api/walkforward` | POST | Run WFA, save to database |
+| `/api/optimization/status` | GET | Get current optimization state |
+| `/api/optimization/cancel` | POST | Cancel running optimization |
+
+#### Studies Management
+| Endpoint | Method | Purpose |
+|----------|--------|---------|
+| `/api/studies` | GET | List all saved studies with summary info |
+| `/api/studies/<study_id>` | GET | Load complete study (metadata + trials/windows) |
+| `/api/studies/<study_id>` | DELETE | Delete study from database |
+| `/api/studies/<study_id>/update-csv-path` | POST | Update CSV file path reference |
+| `/api/studies/<study_id>/trials/<trial_number>/trades` | POST | Generate and download trades CSV for trial |
+
+#### Strategy Configuration
+| Endpoint | Method | Purpose |
+|----------|--------|---------|
+| `/api/strategies` | GET | List all available strategies |
+| `/api/strategy/<strategy_id>/config` | GET | Get strategy parameter schema |
+
+#### Presets
+| Endpoint | Method | Purpose |
+|----------|--------|---------|
+| `/api/presets` | GET | List all saved presets |
+| `/api/presets/<name>` | GET | Load preset values |
+| `/api/presets` | POST | Create new preset |
+| `/api/presets/<name>` | PUT | Update existing preset |
+| `/api/presets/<name>` | DELETE | Delete preset |
+| `/api/presets/import-csv` | POST | Import preset from CSV parameter block |
 
 ## Running the Application
 

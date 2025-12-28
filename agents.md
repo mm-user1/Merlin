@@ -9,7 +9,7 @@ IMPORTANT: The GUI must use a light theme.
 "./docs" folder is used for documentation, plans, reference scripts etc.
 "./src" is the main project folder
 
-Run Python (in Windows local agent mode) from C:\Users\mt\Desktop\Strategy\S_Python\.venv\Scripts\python.exe
+Run Python in Windows from C:\Users\mt\Desktop\Strategy\S_Python\.venv\Scripts\python.exe
 
 ## Project: Merlin
 
@@ -18,27 +18,33 @@ Cryptocurrency trading strategy backtesting and Optuna optimization platform wit
 ## Running the Application
 
 ### Web Server
+
 ```bash
 cd src/ui
 python server.py
 ```
+
 Server runs at http://0.0.0.0:5000
 
 ### CLI Backtest
+
 ```bash
 cd src
 python run_backtest.py --csv ../data/raw/OKX_LINKUSDT.P,\ 15\ 2025.05.01-2025.11.20.csv
 ```
 
 ### Tests
+
 ```bash
 pytest tests/ -v
 ```
 
 ### Dependencies
+
 ```bash
 pip install -r requirements.txt
 ```
+
 Key: Flask, pandas, numpy, matplotlib, optuna==4.4.0
 
 ## Architecture
@@ -49,6 +55,8 @@ Key: Flask, pandas, numpy, matplotlib, optuna==4.4.0
 2. **camelCase naming** - End-to-end: Pine Script → config.json → Python → CSV
 3. **Optuna-only optimization** - Grid search removed
 4. **Strategy isolation** - Each strategy owns its params dataclass
+5. **Rolling WFA (Phase 2)** - Calendar-based IS/OOS windows, stitched OOS equity, annualized WFE
+6. **Database persistence** - All optimization results automatically saved to SQLite, browsable through web UI
 
 ### Directory Structure
 
@@ -59,7 +67,8 @@ src/
 │   ├── optuna_engine.py      # Optimization, OptimizationResult, OptunaConfig
 │   ├── walkforward_engine.py # WFA orchestration
 │   ├── metrics.py            # BasicMetrics, AdvancedMetrics calculation
-│   └── export.py             # CSV export functions
+│   ├── storage.py            # SQLite database operations
+│   └── export.py             # Trade CSV export functions
 ├── indicators/         # Technical indicators
 │   ├── ma.py           # 11 MA types via get_ma()
 │   ├── volatility.py   # ATR, NATR
@@ -68,20 +77,30 @@ src/
 │   ├── base.py         # BaseStrategy class
 │   ├── s01_trailing_ma/
 │   └── s04_stochrsi/
+├── storage/            # Database storage (gitignored)
+│   ├── studies.db      # SQLite database (WAL mode)
+│   └── journals/       # SQLite journal files
 └── ui/                 # Web interface
     ├── server.py       # Flask API
-    ├── templates/      # HTML
-    └── static/         # JS, CSS
+    ├── templates/
+    │   ├── index.html  # Start page (configuration)
+    │   └── results.html # Results page (studies browser)
+    └── static/
+        ├── js/
+        │   ├── main.js     # Start page logic
+        │   ├── results.js  # Results page logic
+        │   └── api.js      # API client
+        └── css/
 ```
 
 ### Data Structure Ownership
 
-| Structure | Module |
-|-----------|--------|
-| `TradeRecord`, `StrategyResult` | `backtest_engine.py` |
-| `BasicMetrics`, `AdvancedMetrics` | `metrics.py` |
-| `OptimizationResult`, `OptunaConfig` | `optuna_engine.py` |
-| Strategy params dataclass | Each strategy's `strategy.py` |
+| Structure                            | Module                        |
+| ------------------------------------ | ----------------------------- |
+| `TradeRecord`, `StrategyResult`      | `backtest_engine.py`          |
+| `BasicMetrics`, `AdvancedMetrics`    | `metrics.py`                  |
+| `OptimizationResult`, `OptunaConfig` | `optuna_engine.py`            |
+| Strategy params dataclass            | Each strategy's `strategy.py` |
 
 ## Parameter Naming Rules
 
@@ -93,6 +112,7 @@ src/
 Internal control fields (`use_backtester`, `start`, `end`) may use snake_case but are excluded from UI/config.
 
 **Do NOT add:**
+
 - `to_dict()` methods - use `dataclasses.asdict(params)` instead
 - Snake↔camel conversion helpers
 - Feature flags
@@ -102,6 +122,7 @@ Internal control fields (`use_backtester`, `start`, `end`) may use snake_case bu
 See `docs/ADDING_NEW_STRATEGY.md` for complete guide.
 
 Quick checklist:
+
 1. Create `src/strategies/<strategy_id>/` directory
 2. Create `config.json` with parameter schema (camelCase)
 3. Create `strategy.py` with params dataclass and strategy class
@@ -109,9 +130,55 @@ Quick checklist:
 5. Implement `run(df, params, trade_start_idx) -> StrategyResult` static method
 6. Strategy auto-discovered - no manual registration needed
 
+## Database Operations
+
+### Accessing Studies
+
+```python
+from core.storage import list_studies, load_study_from_db
+
+# List all saved studies
+studies = list_studies()
+for study in studies:
+    print(f"{study['study_name']}: {study['saved_trials']} trials")
+
+# Load complete study with trials/windows
+study_data = load_study_from_db(study_id)
+print(study_data['study'])      # Study metadata
+print(study_data['trials'])     # Optuna trials (if mode='optuna')
+print(study_data['windows'])    # WFA windows (if mode='wfa')
+print(study_data['csv_exists']) # Whether CSV file still exists
+```
+
+### Understanding Study Storage
+
+**Optuna studies:**
+
+- Saved to `studies` table (metadata) + `trials` table (parameter sets)
+- Each trial includes: params (JSON), metrics, composite score
+- Only filtered trials saved (by score/profit threshold)
+
+**WFA studies:**
+
+- Saved to `studies` table (metadata) + `wfa_windows` table (per-window results)
+- Each window includes: best params, IS/OOS metrics, equity curves (JSON arrays)
+- WFE (Walk-Forward Efficiency) stored as `best_value`
+
+### Database Location
+
+```
+src/storage/studies.db          # Main database (WAL mode)
+src/storage/studies.db-wal      # Write-Ahead Log
+src/storage/studies.db-shm      # Shared memory
+src/storage/journals/           # Temporary Optuna journals
+```
+
+**Note:** Database files are gitignored. Only `.gitkeep` files are tracked.
+
 ## Common Tasks
 
 ### Running Single Backtest
+
 ```python
 from core.backtest_engine import load_data, prepare_dataset_with_warmup
 from strategies.s01_trailing_ma.strategy import S01TrailingMA
@@ -122,13 +189,30 @@ result = S01TrailingMA.run(df_prepared, params, trade_start_idx)
 ```
 
 ### Calculating Metrics
+
 ```python
 from core import metrics
 basic = metrics.calculate_basic(result, initial_capital=100.0)
 advanced = metrics.calculate_advanced(result)
 ```
 
+### Walk-Forward Analysis (Rolling)
+
+```python
+from core.walkforward_engine import WFConfig, WalkForwardEngine
+
+wf_config = WFConfig(
+    strategy_id="s01_trailing_ma",
+    is_period_days=180,
+    oos_period_days=60,
+    warmup_bars=1000,
+)
+engine = WalkForwardEngine(wf_config, base_config_template, optuna_settings)
+wf_result = engine.run_wf_optimization(df)
+```
+
 ### Using Indicators
+
 ```python
 from indicators.ma import get_ma
 from indicators.volatility import atr
@@ -142,26 +226,86 @@ rsi_values = rsi(df["Close"], 14)
 ## Testing
 
 ### Run All Tests
+
 ```bash
 pytest tests/ -v
 ```
 
 ### Key Test Files
+
 - `test_sanity.py` - Infrastructure checks
 - `test_regression_s01.py` - S01 baseline regression
 - `test_naming_consistency.py` - camelCase guardrails
 
 ### Regenerate S01 Baseline
+
 ```bash
 python tools/generate_baseline_s01.py
 ```
 
 ## UI Notes
 
-- Light theme (project requirement)
+### Two-Page Architecture
+
+**Start Page (`/` - index.html):**
+
+- Strategy selection and parameter configuration
+- Optuna settings (target, budget, sampler, pruner)
+- Walk-Forward Analysis settings (IS/OOS periods)
+- Run Optuna or Run WFA buttons
+- Results automatically saved to database
+- Light theme UI with dynamic forms from `config.json`
+
+**Results Page (`/results` - results.html):**
+
+- Studies Manager: List all saved optimization studies
+- Study details: View trials (Optuna) or windows (WFA)
+- Equity curve visualization
+- Parameter comparison tables
+- Download trades CSV for any trial (on-demand generation)
+- Delete studies or update CSV file paths
+
+### Frontend Architecture
+
+- **main.js**: Start page logic, form handling, optimization launch
+- **results.js**: Results page logic, studies browser, data visualization
+- **api.js**: Centralized API calls for both pages
+- **strategy-config.js**: Dynamic form generation from `config.json`
+- **ui-handlers.js**: Shared UI event handlers
 - Forms generated dynamically from `config.json`
 - Strategy dropdown auto-populated from discovered strategies
 - No hardcoded parameters in frontend
+
+## API Endpoints Reference
+
+### Page Routes
+
+- `GET /` - Serve Start page
+- `GET /results` - Serve Results page
+
+### Optimization
+
+- `POST /api/optimize` - Run Optuna optimization, returns study_id
+- `POST /api/walkforward` - Run WFA, returns study_id
+- `POST /api/backtest` - Run single backtest (no database storage)
+- `GET /api/optimization/status` - Get current optimization state
+- `POST /api/optimization/cancel` - Cancel running optimization
+
+### Studies Management
+
+- `GET /api/studies` - List all saved studies
+- `GET /api/studies/<study_id>` - Load study with trials/windows
+- `DELETE /api/studies/<study_id>` - Delete study
+- `POST /api/studies/<study_id>/update-csv-path` - Update CSV path
+- `POST /api/studies/<study_id>/trials/<trial_number>/trades` - Download trades CSV
+
+### Strategy & Presets
+
+- `GET /api/strategies` - List available strategies
+- `GET /api/strategy/<strategy_id>/config` - Get strategy schema
+- `GET /api/presets` - List presets
+- `POST /api/presets` - Create preset
+- `GET/PUT/DELETE /api/presets/<name>` - Load/update/delete preset
 
 ## Performance Considerations
 
@@ -169,20 +313,27 @@ python tools/generate_baseline_s01.py
 - Reuse indicator calculations where possible
 - Avoid expensive logging in hot paths (optimization loops)
 - `trade_start_idx` skips warmup bars in simulation
+- Database uses WAL mode for concurrent read access
+- Bulk inserts used for saving trials (executemany, not loop)
 
 ## Current Strategies
 
-| ID | Name | Description |
-|----|------|-------------|
+| ID                | Name            | Description                                                  |
+| ----------------- | --------------- | ------------------------------------------------------------ |
 | `s01_trailing_ma` | S01 Trailing MA | Complex trailing MA with 11 MA types, close counts, ATR stops |
-| `s04_stochrsi` | S04 StochRSI | StochRSI swing strategy with swing-based stops |
+| `s04_stochrsi`    | S04 StochRSI    | StochRSI swing strategy with swing-based stops               |
 
 ## Key Files for Reference
 
-| Purpose | File |
-|---------|------|
-| Full architecture | `docs/PROJECT_OVERVIEW.md` |
-| Adding strategies | `docs/ADDING_NEW_STRATEGY.md` |
-| S04 example | `src/strategies/s04_stochrsi/strategy.py` |
+| Purpose             | File                                      |
+| ------------------- | ----------------------------------------- |
+| Full architecture   | `docs/PROJECT_OVERVIEW.md`                |
+| Adding strategies   | `docs/ADDING_NEW_STRATEGY.md`             |
+| Database operations | `src/core/storage.py`                     |
+| Start page logic    | `src/ui/static/js/main.js`                |
+| Results page logic  | `src/ui/static/js/results.js`             |
+| Flask API endpoints | `src/ui/server.py`                        |
+| S04 example         | `src/strategies/s04_stochrsi/strategy.py` |
 | config.json example | `src/strategies/s04_stochrsi/config.json` |
-| Test baseline | `data/baseline/` |
+| Test baseline       | `data/baseline/`                          |
+

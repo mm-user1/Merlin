@@ -41,6 +41,7 @@ Key: Flask, pandas, numpy, matplotlib, optuna==4.4.0
 3. **Optuna-only optimization** - Grid search removed
 4. **Strategy isolation** - Each strategy owns its params dataclass
 5. **Rolling WFA (Phase 2)** - Calendar-based IS/OOS windows, stitched OOS equity, annualized WFE
+6. **Database persistence** - All optimization results automatically saved to SQLite, browsable through web UI
 
 ### Directory Structure
 
@@ -51,7 +52,8 @@ src/
 │   ├── optuna_engine.py      # Optimization, OptimizationResult, OptunaConfig
 │   ├── walkforward_engine.py # WFA orchestration
 │   ├── metrics.py            # BasicMetrics, AdvancedMetrics calculation
-│   └── export.py             # CSV export functions
+│   ├── storage.py            # SQLite database operations
+│   └── export.py             # Trade CSV export functions
 ├── indicators/         # Technical indicators
 │   ├── ma.py           # 11 MA types via get_ma()
 │   ├── volatility.py   # ATR, NATR
@@ -60,10 +62,20 @@ src/
 │   ├── base.py         # BaseStrategy class
 │   ├── s01_trailing_ma/
 │   └── s04_stochrsi/
+├── storage/            # Database storage (gitignored)
+│   ├── studies.db      # SQLite database (WAL mode)
+│   └── journals/       # SQLite journal files
 └── ui/                 # Web interface
     ├── server.py       # Flask API
-    ├── templates/      # HTML
-    └── static/         # JS, CSS
+    ├── templates/
+    │   ├── index.html  # Start page (configuration)
+    │   └── results.html # Results page (studies browser)
+    └── static/
+        ├── js/
+        │   ├── main.js     # Start page logic
+        │   ├── results.js  # Results page logic
+        │   └── api.js      # API client
+        └── css/
 ```
 
 ### Data Structure Ownership
@@ -100,6 +112,47 @@ Quick checklist:
 4. Ensure `STRATEGY_ID`, `STRATEGY_NAME`, `STRATEGY_VERSION` class attributes
 5. Implement `run(df, params, trade_start_idx) -> StrategyResult` static method
 6. Strategy auto-discovered - no manual registration needed
+
+## Database Operations
+
+### Accessing Studies
+```python
+from core.storage import list_studies, load_study_from_db
+
+# List all saved studies
+studies = list_studies()
+for study in studies:
+    print(f"{study['study_name']}: {study['saved_trials']} trials")
+
+# Load complete study with trials/windows
+study_data = load_study_from_db(study_id)
+print(study_data['study'])      # Study metadata
+print(study_data['trials'])     # Optuna trials (if mode='optuna')
+print(study_data['windows'])    # WFA windows (if mode='wfa')
+print(study_data['csv_exists']) # Whether CSV file still exists
+```
+
+### Understanding Study Storage
+
+**Optuna studies:**
+- Saved to `studies` table (metadata) + `trials` table (parameter sets)
+- Each trial includes: params (JSON), metrics, composite score
+- Only filtered trials saved (by score/profit threshold)
+
+**WFA studies:**
+- Saved to `studies` table (metadata) + `wfa_windows` table (per-window results)
+- Each window includes: best params, IS/OOS metrics, equity curves (JSON arrays)
+- WFE (Walk-Forward Efficiency) stored as `best_value`
+
+### Database Location
+```
+src/storage/studies.db          # Main database (WAL mode)
+src/storage/studies.db-wal      # Write-Ahead Log
+src/storage/studies.db-shm      # Shared memory
+src/storage/journals/           # Temporary Optuna journals
+```
+
+**Note:** Database files are gitignored. Only `.gitkeep` files are tracked.
 
 ## Common Tasks
 
@@ -164,10 +217,61 @@ python tools/generate_baseline_s01.py
 
 ## UI Notes
 
-- Light theme (project requirement)
+### Two-Page Architecture
+
+**Start Page (`/` - index.html):**
+- Strategy selection and parameter configuration
+- Optuna settings (target, budget, sampler, pruner)
+- Walk-Forward Analysis settings (IS/OOS periods)
+- Run Optuna or Run WFA buttons
+- Results automatically saved to database
+- Light theme UI with dynamic forms from `config.json`
+
+**Results Page (`/results` - results.html):**
+- Studies Manager: List all saved optimization studies
+- Study details: View trials (Optuna) or windows (WFA)
+- Equity curve visualization
+- Parameter comparison tables
+- Download trades CSV for any trial (on-demand generation)
+- Delete studies or update CSV file paths
+
+### Frontend Architecture
+
+- **main.js**: Start page logic, form handling, optimization launch
+- **results.js**: Results page logic, studies browser, data visualization
+- **api.js**: Centralized API calls for both pages
+- **strategy-config.js**: Dynamic form generation from `config.json`
+- **ui-handlers.js**: Shared UI event handlers
 - Forms generated dynamically from `config.json`
 - Strategy dropdown auto-populated from discovered strategies
 - No hardcoded parameters in frontend
+
+## API Endpoints Reference
+
+### Page Routes
+- `GET /` - Serve Start page
+- `GET /results` - Serve Results page
+
+### Optimization
+- `POST /api/optimize` - Run Optuna optimization, returns study_id
+- `POST /api/walkforward` - Run WFA, returns study_id
+- `POST /api/backtest` - Run single backtest (no database storage)
+- `GET /api/optimization/status` - Get current optimization state
+- `POST /api/optimization/cancel` - Cancel running optimization
+
+### Studies Management
+- `GET /api/studies` - List all saved studies
+- `GET /api/studies/<study_id>` - Load study with trials/windows
+- `DELETE /api/studies/<study_id>` - Delete study
+- `POST /api/studies/<study_id>/update-csv-path` - Update CSV path
+- `POST /api/studies/<study_id>/trials/<trial_number>/trades` - Download trades CSV
+
+### Strategy & Presets
+- `GET /api/strategies` - List available strategies
+- `GET /api/strategy/<strategy_id>/config` - Get strategy schema
+- `GET /api/presets` - List presets
+- `POST /api/presets` - Create preset
+- `GET/PUT/DELETE /api/presets/<name>` - Load/update/delete preset
 
 ## Performance Considerations
 
@@ -175,6 +279,8 @@ python tools/generate_baseline_s01.py
 - Reuse indicator calculations where possible
 - Avoid expensive logging in hot paths (optimization loops)
 - `trade_start_idx` skips warmup bars in simulation
+- Database uses WAL mode for concurrent read access
+- Bulk inserts used for saving trials (executemany, not loop)
 
 ## Current Strategies
 
@@ -189,6 +295,10 @@ python tools/generate_baseline_s01.py
 |---------|------|
 | Full architecture | `docs/PROJECT_OVERVIEW.md` |
 | Adding strategies | `docs/ADDING_NEW_STRATEGY.md` |
+| Database operations | `src/core/storage.py` |
+| Start page logic | `src/ui/static/js/main.js` |
+| Results page logic | `src/ui/static/js/results.js` |
+| Flask API endpoints | `src/ui/server.py` |
 | S04 example | `src/strategies/s04_stochrsi/strategy.py` |
 | config.json example | `src/strategies/s04_stochrsi/config.json` |
 | Test baseline | `data/baseline/` |
