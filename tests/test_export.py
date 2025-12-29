@@ -16,7 +16,7 @@ class TestExportTrades:
     def test_export_trades_csv_empty(self):
         csv_content = export_trades_csv([])
         assert csv_content.splitlines() == [
-            "Symbol,Type,Entry Time,Entry Price,Exit Time,Exit Price,Profit,Profit %,Size"
+            "Symbol,Side,Qty,Fill Price,Closing Time"
         ]
 
     def test_export_trades_csv_single_trade(self):
@@ -33,8 +33,9 @@ class TestExportTrades:
 
         csv_content = export_trades_csv([trade], symbol="LINKUSDT")
         rows = csv_content.splitlines()
-        assert len(rows) == 2
-        assert rows[1] == "LINKUSDT,Long,2025-06-15 10:30:00,12.45,2025-06-16 14:20:00,12.98,53.00,4.26%,100.00"
+        assert len(rows) == 3
+        assert rows[1] == "LINKUSDT,Buy,100,12.45,2025-06-15 10:30:00"
+        assert rows[2] == "LINKUSDT,Sell,100,12.98,2025-06-16 14:20:00"
 
     def test_export_trades_csv_multiple_trades(self):
         trades = [
@@ -44,9 +45,11 @@ class TestExportTrades:
 
         csv_content = export_trades_csv(trades)
         lines = csv_content.splitlines()
-        assert len(lines) == 3
-        assert lines[1].endswith("100.00%,1.00")
-        assert lines[2].endswith("-50.00%,2.00")
+        assert len(lines) == 5
+        assert lines[1].endswith("1.0,2025-01-01 00:00:00")
+        assert lines[2].endswith("2.0,2025-01-02 00:00:00")
+        assert lines[3].endswith("2.0,2025-02-01 00:00:00")
+        assert lines[4].endswith("1.0,2025-02-02 00:00:00")
 
     def test_export_trades_zip_content(self):
         trade = TradeRecord(
@@ -68,7 +71,7 @@ class TestExportTrades:
             trades_csv = zf.read("trades.csv").decode("utf-8")
             summary_data = json.loads(zf.read("summary.json"))
 
-        assert "Short" in trades_csv
+        assert "Sell" in trades_csv
         assert summary_data["metrics"] == metrics
         assert summary_data["total_trades"] == 1
         assert "generated_at" in summary_data

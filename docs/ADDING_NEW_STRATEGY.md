@@ -152,7 +152,7 @@ import numpy as np
 import pandas as pd
 
 from core import metrics
-from core.backtest_engine import StrategyResult, TradeRecord
+from core.backtest_engine import StrategyResult, TradeRecord, build_forced_close_trade
 from strategies.base import BaseStrategy
 
 class S05MyStrategy(BaseStrategy):
@@ -188,6 +188,28 @@ class S05MyStrategy(BaseStrategy):
         for i in range(trade_start_idx, len(df)):
             # Your entry/exit logic here
             # ...
+
+            # Force-close any open position at the final bar (required for all modes).
+            if i == len(df) - 1 and position != 0:
+                trade, gross_pnl, exit_commission, _ = build_forced_close_trade(
+                    position=position,
+                    entry_time=entry_time,
+                    exit_time=df.index[i],
+                    entry_price=entry_price,
+                    exit_price=close.iat[i],
+                    size=position_size,
+                    entry_commission=entry_commission,
+                    commission_rate=p.commissionPct,
+                    commission_is_pct=True,
+                )
+                if trade:
+                    trades.append(trade)
+                    balance += gross_pnl - exit_commission - entry_commission
+                position = 0
+                position_size = 0.0
+                entry_price = np.nan
+                entry_commission = 0.0
+                entry_time = None
 
             # Track equity
             timestamps.append(df.index[i])

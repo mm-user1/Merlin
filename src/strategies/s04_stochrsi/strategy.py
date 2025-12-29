@@ -5,7 +5,7 @@ import numpy as np
 import pandas as pd
 
 from core import metrics
-from core.backtest_engine import StrategyResult, TradeRecord
+from core.backtest_engine import StrategyResult, TradeRecord, build_forced_close_trade
 from indicators.ma import sma
 from indicators.oscillators import stoch_rsi
 from strategies.base import BaseStrategy
@@ -300,6 +300,28 @@ class S04StochRSI(BaseStrategy):
                         else:
                             entry_price = np.nan
                             stop_price = np.nan
+
+            if i == len(df) - 1 and position != 0:
+                trade, gross_pnl, exit_commission, _ = build_forced_close_trade(
+                    position=position,
+                    entry_time=entry_time,
+                    exit_time=timestamp,
+                    entry_price=entry_price,
+                    exit_price=close_val,
+                    size=position_size,
+                    entry_commission=entry_commission,
+                    commission_rate=p.commissionPct,
+                    commission_is_pct=True,
+                )
+                if trade:
+                    trades.append(trade)
+                    balance += gross_pnl - exit_commission - entry_commission
+                position = 0
+                position_size = 0.0
+                entry_price = np.nan
+                stop_price = np.nan
+                entry_commission = 0.0
+                entry_time = None
 
             unrealized = 0.0
             if position > 0:

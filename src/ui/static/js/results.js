@@ -919,20 +919,25 @@ function bindEventHandlers() {
   const downloadBtn = document.querySelector('.header-actions .btn-secondary');
   if (downloadBtn) {
     downloadBtn.addEventListener('click', async () => {
-      if (ResultsState.mode !== 'optuna') {
-        alert('Trade export is available for Optuna studies only.');
-        return;
-      }
       if (!ResultsState.studyId) {
         alert('Select a study first.');
         return;
       }
-      if (!ResultsState.selectedRowId) {
-        alert('Select a trial in the table.');
+      let endpoint = null;
+      if (ResultsState.mode === 'optuna') {
+        if (!ResultsState.selectedRowId) {
+          alert('Select a trial in the table.');
+          return;
+        }
+        endpoint = `/api/studies/${encodeURIComponent(ResultsState.studyId)}/trials/${ResultsState.selectedRowId}/trades`;
+      } else if (ResultsState.mode === 'wfa') {
+        endpoint = `/api/studies/${encodeURIComponent(ResultsState.studyId)}/wfa/trades`;
+      } else {
+        alert('Trade export is available for Optuna or WFA studies.');
         return;
       }
       try {
-        const response = await fetch(`/api/studies/${encodeURIComponent(ResultsState.studyId)}/trials/${ResultsState.selectedRowId}/trades`, {
+        const response = await fetch(endpoint, {
           method: 'POST'
         });
         if (!response.ok) {

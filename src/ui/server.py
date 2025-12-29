@@ -755,6 +755,125 @@ def download_trial_trades(study_id: str, trial_number: int) -> object:
     )
 
 
+@app.post("/api/studies/<string:study_id>/wfa/trades")
+def download_wfa_trades(study_id: str) -> object:
+    study_data = load_study_from_db(study_id)
+    if not study_data:
+        return jsonify({"error": "Study not found."}), HTTPStatus.NOT_FOUND
+
+    study = study_data["study"]
+    if study.get("optimization_mode") != "wfa":
+        return jsonify({"error": "Trade export is only supported for WFA studies."}), HTTPStatus.BAD_REQUEST
+
+    csv_path = study.get("csv_file_path")
+    if not csv_path or not Path(csv_path).exists():
+        return jsonify({"error": "CSV file is missing for this study."}), HTTPStatus.BAD_REQUEST
+
+    windows = study_data.get("windows") or []
+    if not windows:
+        return jsonify({"error": "No WFA windows available for this study."}), HTTPStatus.BAD_REQUEST
+
+    config = study.get("config_json") or {}
+    fixed_params = config.get("fixed_params") or {}
+    warmup_bars = study.get("warmup_bars") or config.get("warmup_bars") or 1000
+
+    from strategies import get_strategy
+
+    try:
+        strategy_class = get_strategy(study.get("strategy_id"))
+    except ValueError as exc:
+        return jsonify({"error": str(exc)}), HTTPStatus.BAD_REQUEST
+
+    try:
+        df = load_data(csv_path)
+    except Exception as exc:
+        return jsonify({"error": str(exc)}), HTTPStatus.BAD_REQUEST
+
+    def _normalize_ts(value: Any) -> Optional[pd.Timestamp]:
+        if value is None or value == "":
+            return None
+        if isinstance(value, pd.Timestamp):
+            ts = value
+        else:
+            ts = pd.Timestamp(value)
+        if ts.tzinfo is None:
+            return ts.tz_localize("UTC")
+        return ts.tz_convert("UTC")
+
+    def _align_window_ts(value: Any, *, side: str) -> Optional[pd.Timestamp]:
+        """Align date-only window boundaries to actual bar timestamps in the dataset."""
+        ts = _normalize_ts(value)
+        if ts is None or df.empty:
+            return ts
+        is_date_only = False
+        if isinstance(value, str):
+            stripped = value.strip()
+            is_date_only = bool(re.match(r"^\d{4}-\d{2}-\d{2}$", stripped))
+        if not is_date_only:
+            return ts
+        if side == "start":
+            idx = df.index.searchsorted(ts, side="left")
+            if idx >= len(df.index):
+                return None
+            return df.index[idx]
+        if side == "end":
+            day_end = ts + pd.Timedelta(days=1) - pd.Timedelta(microseconds=1)
+            idx = df.index.searchsorted(day_end, side="right") - 1
+            if idx < 0:
+                return None
+            return df.index[idx]
+        return ts
+
+    all_trades = []
+    for window in windows:
+        start = _align_window_ts(window.get("oos_start_date") or window.get("oos_start"), side="start")
+        end = _align_window_ts(window.get("oos_end_date") or window.get("oos_end"), side="end")
+        if start is None or end is None:
+            continue
+
+        params = {**fixed_params, **(window.get("best_params") or {})}
+        params["dateFilter"] = True
+        params["start"] = start
+        params["end"] = end
+
+        try:
+            df_prepared, trade_start_idx = prepare_dataset_with_warmup(
+                df, start, end, int(warmup_bars)
+            )
+        except Exception:
+            return jsonify({"error": "Failed to prepare dataset with warmup."}), HTTPStatus.BAD_REQUEST
+
+        try:
+            result = strategy_class.run(df_prepared, params, trade_start_idx)
+        except Exception as exc:
+            return jsonify({"error": str(exc)}), HTTPStatus.BAD_REQUEST
+
+        window_trades = [
+            trade
+            for trade in result.trades
+            if trade.entry_time and start <= trade.entry_time <= end
+        ]
+        all_trades.extend(window_trades)
+
+
+    all_trades.sort(key=lambda t: t.entry_time or pd.Timestamp.min)
+
+    from core.export import _extract_symbol_from_csv_filename
+
+    symbol = _extract_symbol_from_csv_filename(study.get("csv_file_name") or "")
+    csv_content = export_trades_csv(all_trades, symbol=symbol)
+    buffer = io.BytesIO(csv_content.encode("utf-8"))
+    buffer.seek(0)
+
+    filename = f"{study.get('study_name', 'study')}_wfa_oos_trades.csv"
+    return send_file(
+        buffer,
+        mimetype="text/csv",
+        as_attachment=True,
+        download_name=filename,
+    )
+
+
 @app.get("/api/presets")
 def list_presets_endpoint() -> object:
     presets = _list_presets()

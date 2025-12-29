@@ -44,6 +44,9 @@ def export_trades_csv(
 ) -> str:
     """Export trade history to TradingView-compatible CSV format.
 
+    Each trade produces TWO rows: entry and exit, using the format:
+        Symbol,Side,Qty,Fill Price,Closing Time
+
     Args:
         trades: List of TradeRecord objects
         path: Optional file path to write CSV (if None, just return string)
@@ -55,44 +58,23 @@ def export_trades_csv(
 
     output = StringIO()
     writer = csv.writer(output, lineterminator="\n")
-    writer.writerow(
-        [
-            "Symbol",
-            "Type",
-            "Entry Time",
-            "Entry Price",
-            "Exit Time",
-            "Exit Price",
-            "Profit",
-            "Profit %",
-            "Size",
-        ]
-    )
+    writer.writerow(["Symbol", "Side", "Qty", "Fill Price", "Closing Time"])
 
     for trade in trades:
         direction_raw = trade.direction or trade.side or "long"
-        direction = "Short" if str(direction_raw).lower() == "short" else "Long"
+        is_short = str(direction_raw).lower() == "short"
+        entry_side = "Sell" if is_short else "Buy"
+        exit_side = "Buy" if is_short else "Sell"
+
         entry_time = trade.entry_time.strftime("%Y-%m-%d %H:%M:%S") if trade.entry_time else ""
         exit_time = trade.exit_time.strftime("%Y-%m-%d %H:%M:%S") if trade.exit_time else ""
-        entry_price = 0.0 if trade.entry_price is None else float(trade.entry_price)
-        exit_price = 0.0 if trade.exit_price is None else float(trade.exit_price)
-        profit_value = 0.0 if trade.net_pnl is None else float(trade.net_pnl)
-        profit_pct_value = 0.0 if trade.profit_pct is None else float(trade.profit_pct)
-        size_value = 0.0 if trade.size is None else float(trade.size)
 
-        writer.writerow(
-            [
-                symbol,
-                direction,
-                entry_time,
-                f"{entry_price:.2f}",
-                exit_time,
-                f"{exit_price:.2f}",
-                f"{profit_value:.2f}",
-                f"{profit_pct_value:.2f}%",
-                f"{size_value:.2f}",
-            ]
-        )
+        qty_value = "" if trade.size is None else trade.size
+        entry_price_value = "" if trade.entry_price is None else trade.entry_price
+        exit_price_value = "" if trade.exit_price is None else trade.exit_price
+
+        writer.writerow([symbol, entry_side, qty_value, entry_price_value, entry_time])
+        writer.writerow([symbol, exit_side, qty_value, exit_price_value, exit_time])
 
     csv_content = output.getvalue()
 
@@ -252,27 +234,34 @@ def _export_wfa_trades_to_csv(
 
     rows = []
     for trade in trades:
-        qty = trade.size
+        direction_raw = trade.direction or trade.side or "long"
+        is_short = str(direction_raw).lower() == "short"
 
-        entry_side = "Buy" if trade.direction == "long" else "Sell"
+        qty = "" if trade.size is None else trade.size
+        entry_time = trade.entry_time.strftime("%Y-%m-%d %H:%M:%S") if trade.entry_time else ""
+        exit_time = trade.exit_time.strftime("%Y-%m-%d %H:%M:%S") if trade.exit_time else ""
+        entry_price = "" if trade.entry_price is None else trade.entry_price
+        exit_price = "" if trade.exit_price is None else trade.exit_price
+
+        entry_side = "Sell" if is_short else "Buy"
         rows.append(
             {
                 "Symbol": symbol,
                 "Side": entry_side,
                 "Qty": qty,
-                "Fill Price": trade.entry_price,
-                "Closing Time": trade.entry_time.strftime("%Y-%m-%d %H:%M:%S"),
+                "Fill Price": entry_price,
+                "Closing Time": entry_time,
             }
         )
 
-        exit_side = "Sell" if trade.direction == "long" else "Buy"
+        exit_side = "Buy" if is_short else "Sell"
         rows.append(
             {
                 "Symbol": symbol,
                 "Side": exit_side,
                 "Qty": qty,
-                "Fill Price": trade.exit_price,
-                "Closing Time": trade.exit_time.strftime("%Y-%m-%d %H:%M:%S"),
+                "Fill Price": exit_price,
+                "Closing Time": exit_time,
             }
         )
 

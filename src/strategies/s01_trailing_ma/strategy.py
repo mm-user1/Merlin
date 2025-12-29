@@ -12,7 +12,7 @@ import numpy as np
 import pandas as pd
 
 from core import metrics
-from core.backtest_engine import StrategyResult, TradeRecord
+from core.backtest_engine import StrategyResult, TradeRecord, build_forced_close_trade
 from indicators.ma import get_ma
 from indicators.volatility import atr
 from strategies.base import BaseStrategy
@@ -355,6 +355,35 @@ class S01TrailingMA(BaseStrategy):
                             entry_time_short = time
                             entry_commission = entry_price * position_size * p.commissionRate
                             realized_equity -= entry_commission
+
+            if i == len(df) - 1 and position != 0:
+                entry_time = entry_time_long if position > 0 else entry_time_short
+                trade, gross_pnl, exit_commission, _ = build_forced_close_trade(
+                    position=position,
+                    entry_time=entry_time,
+                    exit_time=time,
+                    entry_price=entry_price,
+                    exit_price=c,
+                    size=position_size,
+                    entry_commission=entry_commission,
+                    commission_rate=p.commissionRate,
+                    commission_is_pct=False,
+                )
+                if trade:
+                    trades.append(trade)
+                    realized_equity += gross_pnl - exit_commission
+                position = 0
+                position_size = 0.0
+                entry_price = math.nan
+                stop_price = math.nan
+                target_price = math.nan
+                trail_price_long = math.nan
+                trail_price_short = math.nan
+                trail_activated_long = False
+                trail_activated_short = False
+                entry_time_long = None
+                entry_time_short = None
+                entry_commission = 0.0
 
             mark_to_market = realized_equity
             if position > 0 and not math.isnan(entry_price):

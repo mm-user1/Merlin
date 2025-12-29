@@ -634,13 +634,48 @@ def load_study_from_db(study_id: str) -> Optional[Dict]:
 
         if study.get("optimization_mode") == "optuna":
             cursor = conn.execute(
-                "SELECT * FROM trials WHERE study_id = ? ORDER BY score DESC",
+                "SELECT * FROM trials WHERE study_id = ?",
                 (study_id,),
             )
             for row in cursor.fetchall():
                 trial = dict(row)
                 trial["params"] = json.loads(trial["params_json"])
                 trials.append(trial)
+            target = str(study.get("target_metric") or "score").lower()
+            if target == "max_drawdown":
+                trials.sort(
+                    key=lambda t: float(t.get("max_drawdown_pct"))
+                    if t.get("max_drawdown_pct") is not None
+                    else float("inf")
+                )
+            elif target == "net_profit":
+                trials.sort(
+                    key=lambda t: float(t.get("net_profit_pct"))
+                    if t.get("net_profit_pct") is not None
+                    else float("-inf"),
+                    reverse=True,
+                )
+            elif target == "romad":
+                trials.sort(
+                    key=lambda t: float(t.get("romad"))
+                    if t.get("romad") is not None
+                    else float("-inf"),
+                    reverse=True,
+                )
+            elif target == "sharpe":
+                trials.sort(
+                    key=lambda t: float(t.get("sharpe_ratio"))
+                    if t.get("sharpe_ratio") is not None
+                    else float("-inf"),
+                    reverse=True,
+                )
+            else:
+                trials.sort(
+                    key=lambda t: float(t.get("score"))
+                    if t.get("score") is not None
+                    else float("-inf"),
+                    reverse=True,
+                )
         elif study.get("optimization_mode") == "wfa":
             cursor = conn.execute(
                 "SELECT * FROM wfa_windows WHERE study_id = ? ORDER BY window_number",
