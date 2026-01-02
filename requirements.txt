@@ -4,6 +4,6 @@ matplotlib
 backtesting
 flask
 tqdm
-optuna==4.4.0
+optuna==4.6.0
 pytest
 pytest-cov

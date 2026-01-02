@@ -5,12 +5,26 @@ import json
 import re
 import sqlite3
 import threading
-import time
 import uuid
+from datetime import datetime
 from contextlib import contextmanager
 from dataclasses import asdict
 from pathlib import Path
 from typing import Any, Dict, Iterator, List, Optional
+
+OBJECTIVE_DIRECTIONS: Dict[str, str] = {
+    "net_profit_pct": "maximize",
+    "max_drawdown_pct": "minimize",
+    "sharpe_ratio": "maximize",
+    "sortino_ratio": "maximize",
+    "romad": "maximize",
+    "profit_factor": "maximize",
+    "win_rate": "maximize",
+    "sqn": "maximize",
+    "ulcer_index": "minimize",
+    "consistency_score": "maximize",
+    "composite_score": "maximize",
+}
 
 DB_INIT_LOCK = threading.Lock()
 DB_INITIALIZED = False
@@ -40,7 +54,6 @@ def init_database() -> None:
         ) as conn:
             _configure_connection(conn)
             _create_schema(conn)
-            _run_migrations(conn)
         DB_INITIALIZED = True
 
 
@@ -55,87 +68,102 @@ def _configure_connection(conn: sqlite3.Connection) -> None:
 def _create_schema(conn: sqlite3.Connection) -> None:
     conn.executescript(
         """
-        CREATE TABLE IF NOT EXISTS schema_version (
-            version INTEGER PRIMARY KEY,
-            applied_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-            description TEXT
-        );
-
         CREATE TABLE IF NOT EXISTS studies (
             study_id TEXT PRIMARY KEY,
             study_name TEXT UNIQUE NOT NULL,
             strategy_id TEXT NOT NULL,
             strategy_version TEXT,
-            created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-            updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
 
             optimization_mode TEXT NOT NULL,
-            status TEXT NOT NULL DEFAULT 'running',
 
-            total_trials INTEGER,
-            saved_trials INTEGER,
-            completed_trials INTEGER,
-            pruned_trials INTEGER,
+            objectives_json TEXT,
+            n_objectives INTEGER DEFAULT 1,
+            directions_json TEXT,
+            primary_objective TEXT,
 
-            best_trial_number INTEGER,
+            constraints_json TEXT,
+
+            sampler_type TEXT DEFAULT 'tpe',
+            population_size INTEGER,
+            crossover_prob REAL,
+            mutation_prob REAL,
+            swapping_prob REAL,
+
+            budget_mode TEXT,
+            n_trials INTEGER,
+            time_limit INTEGER,
+            convergence_patience INTEGER,
+
+            total_trials INTEGER DEFAULT 0,
+            completed_trials INTEGER DEFAULT 0,
+            pruned_trials INTEGER DEFAULT 0,
+            pareto_front_size INTEGER,
+
             best_value REAL,
-            target_metric TEXT,
+            best_values_json TEXT,
 
-            filter_score_enabled INTEGER DEFAULT 0,
-            filter_score_threshold REAL,
-            filter_profit_enabled INTEGER DEFAULT 0,
-            filter_profit_threshold REAL,
-
-            config_json TEXT,
             score_config_json TEXT,
+            config_json TEXT,
 
-            optimization_time_seconds REAL,
-            warmup_bars INTEGER,
-            worker_processes INTEGER,
-
-            csv_file_path TEXT NOT NULL,
-            csv_file_name TEXT NOT NULL,
-            csv_last_verified TIMESTAMP,
+            csv_file_path TEXT,
+            csv_file_name TEXT,
 
             dataset_start_date TEXT,
             dataset_end_date TEXT,
+            warmup_bars INTEGER,
 
-            error_message TEXT
+            created_at TEXT DEFAULT (datetime('now')),
+            completed_at TEXT,
+
+            filter_min_profit INTEGER DEFAULT 0,
+            min_profit_threshold REAL DEFAULT 0.0
         );
 
         CREATE INDEX IF NOT EXISTS idx_studies_strategy ON studies(strategy_id);
         CREATE INDEX IF NOT EXISTS idx_studies_created ON studies(created_at DESC);
-        CREATE INDEX IF NOT EXISTS idx_studies_status ON studies(status);
         CREATE INDEX IF NOT EXISTS idx_studies_name ON studies(study_name);
 
         CREATE TABLE IF NOT EXISTS trials (
-            trial_id INTEGER PRIMARY KEY AUTOINCREMENT,
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
             study_id TEXT NOT NULL,
             trial_number INTEGER NOT NULL,
-            optuna_trial_number INTEGER,
 
             params_json TEXT NOT NULL,
+
+            objective_values_json TEXT,
+
+            is_pareto_optimal INTEGER DEFAULT 0,
+            dominance_rank INTEGER,
+
+            constraints_satisfied INTEGER DEFAULT 1,
+            constraint_values_json TEXT,
 
             net_profit_pct REAL,
             max_drawdown_pct REAL,
             total_trades INTEGER,
-
-            romad REAL,
+            win_rate REAL,
+            avg_win REAL,
+            avg_loss REAL,
+            gross_profit REAL,
+            gross_loss REAL,
             sharpe_ratio REAL,
+            sortino_ratio REAL,
+            romad REAL,
             profit_factor REAL,
-            ulcer_index REAL,
             sqn REAL,
+            ulcer_index REAL,
             consistency_score REAL,
 
-            score REAL,
+            composite_score REAL,
 
-            FOREIGN KEY (study_id) REFERENCES studies(study_id) ON DELETE CASCADE,
-            UNIQUE(study_id, trial_number)
+            created_at TEXT DEFAULT (datetime('now')),
+
+            UNIQUE(study_id, trial_number),
+            FOREIGN KEY (study_id) REFERENCES studies(study_id) ON DELETE CASCADE
         );
 
-        CREATE INDEX IF NOT EXISTS idx_trials_study ON trials(study_id);
-        CREATE INDEX IF NOT EXISTS idx_trials_score ON trials(study_id, score DESC);
-        CREATE INDEX IF NOT EXISTS idx_trials_trial_number ON trials(study_id, trial_number);
+        CREATE INDEX IF NOT EXISTS idx_trials_pareto ON trials(study_id, is_pareto_optimal);
+        CREATE INDEX IF NOT EXISTS idx_trials_constraints ON trials(study_id, constraints_satisfied);
 
         CREATE TABLE IF NOT EXISTS wfa_windows (
             window_id TEXT PRIMARY KEY,
@@ -170,26 +198,6 @@ def _create_schema(conn: sqlite3.Connection) -> None:
         CREATE INDEX IF NOT EXISTS idx_wfa_windows_number ON wfa_windows(study_id, window_number);
         """
     )
-
-    cursor = conn.execute("SELECT MAX(version) AS version FROM schema_version")
-    current = cursor.fetchone()
-    current_version = current["version"] if current and current["version"] is not None else 0
-    if current_version == 0:
-        conn.execute(
-            "INSERT INTO schema_version (version, description) VALUES (1, 'Initial schema')"
-        )
-        conn.commit()
-
-
-def _run_migrations(conn: sqlite3.Connection) -> None:
-    cursor = conn.execute("SELECT MAX(version) AS version FROM schema_version")
-    current = cursor.fetchone()
-    current_version = current["version"] if current and current["version"] is not None else 0
-    if current_version < 1:
-        conn.execute(
-            "INSERT INTO schema_version (version, description) VALUES (1, 'Initial schema')"
-        )
-        conn.commit()
 
 
 @contextmanager
@@ -321,7 +329,9 @@ def save_optuna_study_to_db(
     except (TypeError, ValueError):
         filter_score_threshold = 0.0
 
-    filtered_results = list(trial_results or [])
+    filtered_results = [
+        r for r in list(trial_results or []) if not getattr(r, "objective_missing", False)
+    ]
 
     if filter_score_enabled:
         filtered_results = [r for r in filtered_results if float(r.score) >= filter_score_threshold]
@@ -330,34 +340,73 @@ def save_optuna_study_to_db(
         threshold = float(getattr(config, "min_profit_threshold", 0.0) or 0.0)
         filtered_results = [r for r in filtered_results if float(r.net_profit_pct) >= threshold]
 
-    best_result = max(filtered_results, key=lambda r: float(r.score), default=None)
+    best_result = filtered_results[0] if filtered_results else None
 
-    optimization_time = time.time() - start_time
-
-    summary = getattr(config, "optuna_summary", {}) or {}
     completed_trials = len(trial_results or [])
     pruned_trials = 0
     total_trials = completed_trials
-    best_trial_number = getattr(best_result, "optuna_trial_number", None) if best_result else None
 
     if study is not None:
         try:
             completed_trials = sum(1 for t in study.trials if t.state == TrialState.COMPLETE)
             pruned_trials = sum(1 for t in study.trials if t.state == TrialState.PRUNED)
             total_trials = len(study.trials)
-            best_trial_number = study.best_trial.number if study.best_trial else best_trial_number
         except Exception:
-            completed_trials = int(summary.get("completed_trials", completed_trials))
-            pruned_trials = int(summary.get("pruned_trials", pruned_trials))
-            total_trials = int(summary.get("total_trials", total_trials))
-            best_trial_number = summary.get("best_trial_number", best_trial_number)
+            completed_trials = len(trial_results or [])
+            pruned_trials = 0
+            total_trials = completed_trials
+
+    objectives = list(getattr(optuna_config, "objectives", None) or [])
+    if not objectives:
+        objectives = ["net_profit_pct"]
+
+    directions = None
+    if study is not None:
+        try:
+            directions = [str(d).lower() for d in study.directions]
+        except Exception:
+            directions = None
+
+    primary_objective = getattr(optuna_config, "primary_objective", None)
+    constraints_payload = []
+    for spec in getattr(optuna_config, "constraints", []) or []:
+        if isinstance(spec, dict):
+            constraints_payload.append(spec)
+        else:
+            constraints_payload.append(
+                {
+                    "metric": getattr(spec, "metric", None),
+                    "threshold": getattr(spec, "threshold", None),
+                    "enabled": bool(getattr(spec, "enabled", False)),
+                }
+            )
+
+    sampler_cfg = getattr(optuna_config, "sampler_config", None)
+    if isinstance(sampler_cfg, dict):
+        sampler_payload = sampler_cfg
+    else:
+        sampler_payload = {
+            "sampler_type": getattr(sampler_cfg, "sampler_type", None),
+            "population_size": getattr(sampler_cfg, "population_size", None),
+            "crossover_prob": getattr(sampler_cfg, "crossover_prob", None),
+            "mutation_prob": getattr(sampler_cfg, "mutation_prob", None),
+            "swapping_prob": getattr(sampler_cfg, "swapping_prob", None),
+            "n_startup_trials": getattr(sampler_cfg, "n_startup_trials", None),
+        }
 
     best_value = None
-    if best_result is not None:
-        if getattr(optuna_config, "target", "score") == "score":
-            best_value = float(best_result.score)
+    best_values_json = None
+    if best_result is not None and getattr(best_result, "objective_values", None):
+        if len(objectives) > 1:
+            best_values_json = json.dumps(
+                dict(zip(objectives, list(best_result.objective_values)))
+            )
         else:
-            best_value = float(getattr(best_result, "optuna_value", best_result.score))
+            best_value = float(best_result.objective_values[0])
+
+    pareto_front_size = sum(
+        1 for r in filtered_results if getattr(r, "is_pareto_optimal", False)
+    ) if len(objectives) > 1 else None
 
     config_payload = _safe_dict(config)
     if optuna_config is not None:
@@ -370,16 +419,19 @@ def save_optuna_study_to_db(
                 """
                 INSERT INTO studies (
                     study_id, study_name, strategy_id, strategy_version,
-                    optimization_mode, status,
-                    total_trials, saved_trials, completed_trials, pruned_trials,
-                    best_trial_number, best_value, target_metric,
-                    filter_score_enabled, filter_score_threshold,
-                    filter_profit_enabled, filter_profit_threshold,
-                    config_json, score_config_json,
-                    optimization_time_seconds, warmup_bars, worker_processes,
-                    csv_file_path, csv_file_name, csv_last_verified,
-                    dataset_start_date, dataset_end_date
-                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    optimization_mode,
+                    objectives_json, n_objectives, directions_json, primary_objective,
+                    constraints_json,
+                    sampler_type, population_size, crossover_prob, mutation_prob, swapping_prob,
+                    budget_mode, n_trials, time_limit, convergence_patience,
+                    total_trials, completed_trials, pruned_trials, pareto_front_size,
+                    best_value, best_values_json,
+                    score_config_json, config_json,
+                    csv_file_path, csv_file_name,
+                    dataset_start_date, dataset_end_date, warmup_bars,
+                    completed_at,
+                    filter_min_profit, min_profit_threshold
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """,
                 (
                     study_id,
@@ -387,46 +439,79 @@ def save_optuna_study_to_db(
                     config.strategy_id,
                     strategy_version,
                     "optuna",
-                    "completed",
+                    json.dumps(objectives) if objectives else None,
+                    len(objectives),
+                    json.dumps(directions) if directions else None,
+                    primary_objective,
+                    json.dumps(constraints_payload) if constraints_payload else None,
+                    sampler_payload.get("sampler_type") or "tpe",
+                    sampler_payload.get("population_size"),
+                    sampler_payload.get("crossover_prob"),
+                    sampler_payload.get("mutation_prob"),
+                    sampler_payload.get("swapping_prob"),
+                    getattr(optuna_config, "budget_mode", None),
+                    getattr(optuna_config, "n_trials", None),
+                    getattr(optuna_config, "time_limit", None),
+                    getattr(optuna_config, "convergence_patience", None),
                     total_trials,
-                    len(filtered_results),
                     completed_trials,
                     pruned_trials,
-                    best_trial_number,
+                    pareto_front_size,
                     best_value,
-                    getattr(optuna_config, "target", "score"),
-                    1 if filter_score_enabled else 0,
-                    filter_score_threshold if filter_score_enabled else None,
+                    best_values_json,
+                    json.dumps(resolved_score_config) if resolved_score_config else None,
+                    json.dumps(config_payload),
+                    str(Path(csv_file_path).resolve()) if csv_file_path else "",
+                    csv_display_name,
+                    _format_date(start_date),
+                    _format_date(end_date),
+                    getattr(config, "warmup_bars", None),
+                    datetime.utcnow().isoformat() + "Z",
                     1 if getattr(config, "filter_min_profit", False) else 0,
                     getattr(config, "min_profit_threshold", None)
                     if getattr(config, "filter_min_profit", False)
                     else None,
-                    json.dumps(config_payload),
-                    json.dumps(resolved_score_config) if resolved_score_config else None,
-                    optimization_time,
-                    getattr(config, "warmup_bars", None),
-                    getattr(config, "worker_processes", None),
-                    str(Path(csv_file_path).resolve()) if csv_file_path else "",
-                    csv_display_name,
-                    time.time(),
-                    _format_date(start_date),
-                    _format_date(end_date),
                 ),
             )
 
             trial_rows = []
+            used_trial_numbers = set()
+            next_fallback = 1
             for idx, result in enumerate(filtered_results, 1):
+                trial_number = getattr(result, "optuna_trial_number", None)
+                if trial_number is None:
+                    trial_number = idx
+                trial_number = int(trial_number)
+                if trial_number in used_trial_numbers:
+                    while next_fallback in used_trial_numbers:
+                        next_fallback += 1
+                    trial_number = next_fallback
+                used_trial_numbers.add(trial_number)
+                constraint_values = list(getattr(result, "constraint_values", []) or [])
+                constraints_satisfied = getattr(result, "constraints_satisfied", None)
+                if constraints_satisfied is None:
+                    constraints_satisfied = all(v <= 0.0 for v in constraint_values) if constraint_values else True
                 trial_rows.append(
                     (
                         study_id,
-                        idx,
-                        getattr(result, "optuna_trial_number", None),
+                        int(trial_number),
                         json.dumps(result.params),
+                        json.dumps(list(getattr(result, "objective_values", []) or [])),
+                        1 if getattr(result, "is_pareto_optimal", False) else 0,
+                        getattr(result, "dominance_rank", None),
+                        1 if constraints_satisfied else 0,
+                        json.dumps(constraint_values) if constraint_values else None,
                         result.net_profit_pct,
                         result.max_drawdown_pct,
                         result.total_trades,
+                        result.win_rate,
+                        result.avg_win,
+                        result.avg_loss,
+                        result.gross_profit,
+                        result.gross_loss,
                         result.romad,
                         result.sharpe_ratio,
+                        result.sortino_ratio,
                         result.profit_factor,
                         result.ulcer_index,
                         result.sqn,
@@ -439,11 +524,14 @@ def save_optuna_study_to_db(
                 conn.executemany(
                     """
                     INSERT INTO trials (
-                        study_id, trial_number, optuna_trial_number,
-                        params_json, net_profit_pct, max_drawdown_pct, total_trades,
-                        romad, sharpe_ratio, profit_factor, ulcer_index, sqn,
-                        consistency_score, score
-                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                        study_id, trial_number,
+                        params_json, objective_values_json, is_pareto_optimal, dominance_rank,
+                        constraints_satisfied, constraint_values_json,
+                        net_profit_pct, max_drawdown_pct, total_trades, win_rate, avg_win, avg_loss,
+                        gross_profit, gross_loss,
+                        romad, sharpe_ratio, sortino_ratio, profit_factor, ulcer_index, sqn,
+                        consistency_score, composite_score
+                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                     """,
                     trial_rows,
                 )
@@ -485,7 +573,11 @@ def save_wfa_study_to_db(
     except Exception:
         pass
 
-    optimization_time = time.time() - start_time
+    objectives = []
+    constraints_payload: List[Dict[str, Any]] = []
+    if isinstance(config, dict):
+        objectives = list(config.get("objectives") or [])
+        constraints_payload = list(config.get("constraints") or [])
 
     with get_db_connection() as conn:
         try:
@@ -494,14 +586,19 @@ def save_wfa_study_to_db(
                 """
                 INSERT INTO studies (
                     study_id, study_name, strategy_id, strategy_version,
-                    optimization_mode, status,
-                    total_trials, saved_trials,
-                    best_value, target_metric,
-                    config_json, score_config_json,
-                    optimization_time_seconds, warmup_bars, worker_processes,
-                    csv_file_path, csv_file_name, csv_last_verified,
-                    dataset_start_date, dataset_end_date
-                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    optimization_mode,
+                    objectives_json, n_objectives, directions_json, primary_objective,
+                    constraints_json,
+                    sampler_type, population_size, crossover_prob, mutation_prob, swapping_prob,
+                    budget_mode, n_trials, time_limit, convergence_patience,
+                    total_trials, completed_trials, pruned_trials, pareto_front_size,
+                    best_value, best_values_json,
+                    score_config_json, config_json,
+                    csv_file_path, csv_file_name,
+                    dataset_start_date, dataset_end_date, warmup_bars,
+                    completed_at,
+                    filter_min_profit, min_profit_threshold
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """,
                 (
                     study_id,
@@ -509,23 +606,36 @@ def save_wfa_study_to_db(
                     wf_result.strategy_id,
                     strategy_version,
                     "wfa",
-                    "completed",
+                    json.dumps(objectives) if objectives else None,
+                    len(objectives) if objectives else 1,
+                    None,
+                    None,
+                    json.dumps(constraints_payload) if constraints_payload else None,
+                    None,
+                    None,
+                    None,
+                    None,
+                    None,
+                    None,
+                    None,
+                    None,
+                    None,
                     wf_result.total_windows,
                     wf_result.total_windows,
+                    0,
+                    None,
                     getattr(wf_result.stitched_oos, "wfe", None),
-                    "WFE",
-                    json.dumps(_safe_dict(config)),
+                    None,
                     json.dumps(score_config) if score_config else None,
-                    optimization_time,
-                    wf_result.warmup_bars,
-                    getattr(config, "worker_processes", None)
-                    if not isinstance(config, dict)
-                    else config.get("worker_processes"),
+                    json.dumps(_safe_dict(config)),
                     str(Path(csv_file_path).resolve()) if csv_file_path else "",
                     csv_display_name,
-                    time.time(),
                     _format_date(wf_result.trading_start_date),
                     _format_date(wf_result.trading_end_date),
+                    wf_result.warmup_bars,
+                    datetime.utcnow().isoformat() + "Z",
+                    1 if isinstance(config, dict) and config.get("filter_min_profit") else 0,
+                    config.get("min_profit_threshold") if isinstance(config, dict) else None,
                 ),
             )
 
@@ -596,13 +706,19 @@ def list_studies() -> List[Dict]:
             """
             SELECT
                 study_id, study_name, strategy_id, optimization_mode,
-                status, created_at, saved_trials, best_value, target_metric,
+                created_at, completed_at, completed_trials, best_value,
                 csv_file_name
             FROM studies
             ORDER BY created_at DESC
             """
         )
-        return [dict(row) for row in cursor.fetchall()]
+        rows = []
+        for row in cursor.fetchall():
+            study = dict(row)
+            if "status" not in study:
+                study["status"] = "completed" if study.get("completed_at") else "unknown"
+            rows.append(study)
+        return rows
 
 
 def load_study_from_db(study_id: str) -> Optional[Dict]:
@@ -613,21 +729,31 @@ def load_study_from_db(study_id: str) -> Optional[Dict]:
             return None
 
         study = dict(study_row)
-        for key in ("config_json", "score_config_json"):
+        for key in (
+            "config_json",
+            "score_config_json",
+            "objectives_json",
+            "directions_json",
+            "constraints_json",
+            "best_values_json",
+        ):
             if study.get(key):
                 try:
                     study[key] = json.loads(study[key])
                 except json.JSONDecodeError:
                     pass
 
+        if isinstance(study.get("objectives_json"), list):
+            study["objectives"] = study["objectives_json"]
+        if isinstance(study.get("directions_json"), list):
+            study["directions"] = study["directions_json"]
+        if isinstance(study.get("constraints_json"), list):
+            study["constraints"] = study["constraints_json"]
+        if isinstance(study.get("best_values_json"), dict):
+            study["best_values"] = study["best_values_json"]
+
         csv_path = study.get("csv_file_path")
         csv_exists = bool(csv_path and Path(csv_path).exists())
-        if csv_exists:
-            conn.execute(
-                "UPDATE studies SET csv_last_verified = ?, updated_at = CURRENT_TIMESTAMP WHERE study_id = ?",
-                (time.time(), study_id),
-            )
-            conn.commit()
 
         trials: List[Dict] = []
         windows: List[Dict] = []
@@ -640,42 +766,54 @@ def load_study_from_db(study_id: str) -> Optional[Dict]:
             for row in cursor.fetchall():
                 trial = dict(row)
                 trial["params"] = json.loads(trial["params_json"])
+                trial["objective_values"] = json.loads(trial["objective_values_json"] or "[]")
+                trial["constraint_values"] = json.loads(trial["constraint_values_json"] or "[]")
+                trial["is_pareto_optimal"] = bool(trial.get("is_pareto_optimal"))
+                trial["constraints_satisfied"] = bool(trial.get("constraints_satisfied"))
+                if trial.get("composite_score") is not None:
+                    trial["score"] = trial.get("composite_score")
                 trials.append(trial)
-            target = str(study.get("target_metric") or "score").lower()
-            if target == "max_drawdown":
-                trials.sort(
-                    key=lambda t: float(t.get("max_drawdown_pct"))
-                    if t.get("max_drawdown_pct") is not None
-                    else float("inf")
+            objectives = study.get("objectives_json") or []
+            if isinstance(objectives, list) and objectives:
+                directions = study.get("directions_json") or []
+                primary_objective = study.get("primary_objective") or objectives[0]
+                try:
+                    primary_idx = objectives.index(primary_objective)
+                except ValueError:
+                    primary_idx = 0
+                primary_direction = None
+                if isinstance(directions, list) and len(directions) > primary_idx:
+                    primary_direction = directions[primary_idx]
+                if primary_direction not in {"maximize", "minimize"}:
+                    primary_direction = OBJECTIVE_DIRECTIONS.get(primary_objective, "maximize")
+
+                constraints_payload = study.get("constraints_json") or []
+                constraints_enabled = any(
+                    bool(item.get("enabled")) for item in constraints_payload if isinstance(item, dict)
                 )
-            elif target == "net_profit":
-                trials.sort(
-                    key=lambda t: float(t.get("net_profit_pct"))
-                    if t.get("net_profit_pct") is not None
-                    else float("-inf"),
-                    reverse=True,
-                )
-            elif target == "romad":
-                trials.sort(
-                    key=lambda t: float(t.get("romad"))
-                    if t.get("romad") is not None
-                    else float("-inf"),
-                    reverse=True,
-                )
-            elif target == "sharpe":
-                trials.sort(
-                    key=lambda t: float(t.get("sharpe_ratio"))
-                    if t.get("sharpe_ratio") is not None
-                    else float("-inf"),
-                    reverse=True,
-                )
-            else:
-                trials.sort(
-                    key=lambda t: float(t.get("score"))
-                    if t.get("score") is not None
-                    else float("-inf"),
-                    reverse=True,
-                )
+
+                if len(objectives) == 1:
+                    reverse = primary_direction == "maximize"
+                    trials.sort(
+                        key=lambda t: float(t.get("objective_values", [0.0])[0]),
+                        reverse=reverse,
+                    )
+                else:
+                    def group_rank(item: Dict[str, Any]) -> int:
+                        if constraints_enabled:
+                            if not item.get("constraints_satisfied", True):
+                                return 2
+                            return 0 if item.get("is_pareto_optimal") else 1
+                        return 0 if item.get("is_pareto_optimal") else 1
+
+                    def primary_value(item: Dict[str, Any]) -> float:
+                        values = item.get("objective_values") or []
+                        value = float(values[primary_idx]) if len(values) > primary_idx else 0.0
+                        return -value if primary_direction == "maximize" else value
+
+                    trials.sort(
+                        key=lambda t: (group_rank(t), primary_value(t), int(t.get("trial_number") or 0)),
+                    )
         elif study.get("optimization_mode") == "wfa":
             cursor = conn.execute(
                 "SELECT * FROM wfa_windows WHERE study_id = ? ORDER BY window_number",
@@ -717,24 +855,26 @@ def update_csv_path(study_id: str, new_path: str) -> bool:
         cursor = conn.execute(
             """
             UPDATE studies
-            SET csv_file_path = ?, csv_last_verified = ?, updated_at = CURRENT_TIMESTAMP
+            SET csv_file_path = ?
             WHERE study_id = ?
             """,
-            (new_path, time.time(), study_id),
+            (new_path, study_id),
         )
         conn.commit()
         return cursor.rowcount > 0
 
 
 def update_study_status(study_id: str, status: str, error_message: Optional[str] = None) -> bool:
+    if not status:
+        return False
     with get_db_connection() as conn:
         cursor = conn.execute(
             """
             UPDATE studies
-            SET status = ?, error_message = ?, updated_at = CURRENT_TIMESTAMP
+            SET completed_at = ?
             WHERE study_id = ?
             """,
-            (status, error_message, study_id),
+            (datetime.utcnow().isoformat() + "Z", study_id),
         )
         conn.commit()
         return cursor.rowcount > 0

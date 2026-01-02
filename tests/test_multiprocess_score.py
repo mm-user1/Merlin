@@ -25,7 +25,7 @@ DATA_PATH = (
 
 @pytest.mark.slow
 class TestMultiProcessScore:
-    """Test multi-process optimization with target=score."""
+    """Test multi-process optimization with composite scoring enabled."""
 
     @pytest.fixture
     def base_config(self):
@@ -65,7 +65,7 @@ class TestMultiProcessScore:
     def test_multiprocess_uses_minmax(self, base_config):
         """Multi-process mode should use minmax normalization."""
         optuna_config = OptunaConfig(
-            target="score",
+            objectives=["net_profit_pct"],
             budget_mode="trials",
             n_trials=5,
         )
@@ -79,7 +79,7 @@ class TestMultiProcessScore:
     def test_single_and_multi_produce_same_scores(self, base_config):
         """Single-process and multi-process should produce same scores for same params."""
         optuna_config = OptunaConfig(
-            target="score",
+            objectives=["net_profit_pct"],
             budget_mode="trials",
             n_trials=3,
         )

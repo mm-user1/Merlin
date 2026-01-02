@@ -789,18 +789,26 @@ function buildOptunaConfig(state) {
   const optunaTrials = document.getElementById('optunaTrials');
   const optunaTimeLimit = document.getElementById('optunaTimeLimit');
   const optunaConvergence = document.getElementById('optunaConvergence');
-  const optunaTarget = document.getElementById('optunaTarget');
   const optunaPruning = document.getElementById('optunaPruning');
   const optunaSampler = document.getElementById('optunaSampler');
   const optunaPruner = document.getElementById('optunaPruner');
   const optunaWarmupTrials = document.getElementById('optunaWarmupTrials');
   const optunaSaveStudy = document.getElementById('optunaSaveStudy');
+  const nsgaPopulation = document.getElementById('nsgaPopulationSize');
+  const nsgaCrossover = document.getElementById('nsgaCrossoverProb');
+  const nsgaMutation = document.getElementById('nsgaMutationProb');
+  const nsgaSwapping = document.getElementById('nsgaSwappingProb');
 
   const selectedBudget = Array.from(budgetModeRadios).find((radio) => radio.checked)?.value || 'trials';
   const trialsValue = Number(optunaTrials?.value);
   const timeLimitMinutes = Number(optunaTimeLimit?.value);
   const convergenceValue = Number(optunaConvergence?.value);
   const warmupValue = Number(optunaWarmupTrials?.value);
+  const populationValue = Number(nsgaPopulation?.value);
+  const crossoverValue = Number(nsgaCrossover?.value);
+  const mutationRaw = nsgaMutation?.value;
+  const mutationValue = mutationRaw === '' || mutationRaw === undefined ? null : Number(mutationRaw);
+  const swappingValue = Number(nsgaSwapping?.value);
 
   const normalizedTrials = Number.isFinite(trialsValue) ? Math.max(10, Math.min(10000, Math.round(trialsValue))) : 500;
   const normalizedMinutes = Number.isFinite(timeLimitMinutes) ? Math.max(1, Math.round(timeLimitMinutes)) : 60;
@@ -808,20 +816,36 @@ function buildOptunaConfig(state) {
     ? Math.max(10, Math.min(500, Math.round(convergenceValue)))
     : 50;
   const normalizedWarmup = Number.isFinite(warmupValue) ? Math.max(0, Math.min(50000, Math.round(warmupValue))) : 20;
+  const normalizedPopulation = Number.isFinite(populationValue) ? Math.max(2, Math.min(1000, Math.round(populationValue))) : 50;
+  const normalizedCrossover = Number.isFinite(crossoverValue) ? Math.max(0, Math.min(1, crossoverValue)) : 0.9;
+  const normalizedMutation = Number.isFinite(mutationValue) ? Math.max(0, Math.min(1, mutationValue)) : null;
+  const normalizedSwapping = Number.isFinite(swappingValue) ? Math.max(0, Math.min(1, swappingValue)) : 0.5;
+
+  const objectiveConfig = window.OptunaUI
+    ? window.OptunaUI.collectObjectives()
+    : { objectives: ['net_profit_pct'], primary_objective: null };
+  const constraints = window.OptunaUI ? window.OptunaUI.collectConstraints() : [];
+  const selectedObjectives = objectiveConfig.objectives || [];
 
   return {
     ...baseConfig,
     optimization_mode: 'optuna',
-    optuna_target: optunaTarget ? optunaTarget.value : 'score',
     optuna_budget_mode: selectedBudget,
     optuna_n_trials: normalizedTrials,
     optuna_time_limit: normalizedMinutes * 60,
     optuna_convergence: normalizedConvergence,
-    optuna_enable_pruning: Boolean(optunaPruning && optunaPruning.checked),
-    optuna_sampler: optunaSampler ? optunaSampler.value : 'tpe',
+    optuna_enable_pruning: selectedObjectives.length > 1 ? false : Boolean(optunaPruning && optunaPruning.checked),
+    sampler: optunaSampler ? optunaSampler.value : 'tpe',
     optuna_pruner: optunaPruner ? optunaPruner.value : 'median',
-    optuna_warmup_trials: normalizedWarmup,
-    optuna_save_study: Boolean(optunaSaveStudy && optunaSaveStudy.checked)
+    n_startup_trials: normalizedWarmup,
+    optuna_save_study: Boolean(optunaSaveStudy && optunaSaveStudy.checked),
+    objectives: selectedObjectives,
+    primary_objective: objectiveConfig.primary_objective,
+    constraints,
+    population_size: normalizedPopulation,
+    crossover_prob: normalizedCrossover,
+    mutation_prob: normalizedMutation,
+    swapping_prob: normalizedSwapping
   };
 }
 function clearWFResults() {
@@ -936,12 +960,13 @@ async function runWalkForward({ sources, state }) {
     start: state.start,
     end: state.end,
     optuna: {
-      target: config.optuna_target,
+      objectives: config.objectives,
+      primaryObjective: config.primary_objective,
       budgetMode: config.optuna_budget_mode,
       nTrials: config.optuna_n_trials,
       timeLimit: config.optuna_time_limit,
       convergence: config.optuna_convergence,
-      sampler: config.optuna_sampler,
+      sampler: config.sampler,
       pruner: config.optuna_pruner,
       workers: config.worker_processes
     },
@@ -1274,12 +1299,13 @@ async function submitOptimization(event) {
     start: state.start,
     end: state.end,
     optuna: {
-      target: config.optuna_target,
+      objectives: config.objectives,
+      primaryObjective: config.primary_objective,
       budgetMode: config.optuna_budget_mode,
       nTrials: config.optuna_n_trials,
       timeLimit: config.optuna_time_limit,
       convergence: config.optuna_convergence,
-      sampler: config.optuna_sampler,
+      sampler: config.sampler,
       pruner: config.optuna_pruner,
       workers: config.worker_processes
     },
@@ -1558,6 +1584,20 @@ function bindScoreControls() {
   applyScoreSettings();
   syncScoreFilterUI();
   updateScoreFormulaPreview();
+}
+
+function bindOptunaUiControls() {
+  if (!window.OptunaUI) return;
+  const checkboxes = document.querySelectorAll('.objective-checkbox');
+  checkboxes.forEach((checkbox) => {
+    checkbox.addEventListener('change', window.OptunaUI.updateObjectiveSelection);
+  });
+  const sampler = document.getElementById('optunaSampler');
+  if (sampler) {
+    sampler.addEventListener('change', window.OptunaUI.toggleNsgaSettings);
+  }
+  window.OptunaUI.updateObjectiveSelection();
+  window.OptunaUI.toggleNsgaSettings();
 }
 
 function setCheckboxGroup(group, selectedTypes) {

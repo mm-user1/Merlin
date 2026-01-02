@@ -229,6 +229,32 @@ def _calculate_sharpe_ratio_value(
     return sharpe
 
 
+def _calculate_sortino_ratio_value(
+    monthly_returns: List[float],
+    risk_free_rate: float = 0.02,
+) -> Optional[float]:
+    """Calculate annualized Sortino Ratio from monthly returns."""
+    if len(monthly_returns) < 2:
+        return None
+
+    monthly_array = np.array(monthly_returns, dtype=float)
+    if monthly_array.size < 2:
+        return None
+
+    rfr_monthly = (risk_free_rate * 100.0) / 12.0
+    downside = monthly_array[monthly_array < rfr_monthly] - rfr_monthly
+    if downside.size == 0:
+        return None
+
+    downside_dev = float(np.std(downside, ddof=0))
+    if downside_dev == 0:
+        return None
+
+    avg_return = float(np.mean(monthly_array))
+    sortino = (avg_return - rfr_monthly) / downside_dev
+    return sortino
+
+
 def _calculate_ulcer_index_value(equity_curve: List[float]) -> Optional[float]:
     """Calculate Ulcer Index (downside volatility measure)."""
     equity_array = np.array(equity_curve, dtype=float)
@@ -388,6 +414,7 @@ def calculate_advanced(
 
     if len(monthly_returns) >= 2:
         sharpe_ratio = _calculate_sharpe_ratio_value(monthly_returns, risk_free_rate)
+        sortino_ratio = _calculate_sortino_ratio_value(monthly_returns, risk_free_rate)
 
     if len(monthly_returns) >= 1:
         consistency_score = _calculate_consistency_score_value(monthly_returns)

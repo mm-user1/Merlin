@@ -342,15 +342,71 @@
                     <span class="section-title" style="margin: 0; border: none;">OPTUNA SETTINGS</span>
                   </div>
                   <div class="collapsible-content">
-                    <div class="form-group">
-                      <label for="optunaTarget">Optimization target:</label>
-                      <select id="optunaTarget" style="width: 220px;">
-                        <option value="score" selected>Composite Score (recommended)</option>
-                        <option value="net_profit">Net Profit %</option>
-                        <option value="romad">RoMaD</option>
-                        <option value="sharpe">Sharpe Ratio</option>
-                        <option value="max_drawdown">Max Drawdown % (minimize)</option>
-                      </select>
+                    <div class="optuna-objectives-section">
+                      <div class="section-title" style="margin-top: 0;">Optimization Objectives</div>
+                      <div class="objective-hint">Select 1-6 objectives:</div>
+                      <div class="objective-grid" id="objectiveGrid">
+                        <label class="objective-item">
+                          <input type="checkbox" class="objective-checkbox" data-objective="net_profit_pct" checked />
+                          Net Profit %
+                          <span class="objective-direction">&uarr; max</span>
+                        </label>
+                        <label class="objective-item">
+                          <input type="checkbox" class="objective-checkbox" data-objective="max_drawdown_pct" />
+                          Min Drawdown %
+                          <span class="objective-direction">&darr; min</span>
+                        </label>
+                        <label class="objective-item">
+                          <input type="checkbox" class="objective-checkbox" data-objective="sharpe_ratio" />
+                          Sharpe Ratio
+                          <span class="objective-direction">&uarr; max</span>
+                        </label>
+                        <label class="objective-item">
+                          <input type="checkbox" class="objective-checkbox" data-objective="sortino_ratio" />
+                          Sortino Ratio
+                          <span class="objective-direction">&uarr; max</span>
+                        </label>
+                        <label class="objective-item">
+                          <input type="checkbox" class="objective-checkbox" data-objective="romad" />
+                          RoMaD
+                          <span class="objective-direction">&uarr; max</span>
+                        </label>
+                        <label class="objective-item">
+                          <input type="checkbox" class="objective-checkbox" data-objective="profit_factor" />
+                          Profit Factor
+                          <span class="objective-direction">&uarr; max</span>
+                        </label>
+                        <label class="objective-item">
+                          <input type="checkbox" class="objective-checkbox" data-objective="win_rate" />
+                          Win Rate %
+                          <span class="objective-direction">&uarr; max</span>
+                        </label>
+                        <label class="objective-item">
+                          <input type="checkbox" class="objective-checkbox" data-objective="sqn" />
+                          SQN
+                          <span class="objective-direction">&uarr; max</span>
+                        </label>
+                        <label class="objective-item">
+                          <input type="checkbox" class="objective-checkbox" data-objective="ulcer_index" />
+                          Ulcer Index
+                          <span class="objective-direction">&darr; min</span>
+                        </label>
+                        <label class="objective-item">
+                          <input type="checkbox" class="objective-checkbox" data-objective="consistency_score" />
+                          Consistency %
+                          <span class="objective-direction">&uarr; max</span>
+                        </label>
+                        <label class="objective-item">
+                          <input type="checkbox" class="objective-checkbox" data-objective="composite_score" />
+                          Composite Score
+                          <span class="objective-direction">&uarr; max</span>
+                        </label>
+                      </div>
+                      <div class="primary-objective-row" id="primaryObjectiveRow" style="display: none;">
+                        <label for="primaryObjective">Primary Objective:</label>
+                        <select id="primaryObjective" style="width: 220px;"></select>
+                        <span class="primary-objective-note">Only shown when 2+ objectives.</span>
+                      </div>
                     </div>
 
                     <div class="form-group" style="flex-direction: column; align-items: flex-start; gap: 8px;">
@@ -388,7 +444,7 @@
                       style="padding: 10px; background: #e0f3ff; border: 1px solid #90caf9; border-radius: 3px; margin-top: 10px;"
                     >
                       <div style="font-size: 12px; color: #1565c0;">
-                        ℹ️ When using "Composite Score" target, weights are taken from
+                        Score Filter uses weights from
                         <a href="#" id="linkToScoreConfig" style="color: #0d47a1; text-decoration: underline;">Score Filter configuration</a>
                         in the left panel.
                       </div>
@@ -404,6 +460,8 @@
                           <label for="optunaSampler">Sampler:</label>
                           <select id="optunaSampler" style="width: 200px;">
                             <option value="tpe" selected>TPE (recommended)</option>
+                            <option value="nsga2">NSGA-II</option>
+                            <option value="nsga3">NSGA-III</option>
                             <option value="random">Random</option>
                           </select>
                         </div>
@@ -423,12 +481,134 @@
                           <input type="number" id="optunaWarmupTrials" min="0" max="50000" value="20" style="width: 80px;" />
                         </div>
 
+                        <div id="nsgaSettings" class="nsga-settings" style="display: none;">
+                          <div class="section-title" style="margin-top: 0;">NSGA Sampler Settings</div>
+                          <div class="form-group">
+                            <label for="nsgaPopulationSize">Population Size:</label>
+                            <input type="number" id="nsgaPopulationSize" min="2" max="1000" value="50" style="width: 80px;" />
+                          </div>
+                          <div class="form-group">
+                            <label for="nsgaCrossoverProb">Crossover Probability:</label>
+                            <input type="number" id="nsgaCrossoverProb" min="0" max="1" step="0.05" value="0.9" style="width: 80px;" />
+                          </div>
+                          <div class="form-group">
+                            <label for="nsgaMutationProb">Mutation Probability:</label>
+                            <input type="number" id="nsgaMutationProb" min="0" max="1" step="0.05" placeholder="auto" style="width: 80px;" />
+                          </div>
+                          <div class="form-group">
+                            <label for="nsgaSwappingProb">Swapping Probability:</label>
+                            <input type="number" id="nsgaSwappingProb" min="0" max="1" step="0.05" value="0.5" style="width: 80px;" />
+                          </div>
+                        </div>
+
                         <div class="form-group">
                           <div class="checkbox-group">
                             <input type="checkbox" id="optunaSaveStudy" />
                             <label for="optunaSaveStudy">Save study database (optuna_study.db)</label>
                           </div>
                         </div>
+                      </div>
+                    </div>
+                  </div>
+                </div>
+
+                <div class="collapsible" id="constraintsPanel">
+                  <div class="collapsible-header">
+                    <span class="collapsible-icon">▾</span>
+                    <span class="section-title" style="margin: 0; border: none;">OPTIMIZATION CONSTRAINTS</span>
+                  </div>
+                  <div class="collapsible-content">
+                    <div class="constraint-note">
+                      Trials violating constraints are deprioritized (not pruned).
+                    </div>
+                    <div class="constraints-grid">
+                      <div class="constraint-row">
+                        <label class="constraint-label">
+                          <input type="checkbox" class="constraint-checkbox" data-constraint-metric="total_trades" />
+                          Total Trades
+                        </label>
+                        <span class="constraint-operator">&ge;</span>
+                        <input type="number" class="constraint-input" data-constraint-threshold="total_trades" value="30" min="0" step="1" />
+                      </div>
+                      <div class="constraint-row">
+                        <label class="constraint-label">
+                          <input type="checkbox" class="constraint-checkbox" data-constraint-metric="net_profit_pct" />
+                          Net Profit %
+                        </label>
+                        <span class="constraint-operator">&ge;</span>
+                        <input type="number" class="constraint-input" data-constraint-threshold="net_profit_pct" value="0.0" step="0.1" />
+                      </div>
+                      <div class="constraint-row">
+                        <label class="constraint-label">
+                          <input type="checkbox" class="constraint-checkbox" data-constraint-metric="max_drawdown_pct" />
+                          Min Drawdown %
+                        </label>
+                        <span class="constraint-operator">&le;</span>
+                        <input type="number" class="constraint-input" data-constraint-threshold="max_drawdown_pct" value="30.0" step="0.1" />
+                      </div>
+                      <div class="constraint-row">
+                        <label class="constraint-label">
+                          <input type="checkbox" class="constraint-checkbox" data-constraint-metric="sharpe_ratio" />
+                          Sharpe Ratio
+                        </label>
+                        <span class="constraint-operator">&ge;</span>
+                        <input type="number" class="constraint-input" data-constraint-threshold="sharpe_ratio" value="0.0" step="0.1" />
+                      </div>
+                      <div class="constraint-row">
+                        <label class="constraint-label">
+                          <input type="checkbox" class="constraint-checkbox" data-constraint-metric="romad" />
+                          RoMaD
+                        </label>
+                        <span class="constraint-operator">&ge;</span>
+                        <input type="number" class="constraint-input" data-constraint-threshold="romad" value="0.0" step="0.1" />
+                      </div>
+                      <div class="constraint-row">
+                        <label class="constraint-label">
+                          <input type="checkbox" class="constraint-checkbox" data-constraint-metric="profit_factor" />
+                          Profit Factor
+                        </label>
+                        <span class="constraint-operator">&ge;</span>
+                        <input type="number" class="constraint-input" data-constraint-threshold="profit_factor" value="1.0" step="0.1" />
+                      </div>
+                      <div class="constraint-row">
+                        <label class="constraint-label">
+                          <input type="checkbox" class="constraint-checkbox" data-constraint-metric="win_rate" />
+                          Win Rate %
+                        </label>
+                        <span class="constraint-operator">&ge;</span>
+                        <input type="number" class="constraint-input" data-constraint-threshold="win_rate" value="0.0" step="0.1" />
+                      </div>
+                      <div class="constraint-row">
+                        <label class="constraint-label">
+                          <input type="checkbox" class="constraint-checkbox" data-constraint-metric="sqn" />
+                          SQN
+                        </label>
+                        <span class="constraint-operator">&ge;</span>
+                        <input type="number" class="constraint-input" data-constraint-threshold="sqn" value="0.0" step="0.1" />
+                      </div>
+                      <div class="constraint-row">
+                        <label class="constraint-label">
+                          <input type="checkbox" class="constraint-checkbox" data-constraint-metric="ulcer_index" />
+                          Ulcer Index
+                        </label>
+                        <span class="constraint-operator">&le;</span>
+                        <input type="number" class="constraint-input" data-constraint-threshold="ulcer_index" value="20.0" step="0.1" />
+                      </div>
+                      <div class="constraint-row">
+                        <label class="constraint-label">
+                          <input type="checkbox" class="constraint-checkbox" data-constraint-metric="consistency_score" />
+                          Consistency %
+                        </label>
+                        <span class="constraint-operator">&ge;</span>
+                        <input type="number" class="constraint-input" data-constraint-threshold="consistency_score" value="0.0" step="0.1" />
+                      </div>
+                      <div class="constraint-row">
+                        <label class="constraint-label">
+                          <input type="checkbox" class="constraint-checkbox" data-constraint-metric="sortino_ratio" />
+                          Sortino Ratio
+                        </label>
+                        <span class="constraint-operator">&ge;</span>
+                        <input type="number" class="constraint-input" data-constraint-threshold="sortino_ratio" value="0.0" step="0.1" />
                       </div>
                     </div>
                   </div>
@@ -556,9 +736,11 @@
   <script src="/static/js/utils.js"></script>
   <script src="/static/js/api.js"></script>
   <script src="/static/js/strategy-config.js"></script>
+  <script src="/static/js/optuna-ui.js"></script>
   <script src="/static/js/ui-handlers.js"></script>
   <script src="/static/js/presets.js"></script>
   <script src="/static/js/main.js"></script>
 </body>
 </html>
+
 

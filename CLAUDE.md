@@ -221,7 +221,7 @@ python tools/generate_baseline_s01.py
 
 **Start Page (`/` - index.html):**
 - Strategy selection and parameter configuration
-- Optuna settings (target, budget, sampler, pruner)
+- Optuna settings (objectives + primary objective, budget, sampler, pruner, constraints)
 - Walk-Forward Analysis settings (IS/OOS periods)
 - Run Optuna or Run WFA buttons
 - Results automatically saved to database
@@ -230,6 +230,7 @@ python tools/generate_baseline_s01.py
 **Results Page (`/results` - results.html):**
 - Studies Manager: List all saved optimization studies
 - Study details: View trials (Optuna) or windows (WFA)
+- Pareto badge + constraint feasibility indicators for Optuna trials
 - Equity curve visualization
 - Parameter comparison tables
 - Download trades CSV for any trial (on-demand generation)

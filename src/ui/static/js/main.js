@@ -170,6 +170,7 @@ document.addEventListener('DOMContentLoaded', async () => {
   bindOptimizerInputs();
   bindMinProfitFilterControl();
   bindScoreControls();
+  bindOptunaUiControls();
   bindMASelectors();
 
   await initializePresets();

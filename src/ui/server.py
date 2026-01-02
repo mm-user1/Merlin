@@ -18,7 +18,14 @@ sys.path.insert(0, str(Path(__file__).parent.parent))
 
 from core.backtest_engine import load_data, prepare_dataset_with_warmup
 from core.export import export_trades_csv
-from core.optuna_engine import OptimizationConfig, OptimizationResult, run_optimization
+from core.optuna_engine import (
+    CONSTRAINT_OPERATORS,
+    OBJECTIVE_DIRECTIONS,
+    OBJECTIVE_DISPLAY_NAMES,
+    OptimizationConfig,
+    OptimizationResult,
+    run_optimization,
+)
 from core.storage import (
     delete_study,
     get_study_trial,
@@ -172,6 +179,67 @@ DEFAULT_OPTIMIZER_SCORE_CONFIG: Dict[str, Any] = {
         "consistency": {"min": 0.0, "max": 100.0},
     },
 }
+
+
+def validate_objectives_config(
+    objectives: List[str],
+    primary_objective: Optional[str],
+) -> Tuple[bool, Optional[str]]:
+    if not objectives or len(objectives) < 1:
+        return False, "At least 1 objective is required."
+    if len(objectives) > 6:
+        return False, "Maximum 6 objectives allowed."
+    for obj in objectives:
+        if obj not in OBJECTIVE_DIRECTIONS:
+            return False, f"Unknown objective: {obj}"
+    if len(objectives) > 1:
+        if not primary_objective:
+            return False, "Primary objective required for multi-objective optimization."
+        if primary_objective not in objectives:
+            return False, "Primary objective must be one of the selected objectives."
+    return True, None
+
+
+def validate_constraints_config(
+    constraints: List[Dict[str, Any]],
+) -> Tuple[bool, Optional[str]]:
+    for i, spec in enumerate(constraints or []):
+        if not isinstance(spec, dict):
+            return False, f"Constraint {i + 1}: Invalid constraint format"
+        metric = spec.get("metric")
+        threshold = spec.get("threshold")
+        enabled = spec.get("enabled", False)
+        if not enabled:
+            continue
+        if metric not in CONSTRAINT_OPERATORS:
+            return False, f"Constraint {i + 1}: Unknown metric '{metric}'"
+        if threshold is None:
+            return False, f"Constraint {i + 1}: Threshold is required"
+        try:
+            float(threshold)
+        except (TypeError, ValueError):
+            return False, f"Constraint {i + 1}: Threshold must be a number"
+    return True, None
+
+
+def validate_sampler_config(
+    sampler_type: str,
+    population_size: Optional[int],
+    crossover_prob: Optional[float],
+) -> Tuple[bool, Optional[str]]:
+    valid_samplers = {"tpe", "nsga2", "nsga3", "random"}
+    if sampler_type not in valid_samplers:
+        return False, f"Unknown sampler: {sampler_type}"
+    if sampler_type in ("nsga2", "nsga3"):
+        if population_size is not None:
+            if population_size < 2:
+                return False, "Population size must be at least 2"
+            if population_size > 1000:
+                return False, "Population size must be at most 1000"
+        if crossover_prob is not None:
+            if not (0.0 <= crossover_prob <= 1.0):
+                return False, "Crossover probability must be between 0 and 1"
+    return True, None
 
 PRESETS_DIR = Path(__file__).resolve().parent.parent / "presets"
 DEFAULT_PRESET_NAME = "defaults"
@@ -1045,6 +1113,33 @@ def run_walkforward_optimization() -> object:
     except json.JSONDecodeError:
         return jsonify({"error": "Invalid optimization config JSON."}), HTTPStatus.BAD_REQUEST
 
+    objectives = config_payload.get("objectives", [])
+    primary_objective = config_payload.get("primary_objective")
+    valid, error = validate_objectives_config(objectives, primary_objective)
+    if not valid:
+        return jsonify({"error": error}), HTTPStatus.BAD_REQUEST
+
+    constraints = config_payload.get("constraints", [])
+    valid, error = validate_constraints_config(constraints)
+    if not valid:
+        return jsonify({"error": error}), HTTPStatus.BAD_REQUEST
+
+    sampler_type = str(config_payload.get("sampler", "tpe")).strip().lower()
+    population_size = config_payload.get("population_size")
+    crossover_prob = config_payload.get("crossover_prob")
+    try:
+        population_size_val = int(population_size) if population_size is not None else None
+    except (TypeError, ValueError):
+        return jsonify({"error": "Population size must be a number."}), HTTPStatus.BAD_REQUEST
+    try:
+        crossover_prob_val = float(crossover_prob) if crossover_prob is not None else None
+    except (TypeError, ValueError):
+        return jsonify({"error": "Crossover probability must be a number."}), HTTPStatus.BAD_REQUEST
+
+    valid, error = validate_sampler_config(sampler_type, population_size_val, crossover_prob_val)
+    if not valid:
+        return jsonify({"error": error}), HTTPStatus.BAD_REQUEST
+
     strategy_id, error_response = _resolve_strategy_id_from_request()
     if error_response:
         return error_response
@@ -1162,18 +1257,33 @@ def run_walkforward_optimization() -> object:
         "strategy_id": optimization_config.strategy_id,
         "warmup_bars": optimization_config.warmup_bars,
         "csv_original_name": original_csv_name,
+        "objectives": list(getattr(optimization_config, "objectives", []) or []),
+        "primary_objective": getattr(optimization_config, "primary_objective", None),
+        "constraints": json.loads(json.dumps(getattr(optimization_config, "constraints", []) or [])),
+        "sampler_type": getattr(optimization_config, "sampler_type", "tpe"),
+        "population_size": getattr(optimization_config, "population_size", None),
+        "crossover_prob": getattr(optimization_config, "crossover_prob", None),
+        "mutation_prob": getattr(optimization_config, "mutation_prob", None),
+        "swapping_prob": getattr(optimization_config, "swapping_prob", None),
+        "n_startup_trials": getattr(optimization_config, "n_startup_trials", 20),
     }
 
     optuna_settings = {
-        "target": getattr(optimization_config, "optuna_target", "score"),
+        "objectives": list(getattr(optimization_config, "objectives", []) or []),
+        "primary_objective": getattr(optimization_config, "primary_objective", None),
+        "constraints": json.loads(json.dumps(getattr(optimization_config, "constraints", []) or [])),
         "budget_mode": getattr(optimization_config, "optuna_budget_mode", "trials"),
         "n_trials": int(getattr(optimization_config, "optuna_n_trials", 100)),
         "time_limit": int(getattr(optimization_config, "optuna_time_limit", 3600)),
         "convergence_patience": int(getattr(optimization_config, "optuna_convergence", 50)),
         "enable_pruning": bool(getattr(optimization_config, "optuna_enable_pruning", True)),
-        "sampler": getattr(optimization_config, "optuna_sampler", "tpe"),
+        "sampler": getattr(optimization_config, "sampler_type", "tpe"),
+        "population_size": getattr(optimization_config, "population_size", None),
+        "crossover_prob": getattr(optimization_config, "crossover_prob", None),
+        "mutation_prob": getattr(optimization_config, "mutation_prob", None),
+        "swapping_prob": getattr(optimization_config, "swapping_prob", None),
         "pruner": getattr(optimization_config, "optuna_pruner", "median"),
-        "warmup_trials": int(getattr(optimization_config, "optuna_warmup_trials", 20)),
+        "warmup_trials": int(getattr(optimization_config, "n_startup_trials", 20)),
         "save_study": bool(getattr(optimization_config, "optuna_save_study", False)),
     }
 
@@ -1708,7 +1818,11 @@ def _build_optimization_config(
     if optimization_mode != "optuna":
         raise ValueError("Grid Search has been removed. Use Optuna optimization only.")
 
-    optuna_target = str(payload.get("optuna_target", "score")).strip().lower()
+    objectives = payload.get("objectives", [])
+    if not isinstance(objectives, list):
+        objectives = []
+    primary_objective = payload.get("primary_objective")
+
     optuna_budget_mode = str(payload.get("optuna_budget_mode", "trials")).strip().lower()
 
     try:
@@ -1727,44 +1841,73 @@ def _build_optimization_config(
         optuna_convergence = 50
 
     try:
-        optuna_warmup_trials = int(payload.get("optuna_warmup_trials", 20))
+        n_startup_trials = int(payload.get("n_startup_trials", 20))
     except (TypeError, ValueError):
-        optuna_warmup_trials = 20
+        n_startup_trials = 20
 
     optuna_enable_pruning = _parse_bool(payload.get("optuna_enable_pruning", True), True)
-    optuna_sampler = str(payload.get("optuna_sampler", "tpe")).strip().lower()
     optuna_pruner = str(payload.get("optuna_pruner", "median")).strip().lower()
     optuna_save_study = _parse_bool(payload.get("optuna_save_study", False), False)
 
-    allowed_targets = {"score", "net_profit", "romad", "sharpe", "max_drawdown"}
+    sampler_type = str(payload.get("sampler", "tpe")).strip().lower()
+    population_size = payload.get("population_size")
+    crossover_prob = payload.get("crossover_prob")
+    mutation_prob = payload.get("mutation_prob")
+    swapping_prob = payload.get("swapping_prob")
+
+    def _parse_optional_int(value):
+        if value in (None, ""):
+            return None
+        try:
+            return int(value)
+        except (TypeError, ValueError):
+            return None
+
+    def _parse_optional_float(value):
+        if value in (None, ""):
+            return None
+        try:
+            return float(value)
+        except (TypeError, ValueError):
+            return None
+
+    population_size = _parse_optional_int(population_size)
+    crossover_prob = _parse_optional_float(crossover_prob)
+    mutation_prob = _parse_optional_float(mutation_prob)
+    swapping_prob = _parse_optional_float(swapping_prob)
+
     allowed_budget_modes = {"trials", "time", "convergence"}
-    allowed_samplers = {"tpe", "random"}
     allowed_pruners = {"median", "percentile", "patient", "none"}
 
-    if optuna_target not in allowed_targets:
-        raise ValueError(f"Invalid Optuna target: {optuna_target}")
     if optuna_budget_mode not in allowed_budget_modes:
         raise ValueError(f"Invalid Optuna budget mode: {optuna_budget_mode}")
-    if optuna_sampler not in allowed_samplers:
-        raise ValueError(f"Invalid Optuna sampler: {optuna_sampler}")
     if optuna_pruner not in allowed_pruners:
         raise ValueError(f"Invalid Optuna pruner: {optuna_pruner}")
 
     optuna_n_trials = max(10, optuna_n_trials)
     optuna_time_limit = max(60, optuna_time_limit)
     optuna_convergence = max(10, optuna_convergence)
-    optuna_warmup_trials = max(0, optuna_warmup_trials)
+    n_startup_trials = max(0, n_startup_trials)
+
+    if len(objectives) > 1:
+        optuna_enable_pruning = False
 
     optuna_params: Dict[str, Any] = {
-        "optuna_target": optuna_target,
+        "objectives": objectives,
+        "primary_objective": primary_objective,
+        "constraints": payload.get("constraints", []),
+        "sampler_type": sampler_type,
+        "population_size": population_size,
+        "crossover_prob": crossover_prob,
+        "mutation_prob": mutation_prob,
+        "swapping_prob": swapping_prob,
+        "n_startup_trials": n_startup_trials,
         "optuna_budget_mode": optuna_budget_mode,
         "optuna_n_trials": optuna_n_trials,
         "optuna_time_limit": optuna_time_limit,
         "optuna_convergence": optuna_convergence,
         "optuna_enable_pruning": optuna_enable_pruning,
-        "optuna_sampler": optuna_sampler,
         "optuna_pruner": optuna_pruner,
-        "optuna_warmup_trials": optuna_warmup_trials,
         "optuna_save_study": optuna_save_study,
     }
 
@@ -1784,6 +1927,15 @@ def _build_optimization_config(
         min_profit_threshold=min_profit_threshold,
         score_config=score_config,
         optimization_mode=optimization_mode,
+        objectives=objectives,
+        primary_objective=primary_objective,
+        constraints=payload.get("constraints", []),
+        sampler_type=sampler_type,
+        population_size=population_size if population_size is not None else 50,
+        crossover_prob=crossover_prob if crossover_prob is not None else 0.9,
+        mutation_prob=mutation_prob if mutation_prob is not None else None,
+        swapping_prob=swapping_prob if swapping_prob is not None else 0.5,
+        n_startup_trials=n_startup_trials,
     )
 
     if optimization_mode == "optuna":
@@ -1942,6 +2094,33 @@ def run_optimization_endpoint() -> object:
     except json.JSONDecodeError:
         return ("Invalid optimization config JSON.", HTTPStatus.BAD_REQUEST)
 
+    objectives = config_payload.get("objectives", [])
+    primary_objective = config_payload.get("primary_objective")
+    valid, error = validate_objectives_config(objectives, primary_objective)
+    if not valid:
+        return (error, HTTPStatus.BAD_REQUEST)
+
+    constraints = config_payload.get("constraints", [])
+    valid, error = validate_constraints_config(constraints)
+    if not valid:
+        return (error, HTTPStatus.BAD_REQUEST)
+
+    sampler_type = str(config_payload.get("sampler", "tpe")).strip().lower()
+    population_size = config_payload.get("population_size")
+    crossover_prob = config_payload.get("crossover_prob")
+    try:
+        population_size_val = int(population_size) if population_size is not None else None
+    except (TypeError, ValueError):
+        return ("Population size must be a number.", HTTPStatus.BAD_REQUEST)
+    try:
+        crossover_prob_val = float(crossover_prob) if crossover_prob is not None else None
+    except (TypeError, ValueError):
+        return ("Crossover probability must be a number.", HTTPStatus.BAD_REQUEST)
+
+    valid, error = validate_sampler_config(sampler_type, population_size_val, crossover_prob_val)
+    if not valid:
+        return (error, HTTPStatus.BAD_REQUEST)
+
     strategy_id, error_response = _resolve_strategy_id_from_request()
     if error_response:
         return error_response
@@ -2017,48 +2196,62 @@ def run_optimization_endpoint() -> object:
         seconds = int(optimization_time_seconds % 60)
         optimization_time_str = f"{minutes}m {seconds}s"
 
-        target_labels = {
-            "score": "Composite Score",
-            "net_profit": "Net Profit %",
-            "romad": "RoMaD",
-            "sharpe": "Sharpe Ratio",
-            "max_drawdown": "Max Drawdown %",
-        }
-
         summary = getattr(optimization_config, "optuna_summary", {})
         total_trials = int(summary.get("total_trials", getattr(optimization_config, "optuna_n_trials", 0)))
         completed_trials = int(summary.get("completed_trials", len(results)))
         pruned_trials = int(summary.get("pruned_trials", 0))
         best_value = summary.get("best_value")
+        best_values = summary.get("best_values")
 
-        if best_value is None and results:
+        if best_value is None and best_values is None and results:
             best_result = results[0]
-            if optimization_config.optuna_target == "score":
-                best_value = best_result.score
-            elif optimization_config.optuna_target == "net_profit":
-                best_value = best_result.net_profit_pct
-            elif optimization_config.optuna_target == "romad":
-                best_value = best_result.romad
-            elif optimization_config.optuna_target == "sharpe":
-                best_value = best_result.sharpe_ratio
-            elif optimization_config.optuna_target == "max_drawdown":
-                best_value = best_result.max_drawdown_pct
+            if getattr(best_result, "objective_values", None):
+                if len(best_result.objective_values) > 1:
+                    best_values = dict(
+                        zip(
+                            getattr(optimization_config, "objectives", []) or [],
+                            best_result.objective_values,
+                        )
+                    )
+                else:
+                    best_value = best_result.objective_values[0]
 
         best_value_str = "-"
-        if best_value is not None:
+        if best_values:
+            parts = []
+            for metric, value in best_values.items():
+                label = OBJECTIVE_DISPLAY_NAMES.get(metric, metric)
+                try:
+                    formatted = f"{float(value):.4f}"
+                except (TypeError, ValueError):
+                    formatted = str(value)
+                parts.append(f"{label}={formatted}")
+            best_value_str = ", ".join(parts) if parts else "-"
+        elif best_value is not None:
             try:
                 best_value_str = f"{float(best_value):.4f}"
             except (TypeError, ValueError):
                 best_value_str = str(best_value)
 
+        objectives = getattr(optimization_config, "objectives", []) or []
+        primary_objective = getattr(optimization_config, "primary_objective", None)
+        objective_label = (
+            OBJECTIVE_DISPLAY_NAMES.get(objectives[0], objectives[0])
+            if len(objectives) == 1
+            else "Multi-objective"
+        )
+
         optimization_metadata = {
             "method": "Optuna",
-            "target": target_labels.get(optimization_config.optuna_target, "Composite Score"),
+            "target": objective_label,
+            "objectives": objectives,
+            "primary_objective": primary_objective,
             "total_trials": total_trials,
             "completed_trials": completed_trials,
             "pruned_trials": pruned_trials,
             "best_trial_number": summary.get("best_trial_number"),
             "best_value": best_value_str,
+            "pareto_front_size": summary.get("pareto_front_size"),
             "optimization_time": optimization_time_str,
         }
     except ValueError as exc:

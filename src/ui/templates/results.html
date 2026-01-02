@@ -88,8 +88,16 @@
         <div class="collapsible-content">
           <div class="settings-list">
             <div class="setting-item">
-              <span class="key">Target</span>
-              <span class="val" id="optuna-target">-</span>
+              <span class="key">Objectives</span>
+              <span class="val" id="optuna-objectives">-</span>
+            </div>
+            <div class="setting-item">
+              <span class="key">Primary</span>
+              <span class="val" id="optuna-primary">-</span>
+            </div>
+            <div class="setting-item">
+              <span class="key">Constraints</span>
+              <span class="val" id="optuna-constraints">-</span>
             </div>
             <div class="setting-item">
               <span class="key">Budget</span>
@@ -178,10 +186,10 @@
       <div class="summary-row" style="display: none;"></div>
 
       <div class="table-card">
-        <div class="table-card-header">
-          <h3>Top Parameter Sets</h3>
-          <span style="font-size: 12px; color: #777;">By Optimization Target</span>
-        </div>
+      <div class="table-card-header">
+        <h3>Top Parameter Sets</h3>
+        <span style="font-size: 12px; color: #777;">Sorted by objectives</span>
+      </div>
         <div class="table-scroll">
           <table class="data-table">
             <thead>
@@ -191,9 +199,13 @@
                 <th>Net Profit %</th>
                 <th>Max DD %</th>
                 <th>Trades</th>
+                <th>Score</th>
+                <th>RoMaD</th>
                 <th>Sharpe</th>
                 <th>PF</th>
-                <th>Score</th>
+                <th>Ulcer</th>
+                <th>SQN</th>
+                <th>Consist</th>
               </tr>
             </thead>
             <tbody></tbody>
@@ -216,6 +228,7 @@
 
   <script src="/static/js/utils.js"></script>
   <script src="/static/js/api.js"></script>
+  <script src="/static/js/optuna-results-ui.js"></script>
   <script src="/static/js/results.js"></script>
 
   <div class="modal-overlay" id="missingCsvModal">

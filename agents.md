@@ -9,7 +9,7 @@ IMPORTANT: The GUI must use a light theme.
 "./docs" folder is used for documentation, plans, reference scripts etc.
 "./src" is the main project folder
 
-Run Python in Windows from C:\Users\mt\Desktop\Strategy\S_Python\.venv\Scripts\python.exe
+Always use this interpreter for Python and tests: C:\Users\mt\Desktop\Strategy\S_Python\.venv\Scripts\python.exe (e.g., `C:\Users\mt\Desktop\Strategy\S_Python\.venv\Scripts\python.exe -m pytest -q`).
 
 ## Project: Merlin
 

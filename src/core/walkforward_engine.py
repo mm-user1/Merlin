@@ -15,7 +15,7 @@ import pandas as pd
 
 from . import metrics
 from .backtest_engine import prepare_dataset_with_warmup
-from .optuna_engine import OptunaConfig, OptimizationConfig, run_optuna_optimization
+from .optuna_engine import OptunaConfig, OptimizationConfig, SamplerConfig, run_optuna_optimization
 from .storage import save_wfa_study_to_db
 
 logger = logging.getLogger(__name__)
@@ -544,18 +544,46 @@ class WalkForwardEngine:
             min_profit_threshold=float(self.base_config_template["min_profit_threshold"]),
             score_config=deepcopy(self.base_config_template.get("score_config", {})),
             optimization_mode="wfa",
+            objectives=list(self.base_config_template.get("objectives") or []),
+            primary_objective=self.base_config_template.get("primary_objective"),
+            constraints=deepcopy(self.base_config_template.get("constraints", [])),
+            sampler_type=self.base_config_template.get("sampler_type", "tpe"),
+            population_size=self.base_config_template.get("population_size", 50),
+            crossover_prob=self.base_config_template.get("crossover_prob", 0.9),
+            mutation_prob=self.base_config_template.get("mutation_prob"),
+            swapping_prob=self.base_config_template.get("swapping_prob", 0.5),
+            n_startup_trials=self.base_config_template.get("n_startup_trials", 20),
         )
 
+        objectives = list(self.optuna_settings.get("objectives") or [])
+        primary_objective = self.optuna_settings.get("primary_objective")
+        constraints_payload = list(self.optuna_settings.get("constraints") or [])
+
+        sampler_config = SamplerConfig(
+            sampler_type=str(self.optuna_settings.get("sampler", "tpe")).lower(),
+            population_size=int(self.optuna_settings.get("population_size") or 50),
+            crossover_prob=float(self.optuna_settings.get("crossover_prob") or 0.9),
+            mutation_prob=self.optuna_settings.get("mutation_prob"),
+            swapping_prob=float(self.optuna_settings.get("swapping_prob") or 0.5),
+            n_startup_trials=int(self.optuna_settings.get("warmup_trials") or 20),
+        )
+
+        enable_pruning = bool(self.optuna_settings.get("enable_pruning", True))
+        if len(objectives) > 1:
+            enable_pruning = False
+
         optuna_cfg = OptunaConfig(
-            target=self.optuna_settings["target"],
+            objectives=objectives,
+            primary_objective=primary_objective,
+            constraints=constraints_payload,
+            sampler_config=sampler_config,
             budget_mode=self.optuna_settings["budget_mode"],
             n_trials=self.optuna_settings["n_trials"],
             time_limit=self.optuna_settings["time_limit"],
             convergence_patience=self.optuna_settings["convergence_patience"],
-            enable_pruning=self.optuna_settings["enable_pruning"],
-            sampler=self.optuna_settings["sampler"],
+            enable_pruning=enable_pruning,
             pruner=self.optuna_settings["pruner"],
-            warmup_trials=self.optuna_settings["warmup_trials"],
+            warmup_trials=int(self.optuna_settings.get("warmup_trials") or 20),
             save_study=self.optuna_settings["save_study"],
             study_name=None,
         )

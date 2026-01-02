@@ -26,6 +26,34 @@ const ResultsState = {
   selectedStudies: []
 };
 
+const OBJECTIVE_LABELS = {
+  net_profit_pct: 'Net Profit %',
+  max_drawdown_pct: 'Min Drawdown %',
+  sharpe_ratio: 'Sharpe Ratio',
+  sortino_ratio: 'Sortino Ratio',
+  romad: 'RoMaD',
+  profit_factor: 'Profit Factor',
+  win_rate: 'Win Rate %',
+  sqn: 'SQN',
+  ulcer_index: 'Ulcer Index',
+  consistency_score: 'Consistency %',
+  composite_score: 'Composite Score'
+};
+
+const CONSTRAINT_OPERATORS = {
+  total_trades: '>=',
+  net_profit_pct: '>=',
+  max_drawdown_pct: '<=',
+  sharpe_ratio: '>=',
+  sortino_ratio: '>=',
+  romad: '>=',
+  profit_factor: '>=',
+  win_rate: '>=',
+  sqn: '>=',
+  ulcer_index: '<=',
+  consistency_score: '>='
+};
+
 function readStoredState() {
   const raw = sessionStorage.getItem(OPT_STATE_KEY) || localStorage.getItem(OPT_STATE_KEY);
   if (!raw) return null;
@@ -208,7 +236,7 @@ async function applyStudyPayload(data) {
   ResultsState.studyId = study.study_id || ResultsState.studyId;
   ResultsState.studyName = study.study_name || ResultsState.studyName;
   ResultsState.mode = study.optimization_mode || ResultsState.mode;
-  ResultsState.status = study.status || ResultsState.status;
+  ResultsState.status = study.status || (study.completed_at ? 'completed' : ResultsState.status);
   ResultsState.strategyId = study.strategy_id || ResultsState.strategyId;
   ResultsState.dataset = { label: study.csv_file_name || '' };
   ResultsState.dataPath = study.csv_file_path || ResultsState.dataPath;
@@ -259,15 +287,22 @@ async function applyStudyPayload(data) {
   }
 
   const optunaConfig = config.optuna_config || {};
+  const objectives = study.objectives || optunaConfig.objectives || study.objectives_json || [];
+  const constraints = study.constraints || optunaConfig.constraints || study.constraints_json || [];
   ResultsState.optuna = {
-    target: optunaConfig.target || study.target_metric || ResultsState.optuna.target,
-    budgetMode: optunaConfig.budget_mode || ResultsState.optuna.budgetMode,
-    nTrials: optunaConfig.n_trials || ResultsState.optuna.nTrials,
-    timeLimit: optunaConfig.time_limit || ResultsState.optuna.timeLimit,
-    convergence: optunaConfig.convergence_patience || ResultsState.optuna.convergence,
-    sampler: optunaConfig.sampler || ResultsState.optuna.sampler,
+    objectives,
+    primaryObjective: study.primary_objective || optunaConfig.primary_objective || null,
+    constraints,
+    budgetMode: optunaConfig.budget_mode || study.budget_mode || ResultsState.optuna.budgetMode,
+    nTrials: optunaConfig.n_trials || study.n_trials || ResultsState.optuna.nTrials,
+    timeLimit: optunaConfig.time_limit || study.time_limit || ResultsState.optuna.timeLimit,
+    convergence: optunaConfig.convergence_patience || study.convergence_patience || ResultsState.optuna.convergence,
+    sampler: (optunaConfig.sampler_config && optunaConfig.sampler_config.sampler_type)
+      || optunaConfig.sampler_type
+      || study.sampler_type
+      || ResultsState.optuna.sampler,
     pruner: optunaConfig.pruner || ResultsState.optuna.pruner,
-    workers: study.worker_processes || ResultsState.optuna.workers
+    workers: config.worker_processes || ResultsState.optuna.workers
   };
 
   updateResultsHeader();
@@ -402,15 +437,23 @@ function setElementVisible(id, visible) {
   if (el) el.style.display = visible ? 'block' : 'none';
 }
 
-function formatTarget(target) {
-  const labels = {
-    score: 'Composite Score',
-    net_profit: 'Net Profit %',
-    romad: 'RoMaD',
-    sharpe: 'Sharpe Ratio',
-    max_drawdown: 'Max Drawdown %'
-  };
-  return labels[target] || target;
+function formatObjectiveLabel(name) {
+  return OBJECTIVE_LABELS[name] || name;
+}
+
+function formatObjectivesList(objectives) {
+  if (!objectives || !objectives.length) return '-';
+  return objectives.map((obj) => formatObjectiveLabel(obj)).join(', ');
+}
+
+function formatConstraintsSummary(constraints) {
+  const enabled = (constraints || []).filter((c) => c && c.enabled);
+  if (!enabled.length) return 'None';
+  return enabled.map((c) => {
+    const operator = CONSTRAINT_OPERATORS[c.metric] || '';
+    const threshold = c.threshold !== undefined && c.threshold !== null ? c.threshold : '-';
+    return `${formatObjectiveLabel(c.metric)} ${operator} ${threshold}`;
+  }).join(', ');
 }
 
 function formatParamName(name) {
@@ -465,26 +508,20 @@ function renderOptunaTable(results) {
   tbody.innerHTML = '';
 
   const thead = document.querySelector('.data-table thead tr');
-  if (thead) {
-    thead.innerHTML = `
-      <th>#</th>
-      <th>Param ID</th>
-      <th>Net Profit %</th>
-      <th>Max DD %</th>
-      <th>Trades</th>
-      <th>Score</th>
-      <th>RoMaD</th>
-      <th>Sharpe</th>
-      <th>PF</th>
-      <th>Ulcer</th>
-      <th>SQN</th>
-      <th>Consist</th>
-    `;
+  const objectives = ResultsState.optuna.objectives || [];
+  const constraints = ResultsState.optuna.constraints || [];
+  const hasConstraints = constraints.some((c) => c && c.enabled);
+  if (thead && window.OptunaResultsUI) {
+    thead.innerHTML = window.OptunaResultsUI.buildTrialTableHeaders(objectives, hasConstraints);
   }
 
   const list = results || [];
   list.forEach((result, index) => {
-    const row = document.createElement('tr');
+    const temp = document.createElement('tbody');
+    if (window.OptunaResultsUI) {
+      temp.innerHTML = window.OptunaResultsUI.renderTrialRow(result, objectives, { hasConstraints }).trim();
+    }
+    const row = temp.firstElementChild || document.createElement('tr');
     row.className = 'clickable';
     row.dataset.index = index;
     const trialNumber = result.trial_number ?? (index + 1);
@@ -493,22 +530,10 @@ function renderOptunaTable(results) {
     const paramId = result.param_id
       || createParamId(result.params || {}, ResultsState.strategyConfig, ResultsState.fixedParams);
 
-    row.innerHTML = `
-      <td class="rank">${index + 1}</td>
-      <td class="param-hash">${paramId}</td>
-      <td class="${result.net_profit_pct >= 0 ? 'val-positive' : 'val-negative'}">
-        ${result.net_profit_pct >= 0 ? '+' : ''}${Number(result.net_profit_pct || 0).toFixed(2)}%
-      </td>
-      <td class="val-negative">-${Math.abs(Number(result.max_drawdown_pct || 0)).toFixed(2)}%</td>
-      <td>${result.total_trades ?? '-'}</td>
-      <td>${result.score !== undefined && result.score !== null ? Number(result.score).toFixed(1) : '0.0'}</td>
-      <td>${result.romad !== undefined && result.romad !== null ? Number(result.romad).toFixed(2) : 'N/A'}</td>
-      <td>${result.sharpe_ratio !== undefined && result.sharpe_ratio !== null ? Number(result.sharpe_ratio).toFixed(2) : 'N/A'}</td>
-      <td>${result.profit_factor !== undefined && result.profit_factor !== null ? Number(result.profit_factor).toFixed(2) : 'N/A'}</td>
-      <td>${result.ulcer_index !== undefined && result.ulcer_index !== null ? Number(result.ulcer_index).toFixed(2) : 'N/A'}</td>
-      <td>${result.sqn !== undefined && result.sqn !== null ? Number(result.sqn).toFixed(2) : 'N/A'}</td>
-      <td>${result.consistency_score !== undefined && result.consistency_score !== null ? Number(result.consistency_score).toFixed(2) : 'N/A'}</td>
-    `;
+    const rankCell = row.querySelector('.rank');
+    if (rankCell) rankCell.textContent = index + 1;
+    const hashCell = row.querySelector('.param-hash');
+    if (hashCell) hashCell.textContent = paramId;
 
     row.addEventListener('click', async () => {
       selectTableRow(index, trialNumber);
@@ -724,7 +749,9 @@ function displaySummaryCards(stitchedOOS) {
 }
 
 function updateSidebarSettings() {
-  setText('optuna-target', formatTarget(ResultsState.optuna.target));
+  setText('optuna-objectives', formatObjectivesList(ResultsState.optuna.objectives || []));
+  setText('optuna-primary', ResultsState.optuna.primaryObjective ? formatObjectiveLabel(ResultsState.optuna.primaryObjective) : '-');
+  setText('optuna-constraints', formatConstraintsSummary(ResultsState.optuna.constraints || []));
   const budgetMode = ResultsState.optuna.budgetMode || '';
   let budgetLabel = '-';
   if (budgetMode === 'trials') {
