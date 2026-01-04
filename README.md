@@ -7,7 +7,9 @@ Config-driven backtesting and Optuna optimization platform for cryptocurrency tr
 - **Database persistence** - All optimization results automatically saved to SQLite database
 - **Studies browser** - Web UI for browsing, opening, and managing historical optimization studies
 - **Multi-strategy support** - S01 Trailing MA and S04 StochRSI included, easily extensible
-- **Optuna optimization** - Bayesian parameter optimization with multiple targets (score, net profit, Sharpe, RoMaD)
+- **Optuna optimization** - Single- and multi-objective optimization (1–6 objectives) with Pareto front results, primary-objective sorting, and multiple samplers (Random, TPE/MOTPE, NSGA-II/NSGA-III)
+- **Soft constraints (Optuna)** - Configure feasibility rules (e.g., Total Trades ≥ 30). Results show feasible/infeasible indicators; infeasible trials are deprioritized, not discarded.
+- **Robust trial handling** - If an objective returns NaN, the trial is marked FAIL (study continues) and failed trials are ignored by samplers.
 - **Walk-forward analysis** - IS/OOS validation with stitched equity curves and WFE metrics
 - **Two-page UI** - Start page for configuration, Results page for studies management
 - **On-demand trade export** - Generate TradingView-compatible CSV for any saved trial

@@ -80,6 +80,8 @@ project-root/
     │       │   ├── api.js       # API client functions
     │       │   ├── strategy-config.js
     │       │   ├── ui-handlers.js
+    │       │   ├── optuna-ui.js            # Optuna Start-page UI helpers (objectives/constraints/sampler panels)
+    │       │   ├── optuna-results-ui.js    # Optuna Results-page render helpers (dynamic columns/badges)
     │       │   ├── presets.js
     │       │   └── utils.js
     │       └── css/
@@ -112,8 +114,12 @@ project-root/
 
 4. **Optuna-Only Optimization**
    - Grid search removed; Optuna handles all optimization
-   - Supports multiple targets: score, net_profit, romad, sharpe, max_drawdown
+   - Supports **single- and multi-objective** optimization (select **1–6 objectives**)
+   - Multi-objective studies return a **Pareto front**; UI provides **primary objective** sorting
+   - Supports **soft constraints** (e.g., Total Trades ≥ 30): feasible trials are prioritized; infeasible trials are retained but deprioritized
+   - Samplers: Random, TPE (incl. multi-objective TPE), NSGA-II, NSGA-III
    - Budget modes: n_trials, timeout, patience
+   - Pruning is supported for **single-objective** only (Optuna `should_prune()` does not support multi-objective)
 
 5. **Database Persistence**
    - All optimization results automatically saved to SQLite database
@@ -128,7 +134,7 @@ project-root/
 | Module | Purpose |
 |--------|---------|
 | `backtest_engine.py` | Bar-by-bar trade simulation, position management, data preparation |
-| `optuna_engine.py` | Bayesian optimization using Optuna, trial management, pruning, database persistence |
+| `optuna_engine.py` | Optuna optimization engine: single/multi-objective, constraints, samplers (TPE/Random/NSGA), pruning (single-objective only), and database persistence |
 | `walkforward_engine.py` | Rolling walk-forward analysis with calendar-based IS/OOS windows, stitched OOS equity, annualized WFE, database persistence |
 | `metrics.py` | Calculate BasicMetrics and AdvancedMetrics (Sharpe, RoMaD, Profit Factor, SQN, Ulcer Index, Consistency) |
 | `storage.py` | SQLite database operations: save/load studies, manage trials/windows, handle CSV file references |
@@ -262,7 +268,9 @@ SQLite database stored at `src/storage/studies.db` with WAL (Write-Ahead Logging
 **trials** - Individual Optuna trial results (for Optuna mode studies)
 - Foreign key: `study_id` → studies
 - Unique constraint: (study_id, trial_number)
-- Fields: trial parameters (JSON), metrics (net_profit_pct, max_drawdown_pct, sharpe_ratio, romad, etc.), composite score
+- Stores params (JSON) and computed metrics
+- **Multi-objective:** stores `objective_values_json` aligned with selected objectives
+- **Constraints:** stores `constraint_values_json`, `constraints_satisfied`, and `is_pareto_optimal` flags
 
 **wfa_windows** - Walk-Forward Analysis window results (for WFA mode studies)
 - Foreign key: `study_id` → studies

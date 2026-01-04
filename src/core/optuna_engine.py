@@ -96,7 +96,6 @@ class OptimizationResult:
     constraints_satisfied: Optional[bool] = None
     is_pareto_optimal: Optional[bool] = None
     dominance_rank: Optional[int] = None
-    objective_missing: bool = False
 
 
 @dataclass
@@ -284,6 +283,15 @@ def _is_nan(value: Any) -> bool:
     return isinstance(value, float) and math.isnan(value)
 
 
+def _is_non_finite(value: Any) -> bool:
+    if value is None:
+        return True
+    try:
+        return not math.isfinite(float(value))
+    except (TypeError, ValueError):
+        return True
+
+
 def evaluate_constraints(
     all_metrics: Dict[str, Any],
     constraints: List[ConstraintSpec],
@@ -459,6 +467,23 @@ def _compute_pareto_front(
     return pareto_numbers
 
 
+def _calculate_total_violation(
+    constraint_values: Optional[List[float]],
+    constraints_satisfied: Optional[bool],
+) -> float:
+    """
+    Calculate total constraint violation magnitude.
+
+    Optuna treats constraint values > 0 as violated and <= 0 as satisfied.
+    Lower totals are closer to feasibility.
+    """
+    if not constraint_values:
+        if constraints_satisfied is False:
+            return float("inf")
+        return 0.0
+    return sum(max(0.0, float(v)) for v in constraint_values)
+
+
 def sort_optimization_results(
     results: List[OptimizationResult],
     study: Optional[optuna.Study],
@@ -514,46 +539,13 @@ def sort_optimization_results(
 
     return sorted(
         results,
-        key=lambda item: (group_rank(item), primary_sort_value(item), tie_breaker(item)),
+        key=lambda item: (
+            group_rank(item),
+            _calculate_total_violation(item.constraint_values, item.constraints_satisfied),
+            primary_sort_value(item),
+            tie_breaker(item),
+        ),
     )
-
-
-def get_best_trial_info(
-    study: optuna.Study,
-    mo_config: MultiObjectiveConfig,
-) -> Optional[Dict[str, Any]]:
-    """Get best trial info based on optimization mode."""
-    if not mo_config.is_multi_objective():
-        best = study.best_trial
-        if best is None:
-            return None
-        return {
-            "trial_number": best.number,
-            "value": study.best_value,
-            "params": best.params,
-        }
-
-    pareto_trials = study.best_trials
-    if not pareto_trials:
-        return None
-
-    primary_idx = mo_config.objectives.index(mo_config.primary_objective)
-    primary_direction = OBJECTIVE_DIRECTIONS[mo_config.primary_objective]
-    reverse = primary_direction == "maximize"
-
-    sorted_pareto = sorted(
-        pareto_trials,
-        key=lambda t: t.values[primary_idx],
-        reverse=reverse,
-    )
-
-    best = sorted_pareto[0]
-    return {
-        "trial_number": best.number,
-        "values": dict(zip(mo_config.objectives, best.values)),
-        "params": best.params,
-        "pareto_size": len(pareto_trials),
-    }
 
 
 def _build_constraint_specs(constraints_payload: Any) -> List[ConstraintSpec]:
@@ -674,7 +666,6 @@ def _trial_set_result_attrs(
     all_metrics: Dict[str, Any],
     constraint_values: List[float],
     constraints_satisfied: bool,
-    objective_missing: bool,
 ) -> None:
     """
     Persist key metrics into trial.user_attrs for cross-process aggregation.
@@ -684,7 +675,6 @@ def _trial_set_result_attrs(
     trial.set_user_attr("merlin.constraint_values", list(constraint_values))
     trial.set_user_attr("merlin.constraints_satisfied", bool(constraints_satisfied))
     trial.set_user_attr("merlin.all_metrics", dict(all_metrics))
-    trial.set_user_attr("merlin.objective_missing", bool(objective_missing))
 
 
 def _result_from_trial(trial: optuna.trial.FrozenTrial) -> OptimizationResult:
@@ -696,7 +686,6 @@ def _result_from_trial(trial: optuna.trial.FrozenTrial) -> OptimizationResult:
     objective_values = list(attrs.get("merlin.objective_values") or [])
     constraint_values = list(attrs.get("merlin.constraint_values") or [])
     constraints_satisfied = attrs.get("merlin.constraints_satisfied")
-    objective_missing = attrs.get("merlin.objective_missing")
     if constraints_satisfied is not None:
         constraints_satisfied = bool(constraints_satisfied)
     result = OptimizationResult(
@@ -721,7 +710,6 @@ def _result_from_trial(trial: optuna.trial.FrozenTrial) -> OptimizationResult:
         objective_values=objective_values,
         constraint_values=constraint_values,
         constraints_satisfied=constraints_satisfied,
-        objective_missing=bool(objective_missing) if objective_missing is not None else False,
     )
     if trial.values is not None:
         setattr(result, "optuna_values", list(trial.values))
@@ -1344,26 +1332,38 @@ class OptunaOptimizer:
             "composite_score": result.score,
         }
 
-    def _extract_objective_values(self, all_metrics: Dict[str, Any]) -> List[float]:
-        objective_values: List[float] = []
+    def _extract_objective_values(self, all_metrics: Dict[str, Any]) -> List[Optional[float]]:
+        objective_values: List[Optional[float]] = []
         for obj in self.mo_config.objectives:
             value = all_metrics.get(obj)
             if value is None or _is_nan(value):
-                raise optuna.TrialPruned(f"Missing or NaN value for objective: {obj}")
-            objective_values.append(float(value))
+                objective_values.append(None)
+                continue
+            try:
+                objective_values.append(float(value))
+            except (TypeError, ValueError):
+                objective_values.append(None)
         return objective_values
 
-    def _build_penalty_objectives(self, all_metrics: Dict[str, Any]) -> List[float]:
-        objective_values: List[float] = []
-        for obj in self.mo_config.objectives:
-            value = all_metrics.get(obj)
-            if value is None or _is_nan(value):
-                direction = OBJECTIVE_DIRECTIONS.get(obj, "maximize")
-                penalty = -1e12 if direction == "maximize" else 1e12
-                objective_values.append(penalty)
-            else:
-                objective_values.append(float(value))
-        return objective_values
+    def _sanitize_objective_values(
+        self,
+        objective_values: List[Optional[float]],
+        all_metrics: Dict[str, Any],
+    ) -> Tuple[List[Optional[float]], List[str]]:
+        """
+        Normalize objective edge cases without introducing penalty constants.
+        """
+        sanitized_metrics: List[str] = []
+        total_trades = all_metrics.get("total_trades")
+        if _is_non_finite(total_trades) or float(total_trades) > 0:
+            return objective_values, sanitized_metrics
+
+        for idx, value in enumerate(objective_values):
+            if _is_non_finite(value):
+                objective_values[idx] = 0.0
+                sanitized_metrics.append(self.mo_config.objectives[idx])
+
+        return objective_values, sanitized_metrics
 
     def _primary_objective_for_improvement(self, objective_values: List[float]) -> float:
         primary_obj = self.mo_config.primary_objective or self.mo_config.objectives[0]
@@ -1390,20 +1390,20 @@ class OptunaOptimizer:
                 result = scored_results[0]
 
         all_metrics = self._collect_metrics(result)
-        objective_missing = False
-        try:
-            objective_values = self._extract_objective_values(all_metrics)
-        except optuna.TrialPruned as exc:
-            if self.mo_config.is_multi_objective():
-                objective_values = self._build_penalty_objectives(all_metrics)
-                objective_missing = True
-                logger.warning(
-                    "Objective missing for trial %s; applying penalty values and marking invalid (multi-objective). Reason: %s",
-                    trial.number,
-                    exc,
-                )
-            else:
-                raise
+        objective_values = self._extract_objective_values(all_metrics)
+        objective_values, sanitized = self._sanitize_objective_values(objective_values, all_metrics)
+        if sanitized:
+            trial.set_user_attr("merlin.sanitized_metrics", sanitized)
+
+        if self.mo_config.is_multi_objective():
+            if any(_is_non_finite(v) for v in objective_values):
+                # Optuna treats NaN returns as FAILED without aborting the study.
+                return tuple([float("nan")] * len(self.mo_config.objectives))
+        else:
+            v = objective_values[0] if objective_values else None
+            if _is_non_finite(v):
+                # Optuna treats NaN returns as FAILED without aborting the study.
+                return float("nan")
 
         constraint_values = evaluate_constraints(all_metrics, self.constraints)
         constraints_satisfied = True
@@ -1413,7 +1413,6 @@ class OptunaOptimizer:
         result.objective_values = objective_values
         result.constraint_values = constraint_values
         result.constraints_satisfied = constraints_satisfied
-        result.objective_missing = objective_missing
 
         _trial_set_result_attrs(
             trial=trial,
@@ -1422,7 +1421,6 @@ class OptunaOptimizer:
             all_metrics=all_metrics,
             constraint_values=constraint_values,
             constraints_satisfied=constraints_satisfied,
-            objective_missing=objective_missing,
         )
 
         objective_return = tuple(objective_values) if self.mo_config.is_multi_objective() else objective_values[0]
@@ -1466,20 +1464,20 @@ class OptunaOptimizer:
                 result = scored_results[0]
 
         all_metrics = self._collect_metrics(result)
-        objective_missing = False
-        try:
-            objective_values = self._extract_objective_values(all_metrics)
-        except optuna.TrialPruned as exc:
-            if self.mo_config.is_multi_objective():
-                objective_values = self._build_penalty_objectives(all_metrics)
-                objective_missing = True
-                logger.warning(
-                    "Objective missing for trial %s; applying penalty values and marking invalid (multi-objective). Reason: %s",
-                    trial.number,
-                    exc,
-                )
-            else:
-                raise
+        objective_values = self._extract_objective_values(all_metrics)
+        objective_values, sanitized = self._sanitize_objective_values(objective_values, all_metrics)
+        if sanitized:
+            trial.set_user_attr("merlin.sanitized_metrics", sanitized)
+
+        if self.mo_config.is_multi_objective():
+            if any(_is_non_finite(v) for v in objective_values):
+                # Optuna treats NaN returns as FAILED without aborting the study.
+                return tuple([float("nan")] * len(self.mo_config.objectives))
+        else:
+            v = objective_values[0] if objective_values else None
+            if _is_non_finite(v):
+                # Optuna treats NaN returns as FAILED without aborting the study.
+                return float("nan")
 
         constraint_values = evaluate_constraints(all_metrics, self.constraints)
         constraints_satisfied = True
@@ -1493,7 +1491,6 @@ class OptunaOptimizer:
             all_metrics=all_metrics,
             constraint_values=constraint_values,
             constraints_satisfied=constraints_satisfied,
-            objective_missing=objective_missing,
         )
 
         objective_return = tuple(objective_values) if self.mo_config.is_multi_objective() else objective_values[0]
@@ -1733,7 +1730,6 @@ class OptunaOptimizer:
 
         score_config = self.base_config.score_config or DEFAULT_SCORE_CONFIG
         self.trial_results = calculate_score(self.trial_results, score_config)
-        self.trial_results = [r for r in self.trial_results if not r.objective_missing]
 
         if self.study:
             completed_trials = sum(1 for trial in self.study.trials if trial.state == TrialState.COMPLETE)

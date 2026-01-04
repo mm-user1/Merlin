@@ -136,8 +136,10 @@ print(study_data['csv_exists']) # Whether CSV file still exists
 
 **Optuna studies:**
 - Saved to `studies` table (metadata) + `trials` table (parameter sets)
-- Each trial includes: params (JSON), metrics, composite score
-- Only filtered trials saved (by score/profit threshold)
+- Trials include: params (JSON), metrics, composite score
+- Multi-objective studies store objective vectors and Pareto/feasibility flags (constraints)
+- Study summaries may include completed/failed/pruned counts; results lists include COMPLETE trials (failed trials are retained only if explicitly stored for debugging)
+- Optional filters (by score/profit threshold) may reduce stored trials for UI browsing
 
 **WFA studies:**
 - Saved to `studies` table (metadata) + `wfa_windows` table (per-window results)
@@ -215,6 +217,33 @@ pytest tests/ -v
 python tools/generate_baseline_s01.py
 ```
 
+## Optuna: Multi-objective & constraints
+
+**Key behavioral rules (keep these consistent across backend + UI):**
+
+- **Single objective vs multi-objective**
+  - 1 objective: create study with `direction=...`
+  - 2+ objectives: create study with `directions=[...]` and return a tuple of objective values
+  - Multi-objective results are a **Pareto front**; UI sorts Pareto-first then by **primary objective**
+
+- **Pruning**
+  - Pruning is supported for **single-objective** only.
+  - Optuna `Trial.should_prune()` does **not** support multi-objective optimization.
+
+- **Invalid objectives / missing metrics**
+  - If an objective value is missing/NaN, return `float("nan")` (or a NaN tuple for multi-objective).
+  - Optuna treats NaN returns as **FAILED trials** (study continues).
+  - Failed trials are ignored by Optuna samplers (they do not affect future suggestions).
+
+- **Constraints**
+  - Constraints are **soft**: infeasible trials are retained but deprioritized in UI and “best” selection.
+  - `constraints_func` is evaluated only after **successful** trials; it is not called for failed/pruned trials.
+  - Sorting/labeling should follow: feasible Pareto → feasible non-Pareto → infeasible (then by total violation, then primary objective).
+
+- **Concurrency**
+  - Keep Merlin’s existing multi-process optimization architecture. Do not replace it with `study.optimize(..., n_jobs=...)` threading.
+
+
 ## UI Notes
 
 ### Two-Page Architecture
@@ -243,6 +272,8 @@ python tools/generate_baseline_s01.py
 - **api.js**: Centralized API calls for both pages
 - **strategy-config.js**: Dynamic form generation from `config.json`
 - **ui-handlers.js**: Shared UI event handlers
+- **optuna-ui.js**: Optuna Start-page UI helpers (objectives/constraints/sampler panels)
+- **optuna-results-ui.js**: Optuna Results-page UI helpers (dynamic columns/badges)
 - Forms generated dynamically from `config.json`
 - Strategy dropdown auto-populated from discovered strategies
 - No hardcoded parameters in frontend

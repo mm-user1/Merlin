@@ -242,7 +242,7 @@ def generate_study_name(
     else:
         end_str = str(end_date)[:10].replace("-", ".") if end_date else "0000.00.00"
 
-    mode_suffix = "WFA" if str(mode).lower() == "wfa" else "Optuna"
+    mode_suffix = "WFA" if str(mode).lower() == "wfa" else "OPT"
     base_name = f"{prefix}_{ticker_tf} {start_str}-{end_str}_{mode_suffix}"
 
     with get_db_connection() as conn:
@@ -329,9 +329,7 @@ def save_optuna_study_to_db(
     except (TypeError, ValueError):
         filter_score_threshold = 0.0
 
-    filtered_results = [
-        r for r in list(trial_results or []) if not getattr(r, "objective_missing", False)
-    ]
+    filtered_results = list(trial_results or [])
 
     if filter_score_enabled:
         filtered_results = [r for r in filtered_results if float(r.score) >= filter_score_threshold]
@@ -799,6 +797,17 @@ def load_study_from_db(study_id: str) -> Optional[Dict]:
                         reverse=reverse,
                     )
                 else:
+                    def _calculate_total_violation(item: Dict[str, Any]) -> float:
+                        values = item.get("constraint_values") or []
+                        if not values:
+                            if item.get("constraints_satisfied") is False:
+                                return float("inf")
+                            return 0.0
+                        try:
+                            return sum(max(0.0, float(v)) for v in values)
+                        except (TypeError, ValueError):
+                            return float("inf")
+
                     def group_rank(item: Dict[str, Any]) -> int:
                         if constraints_enabled:
                             if not item.get("constraints_satisfied", True):
@@ -812,7 +821,12 @@ def load_study_from_db(study_id: str) -> Optional[Dict]:
                         return -value if primary_direction == "maximize" else value
 
                     trials.sort(
-                        key=lambda t: (group_rank(t), primary_value(t), int(t.get("trial_number") or 0)),
+                        key=lambda t: (
+                            group_rank(t),
+                            _calculate_total_violation(t),
+                            primary_value(t),
+                            int(t.get("trial_number") or 0),
+                        ),
                     )
         elif study.get("optimization_mode") == "wfa":
             cursor = conn.execute(
