@@ -1361,136 +1361,34 @@ def run_walkforward_optimization() -> object:
 
     stitched_oos = result.stitched_oos
 
-    # Get export trades settings from request
-    export_trades = data.get("exportTrades") == "true"
+    response_payload = {
+        "status": "success",
+        "summary": {
+            "total_windows": result.total_windows,
+            "stitched_oos_net_profit_pct": round(result.stitched_oos.final_net_profit_pct, 2),
+            "stitched_oos_max_drawdown_pct": round(result.stitched_oos.max_drawdown_pct, 2),
+            "stitched_oos_total_trades": result.stitched_oos.total_trades,
+            "wfe": round(result.stitched_oos.wfe, 2),
+            "oos_win_rate": round(result.stitched_oos.oos_win_rate, 1),
+        },
+        "mode": "wfa",
+        "strategy_id": strategy_id,
+        "data_path": data_path,
+        "study_id": study_id,
+    }
 
-    # Get dates for filename generation
-    start_date = result.trading_start_date
-    end_date = result.trading_end_date
-
-    # Get original CSV filename
-    original_csv_name = csv_file.filename if csv_file and hasattr(csv_file, "filename") else ""
-    if not original_csv_name and csv_path_raw:
-        original_csv_name = Path(csv_path_raw).name
-
-    from core.export import _extract_symbol_from_csv_filename, export_wfa_trades_history, generate_wfa_output_filename
-
-    if export_trades:
-        # Export trades history for top-K combinations
-        import tempfile
-        import zipfile
-        import shutil
-        import base64
-        from pathlib import Path
-
-        # Extract symbol from CSV filename
-        symbol = _extract_symbol_from_csv_filename(original_csv_name)
-
-        # Create temporary directory for all files
-        temp_dir = Path(tempfile.mkdtemp())
-
-        try:
-            # Export trades to CSVs
-            trade_files = export_wfa_trades_history(
-                wf_result=result,
-                df=df,
-                symbol=symbol,
-                output_dir=temp_dir
-            )
-
-            # Create ZIP with trade CSVs only
-            zip_filename = generate_wfa_output_filename(
-                original_csv_name,
-                start_date,
-                end_date,
-                include_trades=True
-            )
-            zip_path = temp_dir / zip_filename
-
-            with zipfile.ZipFile(zip_path, 'w', zipfile.ZIP_DEFLATED) as zf:
-                # Add all trade CSVs
-                for trade_file in trade_files:
-                    trade_path = temp_dir / trade_file
-                    zf.write(trade_path, trade_file)
-
-            # Read ZIP into base64
-            with open(zip_path, 'rb') as f:
-                zip_bytes = f.read()
-            zip_base64 = base64.b64encode(zip_bytes).decode('utf-8')
-
-            # Cleanup temporary directory
-            shutil.rmtree(temp_dir, ignore_errors=True)
-
-            # Return JSON with embedded ZIP
-            response_payload = {
-                "status": "success",
-                "summary": {
-                    "total_windows": result.total_windows,
-                    "stitched_oos_net_profit_pct": round(result.stitched_oos.final_net_profit_pct, 2),
-                    "stitched_oos_max_drawdown_pct": round(result.stitched_oos.max_drawdown_pct, 2),
-                    "stitched_oos_total_trades": result.stitched_oos.total_trades,
-                    "wfe": round(result.stitched_oos.wfe, 2),
-                    "oos_win_rate": round(result.stitched_oos.oos_win_rate, 1),
-                },
-                "export_trades": True,
-                "zip_filename": zip_filename,
-                "zip_base64": zip_base64,
-                "mode": "wfa",
-                "strategy_id": strategy_id,
-                "data_path": data_path,
-                "study_id": study_id,
-            }
-
-            _set_optimization_state(
-                {
-                    "status": "completed",
-                    "mode": "wfa",
-                    "strategy_id": strategy_id,
-                    "data_path": data_path,
-                    "summary": response_payload.get("summary", {}),
-                    "study_id": study_id,
-                }
-            )
-
-            return jsonify(response_payload)
-
-        except Exception as e:
-            # Cleanup on error
-            if temp_dir.exists():
-                shutil.rmtree(temp_dir, ignore_errors=True)
-            app.logger.exception("Failed to export trades history")
-            return jsonify({"error": f"Failed to export trades: {str(e)}"}), HTTPStatus.INTERNAL_SERVER_ERROR
-
-    else:
-        # No trades export - return JSON response (existing behavior)
-        response_payload = {
-            "status": "success",
-            "summary": {
-                "total_windows": result.total_windows,
-                "stitched_oos_net_profit_pct": round(result.stitched_oos.final_net_profit_pct, 2),
-                "stitched_oos_max_drawdown_pct": round(result.stitched_oos.max_drawdown_pct, 2),
-                "stitched_oos_total_trades": result.stitched_oos.total_trades,
-                "wfe": round(result.stitched_oos.wfe, 2),
-                "oos_win_rate": round(result.stitched_oos.oos_win_rate, 1),
-            },
+    _set_optimization_state(
+        {
+            "status": "completed",
             "mode": "wfa",
             "strategy_id": strategy_id,
             "data_path": data_path,
+            "summary": response_payload.get("summary", {}),
             "study_id": study_id,
         }
+    )
 
-        _set_optimization_state(
-            {
-                "status": "completed",
-                "mode": "wfa",
-                "strategy_id": strategy_id,
-                "data_path": data_path,
-                "summary": response_payload.get("summary", {}),
-                "study_id": study_id,
-            }
-        )
-
-        return jsonify(response_payload)
+    return jsonify(response_payload)
 
 
 @app.post("/api/backtest")

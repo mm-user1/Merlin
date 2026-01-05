@@ -106,15 +106,6 @@
                 </div>
 
                 <div class="form-group">
-                  <div class="filter-group" id="exportTradesFilterGroup">
-                    <div class="checkbox-group">
-                      <input type="checkbox" id="wfExportTrades" />
-                      <label for="wfExportTrades">Export Trades (all windows)</label>
-                    </div>
-                  </div>
-                </div>
-
-                <div class="form-group">
                   <div class="checkbox-group">
                     <input type="checkbox" id="detailedLog" />
                     <label for="detailedLog">Detailed log</label>
@@ -163,7 +154,6 @@
                         disabled
                       />
                     </div>
-                    <button type="button" class="secondary" id="scoreConfigBtn" style="margin-left: 10px;">⚙️ Configure</button>
                   </div>
                 </div>
 
@@ -360,7 +350,7 @@
                         </label>
                         <label class="objective-item">
                           <input type="checkbox" class="objective-checkbox" data-objective="max_drawdown_pct" />
-                          Min Drawdown %
+                          Max DD %
                           <span class="objective-direction">&darr; min</span>
                         </label>
                         <label class="objective-item">
@@ -564,7 +554,7 @@
                       <div class="constraint-row">
                         <label class="constraint-label">
                           <input type="checkbox" class="constraint-checkbox" data-constraint-metric="max_drawdown_pct" />
-                          Min Drawdown %
+                          Max DD %
                         </label>
                         <span class="constraint-operator">&le;</span>
                         <input type="number" class="constraint-input" data-constraint-threshold="max_drawdown_pct" value="30.0" step="0.1" />

@@ -35,18 +35,16 @@ document.addEventListener('DOMContentLoaded', async () => {
   if (linkToScoreConfig) {
     linkToScoreConfig.addEventListener('click', (event) => {
       event.preventDefault();
-      const scoreConfigBtn = document.getElementById('scoreConfigBtn');
       const scoreConfigCollapsible = document.getElementById('scoreConfigCollapsible');
-      if (scoreConfigBtn && scoreConfigCollapsible) {
-        if (!scoreConfigCollapsible.classList.contains('open')) {
-          scoreConfigCollapsible.classList.add('open');
-        }
-        scoreConfigBtn.scrollIntoView({ behavior: 'smooth', block: 'center' });
-        scoreConfigCollapsible.style.outline = '3px solid #90caf9';
-        window.setTimeout(() => {
-          scoreConfigCollapsible.style.outline = '';
-        }, 2000);
+      if (!scoreConfigCollapsible) return;
+      if (!scoreConfigCollapsible.classList.contains('open')) {
+        scoreConfigCollapsible.classList.add('open');
       }
+      scoreConfigCollapsible.scrollIntoView({ behavior: 'smooth', block: 'center' });
+      scoreConfigCollapsible.style.outline = '3px solid #90caf9';
+      window.setTimeout(() => {
+        scoreConfigCollapsible.style.outline = '';
+      }, 2000);
     });
   }
 

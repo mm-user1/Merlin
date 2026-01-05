@@ -16,8 +16,7 @@ from core.walkforward_engine import (
     WalkForwardEngine,
     WindowResult,
 )
-from core.export import export_wfa_trades_history
-from core.backtest_engine import StrategyResult, TradeRecord, load_data
+from core.backtest_engine import load_data
 from strategies import get_strategy_config
 
 
@@ -236,91 +235,6 @@ def test_wfe_is_annualized():
     stitched = engine._build_stitched_oos_equity(windows)
 
     assert pytest.approx(stitched.wfe, rel=1e-3) == 120.0
-
-
-
-def test_export_trades_falls_back_to_config_strategy(monkeypatch, tmp_path):
-    """Ensure export_wfa_trades_history uses wf_result.config when strategy_id is missing."""
-
-    class FakeStrategy:
-        @staticmethod
-        def run(df_slice, params, trade_start_idx):  # noqa: ARG003
-            start = df_slice.index[0]
-            end = df_slice.index[-1]
-            trade = TradeRecord(
-                direction="long",
-                entry_time=start,
-                exit_time=end,
-                entry_price=1.0,
-                exit_price=1.1,
-                size=1.0,
-                net_pnl=0.1,
-            )
-            return StrategyResult(
-                trades=[trade],
-                equity_curve=[100.0, 110.0],
-                balance_curve=[100.0, 110.0],
-                timestamps=[start, end],
-            )
-
-    def fake_prepare(df_slice, start_time, end_time, warmup_bars):  # noqa: ARG001
-        return df_slice, 0
-
-    monkeypatch.setattr("strategies.get_strategy", lambda strategy_id: FakeStrategy)
-    monkeypatch.setattr("core.walkforward_engine.prepare_dataset_with_warmup", fake_prepare)
-    monkeypatch.setattr("core.backtest_engine.prepare_dataset_with_warmup", fake_prepare)
-
-    index = pd.date_range("2025-01-01", periods=20, freq="h", tz="UTC")
-    base_row = {"Open": 1.0, "High": 1.1, "Low": 0.9, "Close": 1.0, "Volume": 100}
-    df = pd.DataFrame([base_row for _ in range(len(index))], index=index)
-
-    wf_config = WFConfig(strategy_id="s01_trailing_ma")
-    window_result = WindowResult(
-        window_id=1,
-        is_start=index[0],
-        is_end=index[5],
-        oos_start=index[6],
-        oos_end=index[8],
-        best_params={},
-        param_id="p1",
-        is_net_profit_pct=1.0,
-        is_max_drawdown_pct=0.0,
-        is_total_trades=1,
-        oos_net_profit_pct=1.0,
-        oos_max_drawdown_pct=0.0,
-        oos_total_trades=1,
-        oos_equity_curve=[100.0, 101.0],
-        oos_timestamps=[index[6], index[8]],
-    )
-
-    stitched = OOSStitchedResult(
-        final_net_profit_pct=1.0,
-        max_drawdown_pct=0.0,
-        total_trades=1,
-        wfe=100.0,
-        oos_win_rate=100.0,
-        equity_curve=[100.0, 101.0],
-        timestamps=[index[6], index[8]],
-        window_ids=[1, 1],
-    )
-
-    wf_result = WFResult(
-        config=wf_config,
-        windows=[window_result],
-        stitched_oos=stitched,
-        strategy_id="",  # Force fallback path
-        total_windows=1,
-        trading_start_date=index[0],
-        trading_end_date=index[8],
-        warmup_bars=wf_config.warmup_bars,
-    )
-
-    files = export_wfa_trades_history(wf_result, df, "OKX:TEST", output_dir=tmp_path)
-
-    assert len(files) == 1
-    assert (tmp_path / files[0]).exists()
-
-
 def test_walkforward_integration_with_sample_data(monkeypatch):
     data_path = Path(__file__).parent.parent / "data" / "raw" / "OKX_LINKUSDT.P, 15 2025.05.01-2025.11.20.csv"
     if not data_path.exists():

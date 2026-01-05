@@ -1,7 +1,7 @@
 ﻿(function () {
   const OBJECTIVE_LABELS = {
     net_profit_pct: 'Net Profit %',
-    max_drawdown_pct: 'Min Drawdown %',
+  max_drawdown_pct: 'Max DD %',
     sharpe_ratio: 'Sharpe Ratio',
     sortino_ratio: 'Sortino Ratio',
     romad: 'RoMaD',

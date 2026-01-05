@@ -28,7 +28,7 @@ const ResultsState = {
 
 const OBJECTIVE_LABELS = {
   net_profit_pct: 'Net Profit %',
-  max_drawdown_pct: 'Min Drawdown %',
+  max_drawdown_pct: 'Max DD %',
   sharpe_ratio: 'Sharpe Ratio',
   sortino_ratio: 'Sortino Ratio',
   romad: 'RoMaD',
@@ -659,8 +659,9 @@ function renderEquityChart(equityData, windowBoundaries = null) {
   const height = 260;
   const padding = 20;
 
-  const minValue = Math.min(...equityData);
-  const maxValue = Math.max(...equityData);
+  const baseValue = 100.0;
+  const minValue = Math.min(...equityData, baseValue);
+  const maxValue = Math.max(...equityData, baseValue);
   const valueRange = maxValue - minValue || 1;
 
   svg.innerHTML = '';
@@ -670,6 +671,17 @@ function renderEquityChart(equityData, windowBoundaries = null) {
   bg.setAttribute('height', '100%');
   bg.setAttribute('fill', '#fafafa');
   svg.appendChild(bg);
+
+  const baseY = height - padding - ((baseValue - minValue) / valueRange) * (height - 2 * padding);
+  const baseLine = document.createElementNS('http://www.w3.org/2000/svg', 'line');
+  baseLine.setAttribute('x1', 0);
+  baseLine.setAttribute('y1', baseY);
+  baseLine.setAttribute('x2', width);
+  baseLine.setAttribute('y2', baseY);
+  baseLine.setAttribute('stroke', '#c8c8c8');
+  baseLine.setAttribute('stroke-width', '1');
+  baseLine.setAttribute('stroke-dasharray', '3 4');
+  svg.appendChild(baseLine);
 
   if (windowBoundaries && windowBoundaries.length > 0) {
     windowBoundaries.forEach((boundary, index) => {

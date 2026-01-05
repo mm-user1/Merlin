@@ -948,7 +948,6 @@ async function runWalkForward({ sources, state }) {
 
   const wfIsPeriodDays = document.getElementById('wfIsPeriodDays').value;
   const wfOosPeriodDays = document.getElementById('wfOosPeriodDays').value;
-  const exportTrades = document.getElementById('wfExportTrades').checked;
   const warmupValue = document.getElementById('warmupBars')?.value || '1000';
   const strategySummary = getStrategySummary();
 
@@ -1032,32 +1031,8 @@ async function runWalkForward({ sources, state }) {
     formData.append('config', JSON.stringify(config));
     formData.append('wf_is_period_days', wfIsPeriodDays);
     formData.append('wf_oos_period_days', wfOosPeriodDays);
-    formData.append('exportTrades', exportTrades ? 'true' : 'false');
-
     try {
       const data = await runWalkForwardRequest(formData, optimizationAbortController.signal);
-
-      if (data.export_trades && data.zip_base64) {
-        try {
-          const binaryString = atob(data.zip_base64);
-          const bytes = new Uint8Array(binaryString.length);
-          for (let i = 0; i < binaryString.length; i++) {
-            bytes[i] = binaryString.charCodeAt(i);
-          }
-          const blob = new Blob([bytes], { type: 'application/zip' });
-
-          const url = window.URL.createObjectURL(blob);
-          const link = document.createElement('a');
-          link.href = url;
-          link.download = data.zip_filename || `wf_results_${Date.now()}.zip`;
-          document.body.appendChild(link);
-          link.click();
-          document.body.removeChild(link);
-          window.URL.revokeObjectURL(url);
-        } catch (zipError) {
-          console.error('Failed to download ZIP:', zipError);
-        }
-      }
 
       updateStatus(index, `Success: Source ${sourceNumber} of ${totalSources} (${sourceName}) completed successfully.`);
       successCount += 1;
@@ -1087,10 +1062,6 @@ async function runWalkForward({ sources, state }) {
     if (totalSources === 1 && lastSuccessfulData) {
       displayWFResults(lastSuccessfulData);
 
-      if (lastSuccessfulData.export_trades && wfSummaryEl) {
-        const currentSummary = wfSummaryEl.innerHTML;
-        wfSummaryEl.innerHTML = currentSummary + '<br><strong>Trade history exported!</strong> Downloaded ZIP contains WFA trade history files.';
-      }
     } else if (totalSources > 1 && wfSummaryEl) {
       wfSummaryEl.innerHTML = `<strong>Multi-file Walk-Forward Analysis completed!</strong><br>Processed ${totalSources} files. Results are saved in the Studies Manager.`;
     }
