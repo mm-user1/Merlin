@@ -779,6 +779,7 @@ function buildOptimizationConfig(state) {
     filter_min_profit: filterEnabled,
     min_profit_threshold: minProfitThreshold,
     score_config: collectScoreConfig(),
+    detailed_log: Boolean(document.getElementById('detailedLog')?.checked),
     optimization_mode: 'optuna'
   };
 }
@@ -825,6 +826,9 @@ function buildOptunaConfig(state) {
     ? window.OptunaUI.collectObjectives()
     : { objectives: ['net_profit_pct'], primary_objective: null };
   const constraints = window.OptunaUI ? window.OptunaUI.collectConstraints() : [];
+  const sanitizeConfig = window.OptunaUI
+    ? window.OptunaUI.collectSanitizeConfig()
+    : { sanitize_enabled: true, sanitize_trades_threshold: 0 };
   const selectedObjectives = objectiveConfig.objectives || [];
 
   return {
@@ -842,6 +846,8 @@ function buildOptunaConfig(state) {
     objectives: selectedObjectives,
     primary_objective: objectiveConfig.primary_objective,
     constraints,
+    sanitize_enabled: sanitizeConfig.sanitize_enabled,
+    sanitize_trades_threshold: sanitizeConfig.sanitize_trades_threshold,
     population_size: normalizedPopulation,
     crossover_prob: normalizedCrossover,
     mutation_prob: normalizedMutation,
@@ -1307,7 +1313,9 @@ async function submitOptimization(event) {
       convergence: config.optuna_convergence,
       sampler: config.sampler,
       pruner: config.optuna_pruner,
-      workers: config.worker_processes
+      workers: config.worker_processes,
+      sanitizeEnabled: config.sanitize_enabled,
+      sanitizeTradesThreshold: config.sanitize_trades_threshold
     },
     fixedParams: clonePreset(config.fixed_params || {}),
     strategyConfig: clonePreset(window.currentStrategyConfig || {})
@@ -1596,6 +1604,7 @@ function bindOptunaUiControls() {
   if (sampler) {
     sampler.addEventListener('change', window.OptunaUI.toggleNsgaSettings);
   }
+  window.OptunaUI.initSanitizeControls();
   window.OptunaUI.updateObjectiveSelection();
   window.OptunaUI.toggleNsgaSettings();
 }

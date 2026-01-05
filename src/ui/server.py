@@ -1,6 +1,7 @@
 import hashlib
 import io
 import json
+import math
 import re
 import sys
 import tempfile
@@ -331,6 +332,20 @@ def _coerce_bool(value: Any) -> bool:
         if lowered in {"false", "0", "no", "n", "off"}:
             return False
     return False
+
+
+def _json_safe(value: Any) -> Any:
+    if isinstance(value, float):
+        if not math.isfinite(value):
+            if math.isinf(value):
+                return "inf" if value > 0 else "-inf"
+            return "nan"
+        return value
+    if isinstance(value, dict):
+        return {k: _json_safe(v) for k, v in value.items()}
+    if isinstance(value, (list, tuple)):
+        return [_json_safe(v) for v in value]
+    return value
 
 
 def _split_timestamp(value: str) -> Tuple[str, str]:
@@ -704,7 +719,7 @@ def get_study_endpoint(study_id: str) -> object:
     study_data = load_study_from_db(study_id)
     if not study_data:
         return jsonify({"error": "Study not found."}), HTTPStatus.NOT_FOUND
-    return jsonify(study_data)
+    return jsonify(_json_safe(study_data))
 
 
 @app.delete("/api/studies/<string:study_id>")
@@ -1812,6 +1827,7 @@ def _build_optimization_config(
 
     score_config_payload = payload.get("score_config")
     score_config = _sanitize_score_config(score_config_payload)
+    detailed_log = _parse_bool(payload.get("detailed_log", False), False)
 
     optimization_mode_raw = payload.get("optimization_mode", "optuna")
     optimization_mode = str(optimization_mode_raw).strip().lower() or "optuna"
@@ -1848,6 +1864,15 @@ def _build_optimization_config(
     optuna_enable_pruning = _parse_bool(payload.get("optuna_enable_pruning", True), True)
     optuna_pruner = str(payload.get("optuna_pruner", "median")).strip().lower()
     optuna_save_study = _parse_bool(payload.get("optuna_save_study", False), False)
+
+    sanitize_enabled = _parse_bool(payload.get("sanitize_enabled", True), True)
+    sanitize_trades_threshold_raw = payload.get("sanitize_trades_threshold", 0)
+    try:
+        sanitize_trades_threshold = int(sanitize_trades_threshold_raw)
+    except (TypeError, ValueError):
+        raise ValueError("sanitize_trades_threshold must be a non-negative integer.")
+    if sanitize_trades_threshold < 0:
+        raise ValueError("sanitize_trades_threshold must be >= 0.")
 
     sampler_type = str(payload.get("sampler", "tpe")).strip().lower()
     population_size = payload.get("population_size")
@@ -1909,6 +1934,8 @@ def _build_optimization_config(
         "optuna_enable_pruning": optuna_enable_pruning,
         "optuna_pruner": optuna_pruner,
         "optuna_save_study": optuna_save_study,
+        "sanitize_enabled": sanitize_enabled,
+        "sanitize_trades_threshold": sanitize_trades_threshold,
     }
 
     config = OptimizationConfig(
@@ -1926,10 +1953,13 @@ def _build_optimization_config(
         filter_min_profit=filter_min_profit,
         min_profit_threshold=min_profit_threshold,
         score_config=score_config,
+        detailed_log=detailed_log,
         optimization_mode=optimization_mode,
         objectives=objectives,
         primary_objective=primary_objective,
         constraints=payload.get("constraints", []),
+        sanitize_enabled=sanitize_enabled,
+        sanitize_trades_threshold=sanitize_trades_threshold,
         sampler_type=sampler_type,
         population_size=population_size if population_size is not None else 50,
         crossover_prob=crossover_prob if crossover_prob is not None else 0.9,

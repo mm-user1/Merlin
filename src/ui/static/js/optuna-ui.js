@@ -78,6 +78,27 @@
     nsgaSettings.style.display = isNsga ? 'block' : 'none';
   }
 
+  function initSanitizeControls() {
+    const checkbox = document.getElementById('optuna_sanitize_enabled');
+    const input = document.getElementById('optuna_sanitize_trades_threshold');
+    if (!checkbox || !input) {
+      return;
+    }
+
+    const sync = () => {
+      input.disabled = !checkbox.checked;
+    };
+
+    checkbox.addEventListener('change', sync);
+    input.addEventListener('blur', () => {
+      const parsed = Number.parseInt(input.value, 10);
+      const normalized = Number.isFinite(parsed) ? Math.max(0, parsed) : 0;
+      input.value = normalized;
+    });
+
+    sync();
+  }
+
   function collectObjectives() {
     const checkboxes = getObjectiveCheckboxes();
     const selected = checkboxes.filter((cb) => cb.checked).map((cb) => cb.dataset.objective);
@@ -86,6 +107,18 @@
     return {
       objectives: selected,
       primary_objective: primaryObjective
+    };
+  }
+
+  function collectSanitizeConfig() {
+    const checkbox = document.getElementById('optuna_sanitize_enabled');
+    const input = document.getElementById('optuna_sanitize_trades_threshold');
+    const enabled = Boolean(checkbox && checkbox.checked);
+    const parsed = Number.parseInt(input ? input.value : '', 10);
+    const threshold = Number.isFinite(parsed) ? Math.max(0, parsed) : 0;
+    return {
+      sanitize_enabled: enabled,
+      sanitize_trades_threshold: threshold
     };
   }
 
@@ -111,7 +144,9 @@
   window.OptunaUI = {
     updateObjectiveSelection,
     toggleNsgaSettings,
+    initSanitizeControls,
     collectObjectives,
+    collectSanitizeConfig,
     collectConstraints
   };
 })();

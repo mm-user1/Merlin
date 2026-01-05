@@ -116,7 +116,9 @@ def _create_schema(conn: sqlite3.Connection) -> None:
             completed_at TEXT,
 
             filter_min_profit INTEGER DEFAULT 0,
-            min_profit_threshold REAL DEFAULT 0.0
+            min_profit_threshold REAL DEFAULT 0.0,
+            sanitize_enabled INTEGER DEFAULT 1,
+            sanitize_trades_threshold INTEGER DEFAULT 0
         );
 
         CREATE INDEX IF NOT EXISTS idx_studies_strategy ON studies(strategy_id);
@@ -428,8 +430,9 @@ def save_optuna_study_to_db(
                     csv_file_path, csv_file_name,
                     dataset_start_date, dataset_end_date, warmup_bars,
                     completed_at,
-                    filter_min_profit, min_profit_threshold
-                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    filter_min_profit, min_profit_threshold,
+                    sanitize_enabled, sanitize_trades_threshold
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """,
                 (
                     study_id,
@@ -469,6 +472,8 @@ def save_optuna_study_to_db(
                     getattr(config, "min_profit_threshold", None)
                     if getattr(config, "filter_min_profit", False)
                     else None,
+                    1 if getattr(optuna_config, "sanitize_enabled", True) else 0,
+                    int(getattr(optuna_config, "sanitize_trades_threshold", 0) or 0),
                 ),
             )
 

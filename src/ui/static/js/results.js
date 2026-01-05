@@ -289,6 +289,14 @@ async function applyStudyPayload(data) {
   const optunaConfig = config.optuna_config || {};
   const objectives = study.objectives || optunaConfig.objectives || study.objectives_json || [];
   const constraints = study.constraints || optunaConfig.constraints || study.constraints_json || [];
+  const sanitizeEnabledRaw = optunaConfig.sanitize_enabled ?? study.sanitize_enabled;
+  const sanitizeEnabled = sanitizeEnabledRaw === undefined || sanitizeEnabledRaw === null
+    ? ResultsState.optuna.sanitizeEnabled
+    : Boolean(sanitizeEnabledRaw);
+  const sanitizeThresholdRaw = optunaConfig.sanitize_trades_threshold ?? study.sanitize_trades_threshold;
+  const sanitizeThreshold = sanitizeThresholdRaw === undefined || sanitizeThresholdRaw === null
+    ? ResultsState.optuna.sanitizeTradesThreshold
+    : sanitizeThresholdRaw;
   ResultsState.optuna = {
     objectives,
     primaryObjective: study.primary_objective || optunaConfig.primary_objective || null,
@@ -302,7 +310,9 @@ async function applyStudyPayload(data) {
       || study.sampler_type
       || ResultsState.optuna.sampler,
     pruner: optunaConfig.pruner || ResultsState.optuna.pruner,
-    workers: config.worker_processes || ResultsState.optuna.workers
+    workers: config.worker_processes || ResultsState.optuna.workers,
+    sanitizeEnabled,
+    sanitizeTradesThreshold: sanitizeThreshold
   };
 
   updateResultsHeader();
@@ -765,6 +775,18 @@ function updateSidebarSettings() {
   setText('optuna-budget', budgetLabel);
   setText('optuna-sampler', (ResultsState.optuna.sampler || '').toUpperCase() || '-');
   setText('optuna-pruner', ResultsState.optuna.pruner ? ResultsState.optuna.pruner : '-');
+  const sanitizeEnabled = ResultsState.optuna.sanitizeEnabled;
+  const sanitizeThresholdRaw = ResultsState.optuna.sanitizeTradesThreshold;
+  const sanitizeThreshold = Number.isFinite(Number(sanitizeThresholdRaw))
+    ? Math.max(0, Math.round(Number(sanitizeThresholdRaw)))
+    : 0;
+  let sanitizeLabel = '-';
+  if (sanitizeEnabled === true) {
+    sanitizeLabel = `On (<= ${sanitizeThreshold})`;
+  } else if (sanitizeEnabled === false) {
+    sanitizeLabel = 'Off';
+  }
+  setText('optuna-sanitize', sanitizeLabel);
   setText('optuna-workers', ResultsState.optuna.workers ?? '-');
 
   if (ResultsState.mode === 'wfa') {
@@ -1017,14 +1039,14 @@ async function hydrateFromServer() {
     const serverUpdated = data.updated_at ? Date.parse(data.updated_at) : 0;
     const shouldApply = !stored || !storedUpdated || (serverUpdated && serverUpdated >= storedUpdated);
 
-    if (shouldApply) {
-      applyState(data);
-      if (data.study_id) {
-        await openStudy(data.study_id);
-      } else {
-        refreshResultsView();
+      if (shouldApply) {
+        applyState(data);
+        if (data.study_id) {
+          await openStudy(data.study_id);
+        } else {
+          refreshResultsView();
+        }
       }
-    }
   } catch (error) {
     return;
   }

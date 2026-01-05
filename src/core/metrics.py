@@ -202,7 +202,7 @@ def _calculate_profit_factor_value(trades: List[TradeRecord]) -> Optional[float]
     if gross_loss > 0:
         return gross_profit / gross_loss
     if gross_profit > 0:
-        return 999.0
+        return float("inf")
     return 1.0
 
 

@@ -170,3 +170,50 @@ def test_csv_import_stops_on_mixed_valid_and_invalid_numbers(client):
     assert any("maLength" in detail for detail in payload["details"])
     # Ensure even valid numeric fields do not get applied when an error is present.
     assert "values" not in payload
+
+
+def _build_minimal_optuna_payload():
+    return {
+        "strategy": "s01_trailing_ma",
+        "enabled_params": {},
+        "param_ranges": {},
+        "fixed_params": {},
+        "objectives": ["net_profit_pct"],
+        "primary_objective": None,
+        "optuna_budget_mode": "trials",
+        "optuna_n_trials": 10,
+        "optuna_time_limit": 60,
+        "optuna_convergence": 10,
+    }
+
+
+def test_optuna_sanitize_defaults():
+    from ui import server as server_module
+
+    payload = _build_minimal_optuna_payload()
+    config = server_module._build_optimization_config(
+        "dummy.csv",
+        payload,
+        worker_processes=1,
+        strategy_id="s01_trailing_ma",
+        warmup_bars=1000,
+    )
+    assert config.sanitize_enabled is True
+    assert config.sanitize_trades_threshold == 0
+
+
+@pytest.mark.parametrize("threshold", [-1, "bad"])
+def test_optuna_sanitize_threshold_validation(threshold):
+    from ui import server as server_module
+
+    payload = _build_minimal_optuna_payload()
+    payload["sanitize_trades_threshold"] = threshold
+
+    with pytest.raises(ValueError):
+        server_module._build_optimization_config(
+            "dummy.csv",
+            payload,
+            worker_processes=1,
+            strategy_id="s01_trailing_ma",
+            warmup_bars=1000,
+        )

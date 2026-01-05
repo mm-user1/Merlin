@@ -24,6 +24,7 @@ from .backtest_engine import load_data
 from .storage import JOURNAL_DIR, save_optuna_study_to_db
 
 logger = logging.getLogger(__name__)
+OPTUNA_LOGGER = optuna.logging.get_logger("optuna")
 
 
 # ============================================================================
@@ -57,10 +58,13 @@ class OptimizationConfig:
     filter_min_profit: bool = False
     min_profit_threshold: float = 0.0
     score_config: Optional[Dict[str, Any]] = None
+    detailed_log: bool = False
     optimization_mode: str = "optuna"
     objectives: List[str] = field(default_factory=list)
     primary_objective: Optional[str] = None
     constraints: List[Dict[str, Any]] = field(default_factory=list)
+    sanitize_enabled: bool = True
+    sanitize_trades_threshold: int = 0
     sampler_type: str = "tpe"
     population_size: int = 50
     crossover_prob: float = 0.9
@@ -204,6 +208,8 @@ OBJECTIVE_DISPLAY_NAMES: Dict[str, str] = {
     "composite_score": "Composite Score",
 }
 
+SANITIZE_METRICS = {"sharpe_ratio", "sortino_ratio", "sqn", "profit_factor"}
+
 CONSTRAINT_OPERATORS: Dict[str, str] = {
     "total_trades": "gte",
     "net_profit_pct": "gte",
@@ -292,6 +298,26 @@ def _is_non_finite(value: Any) -> bool:
         return True
 
 
+def _is_inf(value: Any) -> bool:
+    if value is None:
+        return False
+    try:
+        return math.isinf(float(value))
+    except (TypeError, ValueError):
+        return False
+
+
+def _format_objective_value(value: Any) -> str:
+    if _is_inf(value):
+        return "Inf" if float(value) > 0 else "-Inf"
+    if _is_non_finite(value):
+        return "NaN"
+    try:
+        return str(float(value))
+    except (TypeError, ValueError):
+        return "NaN"
+
+
 def evaluate_constraints(
     all_metrics: Dict[str, Any],
     constraints: List[ConstraintSpec],
@@ -312,7 +338,7 @@ def evaluate_constraints(
     violations: List[float] = []
     for spec in enabled_constraints:
         value = all_metrics.get(spec.metric)
-        if value is None or _is_nan(value):
+        if _is_non_finite(value):
             violations.append(1.0)
             continue
 
@@ -1036,6 +1062,8 @@ class OptunaConfig:
     objectives: List[str] = field(default_factory=lambda: ["net_profit_pct"])
     primary_objective: Optional[str] = None
     constraints: List[ConstraintSpec] = field(default_factory=list)
+    sanitize_enabled: bool = True
+    sanitize_trades_threshold: int = 0
     sampler_config: SamplerConfig = field(default_factory=SamplerConfig)
     budget_mode: str = "trials"  # "trials", "time", or "convergence"
     n_trials: int = 500
@@ -1349,21 +1377,97 @@ class OptunaOptimizer:
         self,
         objective_values: List[Optional[float]],
         all_metrics: Dict[str, Any],
-    ) -> Tuple[List[Optional[float]], List[str]]:
+    ) -> Tuple[List[Optional[float]], List[str], bool]:
         """
         Normalize objective edge cases without introducing penalty constants.
         """
         sanitized_metrics: List[str] = []
         total_trades = all_metrics.get("total_trades")
-        if _is_non_finite(total_trades) or float(total_trades) > 0:
-            return objective_values, sanitized_metrics
+
+        for idx, metric in enumerate(self.mo_config.objectives):
+            if metric != "profit_factor":
+                continue
+            value = objective_values[idx] if idx < len(objective_values) else None
+            if _is_inf(value):
+                return objective_values, sanitized_metrics, True
+
+        sanitize_enabled = bool(getattr(self.optuna_config, "sanitize_enabled", True))
+        sanitize_threshold = getattr(self.optuna_config, "sanitize_trades_threshold", 0)
+        try:
+            sanitize_threshold = int(sanitize_threshold)
+        except (TypeError, ValueError):
+            sanitize_threshold = 0
+
+        gate = sanitize_enabled and not _is_non_finite(total_trades)
+        if gate:
+            try:
+                gate = float(total_trades) <= sanitize_threshold
+            except (TypeError, ValueError):
+                gate = False
+
+        if not gate:
+            return objective_values, sanitized_metrics, False
 
         for idx, value in enumerate(objective_values):
+            metric = self.mo_config.objectives[idx]
+            if metric not in SANITIZE_METRICS:
+                continue
+            if metric == "profit_factor":
+                if _is_non_finite(value) and not _is_inf(value):
+                    objective_values[idx] = 0.0
+                    sanitized_metrics.append(metric)
+                continue
             if _is_non_finite(value):
                 objective_values[idx] = 0.0
-                sanitized_metrics.append(self.mo_config.objectives[idx])
+                sanitized_metrics.append(metric)
 
-        return objective_values, sanitized_metrics
+        return objective_values, sanitized_metrics, False
+
+    def _prepare_objective_values(
+        self,
+        all_metrics: Dict[str, Any],
+    ) -> Tuple[List[Optional[float]], List[str], Union[float, Tuple[float, ...]], bool]:
+        objective_values = self._extract_objective_values(all_metrics)
+        objective_values, sanitized, force_fail = self._sanitize_objective_values(
+            objective_values, all_metrics
+        )
+
+        if force_fail or any(_is_non_finite(v) for v in objective_values):
+            nan_marker = tuple([float("nan")] * len(self.mo_config.objectives))
+            objective_return = nan_marker if self.mo_config.is_multi_objective() else float("nan")
+            return objective_values, sanitized, objective_return, True
+
+        objective_return = (
+            tuple(objective_values) if self.mo_config.is_multi_objective() else objective_values[0]
+        )
+        return objective_values, sanitized, objective_return, False
+
+    def _log_failed_objective(
+        self,
+        trial: optuna.Trial,
+        objective_values: List[Optional[float]],
+        all_metrics: Dict[str, Any],
+    ) -> None:
+        if not getattr(self.base_config, "detailed_log", False):
+            return
+        pairs = []
+        for name, value in zip(self.mo_config.objectives, objective_values):
+            label = OBJECTIVE_DISPLAY_NAMES.get(name, name)
+            pairs.append(f"'{label}': {_format_objective_value(value)}")
+        values_str = ", ".join(pairs)
+        total_trades = all_metrics.get("total_trades")
+        trades_label = "?"
+        if not _is_non_finite(total_trades):
+            try:
+                trades_label = str(int(round(float(total_trades))))
+            except (TypeError, ValueError):
+                trades_label = "?"
+        OPTUNA_LOGGER.warning(
+            "Trial %s failed with value (%s). Trades: %s.",
+            getattr(trial, "number", "?"),
+            values_str,
+            trades_label,
+        )
 
     def _primary_objective_for_improvement(self, objective_values: List[float]) -> float:
         primary_obj = self.mo_config.primary_objective or self.mo_config.objectives[0]
@@ -1390,20 +1494,14 @@ class OptunaOptimizer:
                 result = scored_results[0]
 
         all_metrics = self._collect_metrics(result)
-        objective_values = self._extract_objective_values(all_metrics)
-        objective_values, sanitized = self._sanitize_objective_values(objective_values, all_metrics)
+        objective_values, sanitized, objective_return, should_fail = self._prepare_objective_values(all_metrics)
         if sanitized:
             trial.set_user_attr("merlin.sanitized_metrics", sanitized)
 
-        if self.mo_config.is_multi_objective():
-            if any(_is_non_finite(v) for v in objective_values):
-                # Optuna treats NaN returns as FAILED without aborting the study.
-                return tuple([float("nan")] * len(self.mo_config.objectives))
-        else:
-            v = objective_values[0] if objective_values else None
-            if _is_non_finite(v):
-                # Optuna treats NaN returns as FAILED without aborting the study.
-                return float("nan")
+        if should_fail:
+            self._log_failed_objective(trial, objective_values, all_metrics)
+            # Optuna treats NaN returns as FAILED without aborting the study.
+            return objective_return
 
         constraint_values = evaluate_constraints(all_metrics, self.constraints)
         constraints_satisfied = True
@@ -1422,8 +1520,6 @@ class OptunaOptimizer:
             constraint_values=constraint_values,
             constraints_satisfied=constraints_satisfied,
         )
-
-        objective_return = tuple(objective_values) if self.mo_config.is_multi_objective() else objective_values[0]
 
         if self.pruner is not None:
             trial.report(objective_return, step=0)
@@ -1464,20 +1560,14 @@ class OptunaOptimizer:
                 result = scored_results[0]
 
         all_metrics = self._collect_metrics(result)
-        objective_values = self._extract_objective_values(all_metrics)
-        objective_values, sanitized = self._sanitize_objective_values(objective_values, all_metrics)
+        objective_values, sanitized, objective_return, should_fail = self._prepare_objective_values(all_metrics)
         if sanitized:
             trial.set_user_attr("merlin.sanitized_metrics", sanitized)
 
-        if self.mo_config.is_multi_objective():
-            if any(_is_non_finite(v) for v in objective_values):
-                # Optuna treats NaN returns as FAILED without aborting the study.
-                return tuple([float("nan")] * len(self.mo_config.objectives))
-        else:
-            v = objective_values[0] if objective_values else None
-            if _is_non_finite(v):
-                # Optuna treats NaN returns as FAILED without aborting the study.
-                return float("nan")
+        if should_fail:
+            self._log_failed_objective(trial, objective_values, all_metrics)
+            # Optuna treats NaN returns as FAILED without aborting the study.
+            return objective_return
 
         constraint_values = evaluate_constraints(all_metrics, self.constraints)
         constraints_satisfied = True
@@ -1492,8 +1582,6 @@ class OptunaOptimizer:
             constraint_values=constraint_values,
             constraints_satisfied=constraints_satisfied,
         )
-
-        objective_return = tuple(objective_values) if self.mo_config.is_multi_objective() else objective_values[0]
 
         if self.pruner is not None:
             trial.report(objective_return, step=0)
@@ -1825,6 +1913,8 @@ def run_optimization(config: OptimizationConfig) -> Tuple[List[OptimizationResul
         objectives=list(objectives),
         primary_objective=primary_objective,
         constraints=_build_constraint_specs(constraints_payload),
+        sanitize_enabled=bool(getattr(config, "sanitize_enabled", True)),
+        sanitize_trades_threshold=int(getattr(config, "sanitize_trades_threshold", 0) or 0),
         sampler_config=_build_sampler_config(config),
         budget_mode=getattr(config, "optuna_budget_mode", "trials"),
         n_trials=int(getattr(config, "optuna_n_trials", 500) or 500),
