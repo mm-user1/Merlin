@@ -855,64 +855,14 @@ function buildOptunaConfig(state) {
   };
 }
 function clearWFResults() {
-  const wfResultsContainer = document.getElementById('wfResults');
-  const wfSummaryEl = document.getElementById('wfSummary');
-  const wfTableBody = document.getElementById('wfTableBody');
   const wfStatusEl = document.getElementById('wfStatus');
-
-  if (wfResultsContainer) {
-    wfResultsContainer.style.display = 'none';
-  }
-  if (wfSummaryEl) {
-    wfSummaryEl.textContent = '';
-  }
-  if (wfTableBody) {
-    wfTableBody.innerHTML = '';
-  }
   if (wfStatusEl) {
     wfStatusEl.textContent = '';
   }
 }
 
-function displayWFResults(data) {
-  const wfResultsContainer = document.getElementById('wfResults');
-  const wfSummaryEl = document.getElementById('wfSummary');
-  const wfTableBody = document.getElementById('wfTableBody');
-  const wfStatusEl = document.getElementById('wfStatus');
-
-  if (!wfResultsContainer || !wfSummaryEl || !wfTableBody || !wfStatusEl) {
-    return;
-  }
-
-  wfResultsContainer.style.display = 'block';
-  wfStatusEl.textContent = '';
-
-  const summary = data.summary || {};
-  const totalWindowsValue = Number(summary.total_windows);
-  const totalWindows = Number.isFinite(totalWindowsValue) ? totalWindowsValue : 0;
-  const stitchedProfitValue = Number(summary.stitched_oos_net_profit_pct);
-  const stitchedProfit = Number.isFinite(stitchedProfitValue) ? stitchedProfitValue : 0;
-  const wfeValue = Number(summary.wfe);
-  const wfe = Number.isFinite(wfeValue) ? wfeValue : 0;
-  const winRateValue = Number(summary.oos_win_rate);
-  const winRate = Number.isFinite(winRateValue) ? winRateValue : 0;
-
-  wfSummaryEl.innerHTML = `
-          <strong>Summary:</strong><br>
-          Total Windows: ${totalWindows}<br>
-          Stitched OOS Net Profit: ${stitchedProfit.toFixed(2)}%<br>
-          WFE (Annualized): ${wfe.toFixed(2)}%<br>
-          OOS Win Rate: ${winRate.toFixed(1)}%
-        `;
-
-  wfTableBody.innerHTML = '';
-}
-
 async function runWalkForward({ sources, state }) {
   const wfStatusEl = document.getElementById('wfStatus');
-  const wfResultsContainer = document.getElementById('wfResults');
-  const wfSummaryEl = document.getElementById('wfSummary');
-  const wfTableBody = document.getElementById('wfTableBody');
 
   if (!sources.length) {
     if (wfStatusEl) {
@@ -992,17 +942,8 @@ async function runWalkForward({ sources, state }) {
     }
   };
 
-  if (wfResultsContainer) {
-    wfResultsContainer.style.display = 'block';
-  }
   if (wfStatusEl) {
     wfStatusEl.textContent = '';
-  }
-  if (wfSummaryEl) {
-    wfSummaryEl.textContent = '';
-  }
-  if (wfTableBody) {
-    wfTableBody.innerHTML = '';
   }
 
   const errors = [];
@@ -1060,10 +1001,7 @@ async function runWalkForward({ sources, state }) {
     }
 
     if (totalSources === 1 && lastSuccessfulData) {
-      displayWFResults(lastSuccessfulData);
-
-    } else if (totalSources > 1 && wfSummaryEl) {
-      wfSummaryEl.innerHTML = `<strong>Multi-file Walk-Forward Analysis completed!</strong><br>Processed ${totalSources} files. Results are saved in the Studies Manager.`;
+      // Results are available in the Results page; keep main page status only.
     }
 
     if (lastSuccessfulData) {
@@ -1083,7 +1021,6 @@ async function runWalkForward({ sources, state }) {
     }
 
     if (successCount === 1 && lastSuccessfulData) {
-      displayWFResults(lastSuccessfulData);
       updateOptimizationState({
         status: 'completed',
         mode: 'wfa',

@@ -35,7 +35,6 @@ from .walkforward_engine import (
 
 from .export import (
     export_trades_csv,
-    export_trades_zip,
     _extract_symbol_from_csv_filename,
 )
 
@@ -68,7 +67,6 @@ __all__ = [
 
     # export
     "export_trades_csv",
-    "export_trades_zip",
     "_extract_symbol_from_csv_filename",
 
     # metrics

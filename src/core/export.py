@@ -10,13 +10,9 @@ format existing data structures into the expected output formats.
 from __future__ import annotations
 
 import csv
-import json
-from io import BytesIO, StringIO
+from io import StringIO
 from pathlib import Path
-from typing import Any, Dict, List, Optional
-from zipfile import ZIP_DEFLATED, ZipFile
-
-import pandas as pd
+from typing import List, Optional
 
 from .backtest_engine import TradeRecord
 import logging
@@ -25,7 +21,6 @@ logger = logging.getLogger(__name__)
 
 __all__ = [
     "export_trades_csv",
-    "export_trades_zip",
     "_extract_symbol_from_csv_filename",
 ]
 
@@ -76,34 +71,6 @@ def export_trades_csv(
         Path(path).write_text(csv_content, encoding="utf-8")
 
     return csv_content
-
-
-def export_trades_zip(
-    trades: List[TradeRecord],
-    metrics: Dict[str, Any],
-    path: Optional[str] = None,
-) -> bytes:
-    """Export trades and summary metrics as a ZIP archive containing CSV and JSON."""
-
-    zip_buffer = BytesIO()
-
-    with ZipFile(zip_buffer, "w", ZIP_DEFLATED) as zipf:
-        trades_csv = export_trades_csv(trades)
-        zipf.writestr("trades.csv", trades_csv)
-
-        summary = {
-            "metrics": metrics or {},
-            "total_trades": len(trades),
-            "generated_at": pd.Timestamp.now(tz="UTC").isoformat(),
-        }
-        zipf.writestr("summary.json", json.dumps(summary, indent=2))
-
-    zip_content = zip_buffer.getvalue()
-
-    if path:
-        Path(path).write_bytes(zip_content)
-
-    return zip_content
 
 
 def _extract_symbol_from_csv_filename(csv_filename: str) -> str:
