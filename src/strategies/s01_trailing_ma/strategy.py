@@ -403,29 +403,6 @@ class S01TrailingMA(BaseStrategy):
             timestamps=timestamps,
         )
 
-        basic_metrics = metrics.calculate_basic(result, initial_balance=equity)
-
-        result.net_profit = basic_metrics.net_profit
-        result.net_profit_pct = basic_metrics.net_profit_pct
-        result.gross_profit = basic_metrics.gross_profit
-        result.gross_loss = basic_metrics.gross_loss
-        result.max_drawdown = basic_metrics.max_drawdown
-        result.max_drawdown_pct = basic_metrics.max_drawdown_pct
-        result.total_trades = basic_metrics.total_trades
-        result.winning_trades = basic_metrics.winning_trades
-        result.losing_trades = basic_metrics.losing_trades
-
-        advanced_metrics = metrics.calculate_advanced(
-            result,
-            initial_balance=equity,
-            risk_free_rate=0.02,
-        )
-
-        result.sharpe_ratio = advanced_metrics.sharpe_ratio
-        result.profit_factor = advanced_metrics.profit_factor
-        result.romad = advanced_metrics.romad
-        result.ulcer_index = advanced_metrics.ulcer_index
-        result.sqn = advanced_metrics.sqn
-        result.consistency_score = advanced_metrics.consistency_score
+        metrics.enrich_strategy_result(result, initial_balance=equity, risk_free_rate=0.02)
 
         return result

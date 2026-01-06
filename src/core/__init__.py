@@ -45,6 +45,7 @@ from .metrics import (
     calculate_basic,
     calculate_advanced,
     calculate_for_wfa,
+    enrich_strategy_result,
 )
 
 __all__ = [
@@ -76,4 +77,5 @@ __all__ = [
     "calculate_basic",
     "calculate_advanced",
     "calculate_for_wfa",
+    "enrich_strategy_result",
 ]

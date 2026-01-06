@@ -1,20 +1,24 @@
 """
-Metrics calculation module for S01 Trailing MA v26.
+Metrics calculation module.
 
 This module provides:
 - BasicMetrics: Net profit, drawdown, trade statistics
 - AdvancedMetrics: Sharpe, RoMaD, Profit Factor, SQN, Ulcer Index, Consistency
 - Calculation functions that operate on StrategyResult
+- enrich_strategy_result: Helper to compute and attach metrics to StrategyResult
 
 Architectural note: This module ONLY calculates metrics.
 It does NOT orchestrate backtests or optimization.
 Other modules (backtest_engine, optuna_engine, walkforward_engine) consume these metrics.
+
+Strategies should use enrich_strategy_result() to avoid manual field assignment
+and prevent drift where undeclared attributes get set on StrategyResult.
 """
 from __future__ import annotations
 
 import logging
 import math
-from dataclasses import dataclass
+from dataclasses import dataclass, fields
 from typing import TYPE_CHECKING, Any, Dict, List, Optional
 
 import numpy as np
@@ -443,6 +447,43 @@ def calculate_advanced(
         ulcer_index=ulcer_index,
         consistency_score=consistency_score,
     )
+
+
+def enrich_strategy_result(
+    result: StrategyResult,
+    *,
+    initial_balance: Optional[float] = None,
+    risk_free_rate: float = 0.02,
+) -> tuple[BasicMetrics, AdvancedMetrics]:
+    """
+    Compute metrics and attach declared fields to StrategyResult.
+
+    Calculates BasicMetrics and AdvancedMetrics, then copies only the
+    metric values whose keys match declared StrategyResult dataclass fields.
+    This prevents drift where strategies assign undeclared attributes.
+
+    Args:
+        result: StrategyResult instance to enrich
+        initial_balance: Starting capital for percentage calculations
+        risk_free_rate: Annual risk-free rate for Sharpe/Sortino (default 0.02)
+
+    Returns:
+        Tuple of (BasicMetrics, AdvancedMetrics) for callers who need full metrics
+    """
+    basic = calculate_basic(result, initial_balance=initial_balance)
+    advanced = calculate_advanced(
+        result,
+        initial_balance=initial_balance,
+        risk_free_rate=risk_free_rate,
+    )
+
+    values = {**basic.to_dict(), **advanced.to_dict()}
+    allowed = {field.name for field in fields(result)}
+    for key, value in values.items():
+        if key in allowed:
+            setattr(result, key, value)
+
+    return basic, advanced
 
 
 def calculate_for_wfa(wfa_results: List[Dict[str, Any]]) -> WFAMetrics:

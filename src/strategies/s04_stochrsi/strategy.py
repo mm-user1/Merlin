@@ -345,24 +345,6 @@ class S04StochRSI(BaseStrategy):
             timestamps=timestamps,
         )
 
-        basic = metrics.calculate_basic(result, initial_balance=p.initialCapital)
-        result.net_profit = basic.net_profit
-        result.net_profit_pct = basic.net_profit_pct
-        result.gross_profit = basic.gross_profit
-        result.gross_loss = basic.gross_loss
-        result.max_drawdown = basic.max_drawdown
-        result.max_drawdown_pct = basic.max_drawdown_pct
-        result.total_trades = basic.total_trades
-        result.winning_trades = basic.winning_trades
-        result.losing_trades = basic.losing_trades
-
-        advanced = metrics.calculate_advanced(result, initial_balance=p.initialCapital)
-        result.profit_factor = advanced.profit_factor
-        result.romad = advanced.romad
-        result.ulcer_index = advanced.ulcer_index
-        result.consistency_score = advanced.consistency_score
-        result.sharpe_ratio = advanced.sharpe_ratio
-        result.sqn = advanced.sqn
-        result.sortino_ratio = advanced.sortino_ratio
+        metrics.enrich_strategy_result(result, initial_balance=p.initialCapital, risk_free_rate=0.02)
 
         return result

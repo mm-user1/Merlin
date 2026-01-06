@@ -269,3 +269,97 @@ class TestMetricsRegression:
             assert abs((advanced.sqn or 0) - baseline_sqn) < 1e-6
         assert abs((advanced.ulcer_index or 0) - baseline["ulcer_index"]) < 1e-6
         assert abs((advanced.consistency_score or 0) - baseline["consistency_score"]) < 1e-6
+
+
+class TestEnrichStrategyResult:
+    """Test the enrich_strategy_result helper and drift guards."""
+
+    def test_enrich_attaches_declared_fields(self):
+        """Verify declared StrategyResult fields are populated."""
+        from core.metrics import enrich_strategy_result
+
+        result = StrategyResult(
+            trades=[],
+            equity_curve=[100.0, 105.0, 110.0],
+            balance_curve=[100.0, 105.0, 110.0],
+            timestamps=[
+                pd.Timestamp("2025-01-01", tz="UTC"),
+                pd.Timestamp("2025-01-02", tz="UTC"),
+                pd.Timestamp("2025-01-03", tz="UTC"),
+            ],
+        )
+
+        basic, advanced = enrich_strategy_result(result, initial_balance=100.0)
+
+        # Verify declared fields are attached correctly
+        assert result.net_profit == pytest.approx(basic.net_profit)
+        assert result.net_profit_pct == pytest.approx(basic.net_profit_pct)
+        assert result.max_drawdown_pct == pytest.approx(basic.max_drawdown_pct)
+        assert result.total_trades == basic.total_trades
+
+    def test_drift_guard_win_rate_not_attached(self):
+        """win_rate exists in BasicMetrics but NOT in StrategyResult."""
+        from core.metrics import enrich_strategy_result
+
+        result = StrategyResult(
+            trades=[],
+            equity_curve=[100.0],
+            balance_curve=[100.0],
+            timestamps=[pd.Timestamp("2025-01-01", tz="UTC")],
+        )
+
+        enrich_strategy_result(result, initial_balance=100.0)
+
+        # win_rate should NOT be attached (not declared in StrategyResult)
+        assert not hasattr(result, "win_rate")
+
+    def test_drift_guard_sortino_not_attached(self):
+        """sortino_ratio exists in AdvancedMetrics but NOT in StrategyResult."""
+        from core.metrics import enrich_strategy_result
+
+        result = StrategyResult(
+            trades=[],
+            equity_curve=[100.0],
+            balance_curve=[100.0],
+            timestamps=[pd.Timestamp("2025-01-01", tz="UTC")],
+        )
+
+        enrich_strategy_result(result, initial_balance=100.0)
+
+        # sortino_ratio should NOT be attached (not declared in StrategyResult)
+        assert not hasattr(result, "sortino_ratio")
+
+    def test_drift_guard_avg_metrics_not_attached(self):
+        """avg_win, avg_loss, avg_trade exist in BasicMetrics but NOT in StrategyResult."""
+        from core.metrics import enrich_strategy_result
+
+        result = StrategyResult(
+            trades=[],
+            equity_curve=[100.0],
+            balance_curve=[100.0],
+            timestamps=[pd.Timestamp("2025-01-01", tz="UTC")],
+        )
+
+        enrich_strategy_result(result, initial_balance=100.0)
+
+        assert not hasattr(result, "avg_win")
+        assert not hasattr(result, "avg_loss")
+        assert not hasattr(result, "avg_trade")
+
+    def test_returns_both_metric_objects(self):
+        """Helper returns BasicMetrics and AdvancedMetrics for full access."""
+        from core.metrics import enrich_strategy_result
+
+        result = StrategyResult(
+            trades=[],
+            equity_curve=[100.0],
+            balance_curve=[100.0],
+            timestamps=[pd.Timestamp("2025-01-01", tz="UTC")],
+        )
+
+        basic, advanced = enrich_strategy_result(result, initial_balance=100.0)
+
+        # Callers can access optimization-only metrics from returned objects
+        assert hasattr(basic, "win_rate")
+        assert hasattr(basic, "avg_win")
+        assert hasattr(advanced, "sortino_ratio")

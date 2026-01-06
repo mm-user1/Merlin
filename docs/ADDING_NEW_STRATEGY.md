@@ -224,19 +224,18 @@ class S05MyStrategy(BaseStrategy):
             timestamps=timestamps,
         )
 
-        # Calculate metrics
-        basic = metrics.calculate_basic(result, p.initialCapital)
-        advanced = metrics.calculate_advanced(result)
-
-        result.net_profit_pct = basic.net_profit_pct
-        result.max_drawdown_pct = basic.max_drawdown_pct
-        result.total_trades = basic.total_trades
-        result.win_rate = basic.win_rate
-        result.sharpe_ratio = advanced.sharpe_ratio
-        result.romad = advanced.romad
-
+        # Compute and attach all declared metrics to result
+        # This automatically handles the intersection of calculated metrics
+        # with StrategyResult's declared fields (no manual assignment needed)
+        metrics.enrich_strategy_result(result, initial_balance=p.initialCapital)
         return result
 ```
+
+**Note on metrics:** `enrich_strategy_result()` calculates BasicMetrics and
+AdvancedMetrics, then attaches only the metrics that StrategyResult declares
+as fields. Additional metrics (like `win_rate`, `sortino_ratio`) are available
+in Optuna optimization results but are not exposed in single-backtest output
+by design.
 
 **Key patterns from existing strategies:**
 - Use `trade_start_idx` to skip warmup bars
