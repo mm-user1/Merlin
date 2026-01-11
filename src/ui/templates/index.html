@@ -7,6 +7,13 @@
   <link rel="stylesheet" href="/static/css/style.css" />
 </head>
 <body>
+  <nav class="top-nav">
+    <div class="nav-tabs">
+      <a href="/" class="nav-tab active" data-nav="start">Start</a>
+      <a href="/results" class="nav-tab" data-nav="results">Results</a>
+    </div>
+    <div class="nav-spacer"></div>
+  </nav>
   <div class="pane">
     <div class="split">
       <div class="frame">
@@ -99,22 +106,9 @@
                 </div>
 
                 <div class="form-group">
-                  <div class="filter-group" id="exportTradesFilterGroup">
-                    <div class="checkbox-group">
-                      <input type="checkbox" id="wfExportTrades" />
-                      <label for="wfExportTrades">Export Trades</label>
-                    </div>
-                    <div class="filter-input-group">
-                      <label for="wfExportTopK">Top</label>
-                      <input
-                        type="number"
-                        id="wfExportTopK"
-                        min="1"
-                        max="100"
-                        step="1"
-                        value="10"
-                      />
-                    </div>
+                  <div class="checkbox-group">
+                    <input type="checkbox" id="detailedLog" />
+                    <label for="detailedLog">Detailed log</label>
                   </div>
                 </div>
               </div>
@@ -160,7 +154,6 @@
                         disabled
                       />
                     </div>
-                    <button type="button" class="secondary" id="scoreConfigBtn" style="margin-left: 10px;">⚙️ Configure</button>
                   </div>
                 </div>
 
@@ -205,9 +198,10 @@
                       </div>
 
                       <div class="score-metric-row">
-                        <input type="checkbox" id="metric-recovery" checked />
-                        <label for="metric-recovery" style="min-width: 140px;">Recovery Factor</label>
-                        <input type="number" id="weight-recovery" step="0.05" min="0" max="1" value="0.10" style="width: 70px;" />
+                        <input type="checkbox" id="metric-sqn" checked />
+                        <label for="metric-sqn" style="min-width: 140px;">SQN</label>
+                        <input type="number" id="weight-sqn" step="0.05" min="0" max="1" value="0.10" style="width: 70px;" />
+                        <span style="font-size: 11px; color: #777;">System Quality Number</span>
                       </div>
 
                       <div class="score-metric-row">
@@ -220,6 +214,50 @@
 
                     <div style="margin-top: 12px; padding: 8px; background: #fff; border: 1px solid #ccc; border-radius: 3px; font-size: 12px;">
                       <strong>Formula Preview:</strong> <span id="formulaPreview">Calculating...</span>
+                    </div>
+
+                    <div style="margin-top: 12px; padding: 8px; background: #f9f9f9; border: 1px solid #ddd; border-radius: 3px;">
+                      <div style="font-size: 12px; color: #5a5a5a; margin-bottom: 8px;">
+                        Metric bounds (min/max) used for min-max normalization.
+                      </div>
+                      <div class="score-formula-params">
+                        <div class="score-metric-row">
+                          <label for="bound-min-romad" style="min-width: 140px;">RoMaD</label>
+                          <input type="number" id="bound-min-romad" step="0.1" style="width: 80px;" />
+                          <span style="font-size: 11px; color: #777;">to</span>
+                          <input type="number" id="bound-max-romad" step="0.1" style="width: 80px;" />
+                        </div>
+                        <div class="score-metric-row">
+                          <label for="bound-min-sharpe" style="min-width: 140px;">Sharpe Ratio</label>
+                          <input type="number" id="bound-min-sharpe" step="0.1" style="width: 80px;" />
+                          <span style="font-size: 11px; color: #777;">to</span>
+                          <input type="number" id="bound-max-sharpe" step="0.1" style="width: 80px;" />
+                        </div>
+                        <div class="score-metric-row">
+                          <label for="bound-min-pf" style="min-width: 140px;">Profit Factor</label>
+                          <input type="number" id="bound-min-pf" step="0.1" style="width: 80px;" />
+                          <span style="font-size: 11px; color: #777;">to</span>
+                          <input type="number" id="bound-max-pf" step="0.1" style="width: 80px;" />
+                        </div>
+                        <div class="score-metric-row">
+                          <label for="bound-min-ulcer" style="min-width: 140px;">Ulcer Index</label>
+                          <input type="number" id="bound-min-ulcer" step="0.1" style="width: 80px;" />
+                          <span style="font-size: 11px; color: #777;">to</span>
+                          <input type="number" id="bound-max-ulcer" step="0.1" style="width: 80px;" />
+                        </div>
+                        <div class="score-metric-row">
+                          <label for="bound-min-sqn" style="min-width: 140px;">SQN</label>
+                          <input type="number" id="bound-min-sqn" step="0.1" style="width: 80px;" />
+                          <span style="font-size: 11px; color: #777;">to</span>
+                          <input type="number" id="bound-max-sqn" step="0.1" style="width: 80px;" />
+                        </div>
+                        <div class="score-metric-row">
+                          <label for="bound-min-consistency" style="min-width: 140px;">Consistency Score</label>
+                          <input type="number" id="bound-min-consistency" step="1" style="width: 80px;" />
+                          <span style="font-size: 11px; color: #777;">to</span>
+                          <input type="number" id="bound-max-consistency" step="1" style="width: 80px;" />
+                        </div>
+                      </div>
                     </div>
 
                     <button type="button" class="secondary" id="resetScoreBtn" style="margin-top: 10px;">Reset to Defaults</button>
@@ -301,15 +339,87 @@
                     <span class="section-title" style="margin: 0; border: none;">OPTUNA SETTINGS</span>
                   </div>
                   <div class="collapsible-content">
-                    <div class="form-group">
-                      <label for="optunaTarget">Optimization target:</label>
-                      <select id="optunaTarget" style="width: 220px;">
-                        <option value="score" selected>Composite Score (recommended)</option>
-                        <option value="net_profit">Net Profit %</option>
-                        <option value="romad">RoMaD</option>
-                        <option value="sharpe">Sharpe Ratio</option>
-                        <option value="max_drawdown">Max Drawdown % (minimize)</option>
-                      </select>
+                    <div class="optuna-objectives-section">
+                      <div class="section-title" style="margin-top: 0;">Optimization Objectives</div>
+                      <div class="objective-hint">Select 1-6 objectives:</div>
+                      <div class="objective-grid" id="objectiveGrid">
+                        <label class="objective-item">
+                          <input type="checkbox" class="objective-checkbox" data-objective="net_profit_pct" checked />
+                          Net Profit %
+                          <span class="objective-direction">&uarr; max</span>
+                        </label>
+                        <label class="objective-item">
+                          <input type="checkbox" class="objective-checkbox" data-objective="max_drawdown_pct" />
+                          Max DD %
+                          <span class="objective-direction">&darr; min</span>
+                        </label>
+                        <label class="objective-item">
+                          <input type="checkbox" class="objective-checkbox" data-objective="sharpe_ratio" />
+                          Sharpe Ratio
+                          <span class="objective-direction">&uarr; max</span>
+                        </label>
+                        <label class="objective-item">
+                          <input type="checkbox" class="objective-checkbox" data-objective="sortino_ratio" />
+                          Sortino Ratio
+                          <span class="objective-direction">&uarr; max</span>
+                        </label>
+                        <label class="objective-item">
+                          <input type="checkbox" class="objective-checkbox" data-objective="romad" />
+                          RoMaD
+                          <span class="objective-direction">&uarr; max</span>
+                        </label>
+                        <label class="objective-item">
+                          <input type="checkbox" class="objective-checkbox" data-objective="profit_factor" />
+                          Profit Factor
+                          <span class="objective-direction">&uarr; max</span>
+                        </label>
+                        <label class="objective-item">
+                          <input type="checkbox" class="objective-checkbox" data-objective="win_rate" />
+                          Win Rate %
+                          <span class="objective-direction">&uarr; max</span>
+                        </label>
+                        <label class="objective-item">
+                          <input type="checkbox" class="objective-checkbox" data-objective="sqn" />
+                          SQN
+                          <span class="objective-direction">&uarr; max</span>
+                        </label>
+                        <label class="objective-item">
+                          <input type="checkbox" class="objective-checkbox" data-objective="ulcer_index" />
+                          Ulcer Index
+                          <span class="objective-direction">&darr; min</span>
+                        </label>
+                        <label class="objective-item">
+                          <input type="checkbox" class="objective-checkbox" data-objective="consistency_score" />
+                          Consistency %
+                          <span class="objective-direction">&uarr; max</span>
+                        </label>
+                        <label class="objective-item">
+                          <input type="checkbox" class="objective-checkbox" data-objective="composite_score" />
+                          Composite Score
+                          <span class="objective-direction">&uarr; max</span>
+                        </label>
+                      </div>
+                      <div class="primary-objective-row" id="primaryObjectiveRow" style="display: none;">
+                        <label for="primaryObjective">Primary Objective:</label>
+                        <select id="primaryObjective" style="width: 220px;"></select>
+                        <span class="primary-objective-note">Only shown when 2+ objectives.</span>
+                      </div>
+                    </div>
+
+                    <div class="form-group" style="flex-direction: column; align-items: flex-start; gap: 6px;">
+                      <div style="display: flex; align-items: center; gap: 8px;">
+                        <input type="checkbox" id="optuna_sanitize_enabled" checked />
+                        <label for="optuna_sanitize_enabled">Sanitize if Total Trades <=</label>
+                        <input
+                          type="number"
+                          id="optuna_sanitize_trades_threshold"
+                          min="0"
+                          step="1"
+                          value="0"
+                          style="width: 80px;"
+                        />
+                      </div>
+                      <span class="primary-objective-note">Sharpe, Sortino, SQN, PF</span>
                     </div>
 
                     <div class="form-group" style="flex-direction: column; align-items: flex-start; gap: 8px;">
@@ -347,7 +457,7 @@
                       style="padding: 10px; background: #e0f3ff; border: 1px solid #90caf9; border-radius: 3px; margin-top: 10px;"
                     >
                       <div style="font-size: 12px; color: #1565c0;">
-                        ℹ️ When using "Composite Score" target, weights are taken from
+                        Score Filter uses weights from
                         <a href="#" id="linkToScoreConfig" style="color: #0d47a1; text-decoration: underline;">Score Filter configuration</a>
                         in the left panel.
                       </div>
@@ -363,6 +473,8 @@
                           <label for="optunaSampler">Sampler:</label>
                           <select id="optunaSampler" style="width: 200px;">
                             <option value="tpe" selected>TPE (recommended)</option>
+                            <option value="nsga2">NSGA-II</option>
+                            <option value="nsga3">NSGA-III</option>
                             <option value="random">Random</option>
                           </select>
                         </div>
@@ -382,12 +494,134 @@
                           <input type="number" id="optunaWarmupTrials" min="0" max="50000" value="20" style="width: 80px;" />
                         </div>
 
+                        <div id="nsgaSettings" class="nsga-settings" style="display: none;">
+                          <div class="section-title" style="margin-top: 0;">NSGA Sampler Settings</div>
+                          <div class="form-group">
+                            <label for="nsgaPopulationSize">Population Size:</label>
+                            <input type="number" id="nsgaPopulationSize" min="2" max="1000" value="50" style="width: 80px;" />
+                          </div>
+                          <div class="form-group">
+                            <label for="nsgaCrossoverProb">Crossover Probability:</label>
+                            <input type="number" id="nsgaCrossoverProb" min="0" max="1" step="0.05" value="0.9" style="width: 80px;" />
+                          </div>
+                          <div class="form-group">
+                            <label for="nsgaMutationProb">Mutation Probability:</label>
+                            <input type="number" id="nsgaMutationProb" min="0" max="1" step="0.05" placeholder="auto" style="width: 80px;" />
+                          </div>
+                          <div class="form-group">
+                            <label for="nsgaSwappingProb">Swapping Probability:</label>
+                            <input type="number" id="nsgaSwappingProb" min="0" max="1" step="0.05" value="0.5" style="width: 80px;" />
+                          </div>
+                        </div>
+
                         <div class="form-group">
                           <div class="checkbox-group">
                             <input type="checkbox" id="optunaSaveStudy" />
                             <label for="optunaSaveStudy">Save study database (optuna_study.db)</label>
                           </div>
                         </div>
+                      </div>
+                    </div>
+                  </div>
+                </div>
+
+                <div class="collapsible" id="constraintsPanel">
+                  <div class="collapsible-header">
+                    <span class="collapsible-icon">▾</span>
+                    <span class="section-title" style="margin: 0; border: none;">OPTIMIZATION CONSTRAINTS</span>
+                  </div>
+                  <div class="collapsible-content">
+                    <div class="constraint-note">
+                      Trials violating constraints are deprioritized (not pruned).
+                    </div>
+                    <div class="constraints-grid">
+                      <div class="constraint-row">
+                        <label class="constraint-label">
+                          <input type="checkbox" class="constraint-checkbox" data-constraint-metric="total_trades" />
+                          Total Trades
+                        </label>
+                        <span class="constraint-operator">&ge;</span>
+                        <input type="number" class="constraint-input" data-constraint-threshold="total_trades" value="30" min="0" step="1" />
+                      </div>
+                      <div class="constraint-row">
+                        <label class="constraint-label">
+                          <input type="checkbox" class="constraint-checkbox" data-constraint-metric="net_profit_pct" />
+                          Net Profit %
+                        </label>
+                        <span class="constraint-operator">&ge;</span>
+                        <input type="number" class="constraint-input" data-constraint-threshold="net_profit_pct" value="0.0" step="0.1" />
+                      </div>
+                      <div class="constraint-row">
+                        <label class="constraint-label">
+                          <input type="checkbox" class="constraint-checkbox" data-constraint-metric="max_drawdown_pct" />
+                          Max DD %
+                        </label>
+                        <span class="constraint-operator">&le;</span>
+                        <input type="number" class="constraint-input" data-constraint-threshold="max_drawdown_pct" value="30.0" step="0.1" />
+                      </div>
+                      <div class="constraint-row">
+                        <label class="constraint-label">
+                          <input type="checkbox" class="constraint-checkbox" data-constraint-metric="sharpe_ratio" />
+                          Sharpe Ratio
+                        </label>
+                        <span class="constraint-operator">&ge;</span>
+                        <input type="number" class="constraint-input" data-constraint-threshold="sharpe_ratio" value="0.0" step="0.1" />
+                      </div>
+                      <div class="constraint-row">
+                        <label class="constraint-label">
+                          <input type="checkbox" class="constraint-checkbox" data-constraint-metric="romad" />
+                          RoMaD
+                        </label>
+                        <span class="constraint-operator">&ge;</span>
+                        <input type="number" class="constraint-input" data-constraint-threshold="romad" value="0.0" step="0.1" />
+                      </div>
+                      <div class="constraint-row">
+                        <label class="constraint-label">
+                          <input type="checkbox" class="constraint-checkbox" data-constraint-metric="profit_factor" />
+                          Profit Factor
+                        </label>
+                        <span class="constraint-operator">&ge;</span>
+                        <input type="number" class="constraint-input" data-constraint-threshold="profit_factor" value="1.0" step="0.1" />
+                      </div>
+                      <div class="constraint-row">
+                        <label class="constraint-label">
+                          <input type="checkbox" class="constraint-checkbox" data-constraint-metric="win_rate" />
+                          Win Rate %
+                        </label>
+                        <span class="constraint-operator">&ge;</span>
+                        <input type="number" class="constraint-input" data-constraint-threshold="win_rate" value="0.0" step="0.1" />
+                      </div>
+                      <div class="constraint-row">
+                        <label class="constraint-label">
+                          <input type="checkbox" class="constraint-checkbox" data-constraint-metric="sqn" />
+                          SQN
+                        </label>
+                        <span class="constraint-operator">&ge;</span>
+                        <input type="number" class="constraint-input" data-constraint-threshold="sqn" value="0.0" step="0.1" />
+                      </div>
+                      <div class="constraint-row">
+                        <label class="constraint-label">
+                          <input type="checkbox" class="constraint-checkbox" data-constraint-metric="ulcer_index" />
+                          Ulcer Index
+                        </label>
+                        <span class="constraint-operator">&le;</span>
+                        <input type="number" class="constraint-input" data-constraint-threshold="ulcer_index" value="20.0" step="0.1" />
+                      </div>
+                      <div class="constraint-row">
+                        <label class="constraint-label">
+                          <input type="checkbox" class="constraint-checkbox" data-constraint-metric="consistency_score" />
+                          Consistency %
+                        </label>
+                        <span class="constraint-operator">&ge;</span>
+                        <input type="number" class="constraint-input" data-constraint-threshold="consistency_score" value="0.0" step="0.1" />
+                      </div>
+                      <div class="constraint-row">
+                        <label class="constraint-label">
+                          <input type="checkbox" class="constraint-checkbox" data-constraint-metric="sortino_ratio" />
+                          Sortino Ratio
+                        </label>
+                        <span class="constraint-operator">&ge;</span>
+                        <input type="number" class="constraint-input" data-constraint-threshold="sortino_ratio" value="0.0" step="0.1" />
                       </div>
                     </div>
                   </div>
@@ -414,7 +648,7 @@
           <div class="content">
             <!-- Walk-Forward Analysis Section -->
             <div class="wf-section" style="margin-top: 0; padding: 20px; border: 2px solid #3498db; border-radius: 8px; background-color: #f8f9fa;">
-              <h3 style="color: #3498db; margin-bottom: 12px;">⚡ Walk-Forward Analysis</h3>
+              <h3 style="color: #3498db; margin-bottom: 12px;">? Walk-Forward Analysis</h3>
 
               <div class="form-group vertical" style="align-items: flex-start;">
                 <label style="margin-bottom: 8px;">
@@ -428,30 +662,24 @@
 
               <div id="wfSettings" style="display: none; margin-top: 20px;">
                 <div class="form-group" style="margin-bottom: 12px;">
-                  <label style="min-width: 150px;">Number of Windows:</label>
-                  <input type="number" id="wfNumWindows" value="5" min="3" max="10" style="width: 100px;" />
-                  <span style="font-size: 12px; color: #666; margin-left: 10px;">(Recommended: 5-6 for 1-2 years of data)</span>
+                  <label style="min-width: 150px;">In-Sample (days):</label>
+                  <input type="number" id="wfIsPeriodDays" value="90" min="30" max="3650" style="width: 100px;" />
+                  <span style="font-size: 12px; color: #666; margin-left: 10px;">(Optimization window length)</span>
                 </div>
 
                 <div class="form-group" style="margin-bottom: 12px;">
-                  <label style="min-width: 150px;">Gap (bars):</label>
-                  <input type="number" id="wfGapBars" value="100" min="0" max="500" style="width: 100px;" />
-                  <span style="font-size: 12px; color: #666; margin-left: 10px;">(Bars between training and testing to prevent look-ahead bias)</span>
-                </div>
-
-                <div class="form-group" style="margin-bottom: 12px;">
-                  <label style="min-width: 150px;">Top-K per Window:</label>
-                  <input type="number" id="wfTopK" value="20" min="5" max="50" style="width: 100px;" />
-                  <span style="font-size: 12px; color: #666; margin-left: 10px;">(Best parameter sets to test on each window)</span>
+                  <label style="min-width: 150px;">Out-of-Sample (days):</label>
+                  <input type="number" id="wfOosPeriodDays" value="30" min="15" max="3650" style="width: 100px;" />
+                  <span style="font-size: 12px; color: #666; margin-left: 10px;">(Testing window length)</span>
                 </div>
 
                 <div style="background-color: #e8f4f8; padding: 15px; border-radius: 5px;">
-                  <strong>Fixed Settings (Stage 1):</strong>
+                  <strong>Behavior (Phase 2):</strong>
                   <ul style="margin-top: 10px; font-size: 13px; color: #555; padding-left: 18px;">
-                    <li>WF Zone: 80% of data</li>
-                    <li>Forward Reserve: 20% of data</li>
-                    <li>Each window: 70% training (IS), 30% testing (OOS)</li>
-                    <li>Rolling window mode</li>
+                    <li>Rolling windows (shift forward by OOS period)</li>
+                    <li>Calendar-based sizing (days)</li>
+                    <li>Single best parameter set per window</li>
+                    <li>Stitched OOS equity curve + annualized WFE</li>
                   </ul>
                 </div>
               </div>
@@ -484,32 +712,7 @@
               </div>
             </div>
 
-            <div id="wfResults" style="display: none; margin-top: 30px;">
-              <h3 style="margin-bottom: 15px;">Walk-Forward Results</h3>
-
-              <div id="wfStatus" style="margin-bottom: 15px; font-size: 14px; color: #555;"></div>
-
-              <div id="wfSummary" style="background-color: #d4edda; padding: 15px; border-radius: 5px; margin-bottom: 20px;"></div>
-
-              <h4 style="margin-bottom: 10px;">Top 10 Parameter Sets</h4>
-              <table id="wfTable" style="width: 100%; border-collapse: collapse;">
-                <thead>
-                  <tr style="background-color: #3498db; color: white;">
-                    <th style="padding: 10px; border: 1px solid #ddd;">Rank</th>
-                    <th style="padding: 10px; border: 1px solid #ddd;">Param ID</th>
-                    <th style="padding: 10px; border: 1px solid #ddd;">Appearance</th>
-                    <th style="padding: 10px; border: 1px solid #ddd;">Avg OOS Profit %</th>
-                    <th style="padding: 10px; border: 1px solid #ddd;">OOS Win Rate</th>
-                    <th style="padding: 10px; border: 1px solid #ddd;">Forward Profit %</th>
-                  </tr>
-                </thead>
-                <tbody id="wfTableBody"></tbody>
-              </table>
-
-              <div style="margin-top: 20px; font-size: 14px; color: #666;">
-                Full detailed results will be automatically downloaded as CSV.
-              </div>
-            </div>
+            <div id="wfStatus" style="margin-top: 20px; font-size: 14px; color: #555;"></div>
 
             <div id="optimizerResults" class="results-area" style="display: none;"></div>
           </div>
@@ -522,8 +725,11 @@
   <script src="/static/js/utils.js"></script>
   <script src="/static/js/api.js"></script>
   <script src="/static/js/strategy-config.js"></script>
+  <script src="/static/js/optuna-ui.js"></script>
   <script src="/static/js/ui-handlers.js"></script>
   <script src="/static/js/presets.js"></script>
   <script src="/static/js/main.js"></script>
 </body>
 </html>
+
+

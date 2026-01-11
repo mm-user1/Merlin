@@ -1,7 +1,11 @@
+import hashlib
 import io
 import json
+import math
 import re
 import sys
+import tempfile
+import threading
 import time
 from datetime import datetime
 from http import HTTPStatus
@@ -14,8 +18,22 @@ from flask import Flask, jsonify, render_template, request, send_file
 sys.path.insert(0, str(Path(__file__).parent.parent))
 
 from core.backtest_engine import load_data, prepare_dataset_with_warmup
-from core.export import export_optuna_results
-from core.optuna_engine import OptimizationConfig, OptimizationResult, run_optimization
+from core.export import export_trades_csv
+from core.optuna_engine import (
+    CONSTRAINT_OPERATORS,
+    OBJECTIVE_DIRECTIONS,
+    OBJECTIVE_DISPLAY_NAMES,
+    OptimizationConfig,
+    OptimizationResult,
+    run_optimization,
+)
+from core.storage import (
+    delete_study,
+    get_study_trial,
+    list_studies,
+    load_study_from_db,
+    update_csv_path,
+)
 
 app = Flask(
     __name__,
@@ -23,6 +41,68 @@ app = Flask(
     template_folder="templates",
     static_url_path="/static",
 )
+
+OPTIMIZATION_STATE_LOCK = threading.Lock()
+LAST_OPTIMIZATION_STATE: Dict[str, Any] = {
+    "status": "idle",
+    "updated_at": None,
+}
+
+
+def _set_optimization_state(payload: Dict[str, Any]) -> None:
+    with OPTIMIZATION_STATE_LOCK:
+        normalized = json.loads(json.dumps(payload))
+        normalized["updated_at"] = datetime.utcnow().isoformat() + "Z"
+        LAST_OPTIMIZATION_STATE.clear()
+        LAST_OPTIMIZATION_STATE.update(normalized)
+
+
+def _get_optimization_state() -> Dict[str, Any]:
+    with OPTIMIZATION_STATE_LOCK:
+        return json.loads(json.dumps(LAST_OPTIMIZATION_STATE))
+
+
+def _persist_csv_upload(file_storage) -> str:
+    temp_dir = Path(tempfile.gettempdir()) / "merlin_uploads"
+    temp_dir.mkdir(exist_ok=True)
+    suffix = Path(file_storage.filename or "upload.csv").suffix or ".csv"
+    temp_path = temp_dir / f"upload_{int(time.time())}_{id(file_storage)}{suffix}"
+    file_storage.seek(0)
+    content = file_storage.read()
+    if isinstance(content, str):
+        content = content.encode("utf-8")
+    temp_path.write_bytes(content)
+    return str(temp_path)
+
+
+def _create_param_id_for_strategy(strategy_id: str, params: Dict[str, Any]) -> str:
+    param_str = json.dumps(params, sort_keys=True)
+    param_hash = hashlib.md5(param_str.encode()).hexdigest()[:8]
+
+    try:
+        from strategies import get_strategy_config
+
+        config = get_strategy_config(strategy_id)
+        parameters = config.get("parameters", {}) if isinstance(config, dict) else {}
+
+        optimizable: List[str] = []
+        for param_name, param_spec in parameters.items():
+            if not isinstance(param_spec, dict):
+                continue
+            optimize_cfg = param_spec.get("optimize", {})
+            if isinstance(optimize_cfg, dict) and optimize_cfg.get("enabled", False):
+                optimizable.append(param_name)
+            if len(optimizable) == 2:
+                break
+
+        label_parts = [str(params.get(param_name, "?")) for param_name in optimizable]
+        if label_parts:
+            label = " ".join(label_parts)
+            return f"{label}_{param_hash}"
+    except Exception:
+        pass
+
+    return param_hash
 
 
 def _get_parameter_types(strategy_id: str) -> Dict[str, str]:
@@ -66,7 +146,7 @@ SCORE_METRIC_KEYS: Tuple[str, ...] = (
     "sharpe",
     "pf",
     "ulcer",
-    "recovery",
+    "sqn",
     "consistency",
 )
 
@@ -78,7 +158,7 @@ DEFAULT_OPTIMIZER_SCORE_CONFIG: Dict[str, Any] = {
         "sharpe": 0.20,
         "pf": 0.20,
         "ulcer": 0.15,
-        "recovery": 0.10,
+        "sqn": 0.10,
         "consistency": 0.10,
     },
     "enabled_metrics": {
@@ -86,12 +166,81 @@ DEFAULT_OPTIMIZER_SCORE_CONFIG: Dict[str, Any] = {
         "sharpe": True,
         "pf": True,
         "ulcer": True,
-        "recovery": True,
+        "sqn": True,
         "consistency": True,
     },
     "invert_metrics": {"ulcer": True},
-    "normalization_method": "percentile",
+    "normalization_method": "minmax",
+    "metric_bounds": {
+        "romad": {"min": 0.0, "max": 10.0},
+        "sharpe": {"min": -1.0, "max": 3.0},
+        "pf": {"min": 0.0, "max": 5.0},
+        "ulcer": {"min": 0.0, "max": 20.0},
+        "sqn": {"min": -2.0, "max": 7.0},
+        "consistency": {"min": 0.0, "max": 100.0},
+    },
 }
+
+
+def validate_objectives_config(
+    objectives: List[str],
+    primary_objective: Optional[str],
+) -> Tuple[bool, Optional[str]]:
+    if not objectives or len(objectives) < 1:
+        return False, "At least 1 objective is required."
+    if len(objectives) > 6:
+        return False, "Maximum 6 objectives allowed."
+    for obj in objectives:
+        if obj not in OBJECTIVE_DIRECTIONS:
+            return False, f"Unknown objective: {obj}"
+    if len(objectives) > 1:
+        if not primary_objective:
+            return False, "Primary objective required for multi-objective optimization."
+        if primary_objective not in objectives:
+            return False, "Primary objective must be one of the selected objectives."
+    return True, None
+
+
+def validate_constraints_config(
+    constraints: List[Dict[str, Any]],
+) -> Tuple[bool, Optional[str]]:
+    for i, spec in enumerate(constraints or []):
+        if not isinstance(spec, dict):
+            return False, f"Constraint {i + 1}: Invalid constraint format"
+        metric = spec.get("metric")
+        threshold = spec.get("threshold")
+        enabled = spec.get("enabled", False)
+        if not enabled:
+            continue
+        if metric not in CONSTRAINT_OPERATORS:
+            return False, f"Constraint {i + 1}: Unknown metric '{metric}'"
+        if threshold is None:
+            return False, f"Constraint {i + 1}: Threshold is required"
+        try:
+            float(threshold)
+        except (TypeError, ValueError):
+            return False, f"Constraint {i + 1}: Threshold must be a number"
+    return True, None
+
+
+def validate_sampler_config(
+    sampler_type: str,
+    population_size: Optional[int],
+    crossover_prob: Optional[float],
+) -> Tuple[bool, Optional[str]]:
+    valid_samplers = {"tpe", "nsga2", "nsga3", "random"}
+    if sampler_type not in valid_samplers:
+        return False, f"Unknown sampler: {sampler_type}"
+    if sampler_type in ("nsga2", "nsga3"):
+        if population_size is not None:
+            if population_size < 2:
+                return False, "Population size must be at least 2"
+            if population_size > 1000:
+                return False, "Population size must be at most 1000"
+        if crossover_prob is not None:
+            if not (0.0 <= crossover_prob <= 1.0):
+                return False, "Crossover probability must be between 0 and 1"
+    return True, None
 
 PRESETS_DIR = Path(__file__).resolve().parent.parent / "presets"
 DEFAULT_PRESET_NAME = "defaults"
@@ -183,6 +332,20 @@ def _coerce_bool(value: Any) -> bool:
         if lowered in {"false", "0", "no", "n", "off"}:
             return False
     return False
+
+
+def _json_safe(value: Any) -> Any:
+    if isinstance(value, float):
+        if not math.isfinite(value):
+            if math.isinf(value):
+                return "inf" if value > 0 else "-inf"
+            return "nan"
+        return value
+    if isinstance(value, dict):
+        return {k: _json_safe(v) for k, v in value.items()}
+    if isinstance(value, (list, tuple)):
+        return [_json_safe(v) for v in value]
+    return value
 
 
 def _split_timestamp(value: str) -> Tuple[str, str]:
@@ -484,9 +647,314 @@ def _resolve_csv_path(raw_path: str) -> Path:
     return resolved
 
 
+def _validate_csv_for_study(csv_path: str, study: Dict[str, Any]) -> Tuple[bool, List[str], Optional[str]]:
+    warnings: List[str] = []
+    try:
+        df = load_data(csv_path)
+    except Exception as exc:
+        return False, warnings, str(exc)
+
+    expected_start = study.get("dataset_start_date")
+    expected_end = study.get("dataset_end_date")
+    if expected_start:
+        try:
+            expected_start_ts = pd.Timestamp(expected_start).date()
+            if df.index[0].date() != expected_start_ts:
+                warnings.append(
+                    f"Dataset start date differs (expected {expected_start}, got {df.index[0].date()})."
+                )
+        except Exception:
+            warnings.append("Could not validate dataset start date.")
+    if expected_end:
+        try:
+            expected_end_ts = pd.Timestamp(expected_end).date()
+            if df.index[-1].date() != expected_end_ts:
+                warnings.append(
+                    f"Dataset end date differs (expected {expected_end}, got {df.index[-1].date()})."
+                )
+        except Exception:
+            warnings.append("Could not validate dataset end date.")
+
+    original_name = study.get("csv_file_name")
+    if original_name:
+        selected_name = Path(csv_path).name
+        if selected_name != original_name:
+            warnings.append(
+                f"Filename differs from original ({original_name} vs {selected_name})."
+            )
+
+    return True, warnings, None
+
+
 @app.route("/")
 def index() -> object:
     return render_template("index.html")
+
+
+@app.route("/results")
+def results_page() -> object:
+    return render_template("results.html")
+
+
+@app.get("/api/optimization/status")
+def optimization_status() -> object:
+    return jsonify(_get_optimization_state())
+
+
+@app.post("/api/optimization/cancel")
+def optimization_cancel() -> object:
+    state = _get_optimization_state()
+    state["status"] = "cancelled"
+    _set_optimization_state(state)
+    return jsonify({"status": "cancelled"})
+
+
+@app.get("/api/studies")
+def list_studies_endpoint() -> object:
+    return jsonify({"studies": list_studies()})
+
+
+@app.get("/api/studies/<string:study_id>")
+def get_study_endpoint(study_id: str) -> object:
+    study_data = load_study_from_db(study_id)
+    if not study_data:
+        return jsonify({"error": "Study not found."}), HTTPStatus.NOT_FOUND
+    return jsonify(_json_safe(study_data))
+
+
+@app.delete("/api/studies/<string:study_id>")
+def delete_study_endpoint(study_id: str) -> object:
+    deleted = delete_study(study_id)
+    if not deleted:
+        return jsonify({"error": "Study not found."}), HTTPStatus.NOT_FOUND
+    return ("", HTTPStatus.NO_CONTENT)
+
+
+@app.post("/api/studies/<string:study_id>/update-csv-path")
+def update_study_csv_path_endpoint(study_id: str) -> object:
+    study_data = load_study_from_db(study_id)
+    if not study_data:
+        return jsonify({"error": "Study not found."}), HTTPStatus.NOT_FOUND
+
+    csv_file = request.files.get("file")
+    csv_path_raw = None
+    if request.is_json:
+        payload = request.get_json(silent=True) or {}
+        if isinstance(payload, dict):
+            csv_path_raw = payload.get("csvPath") or payload.get("csv_file_path")
+    if csv_path_raw is None:
+        csv_path_raw = request.form.get("csvPath")
+
+    if csv_file and csv_file.filename:
+        new_path = _persist_csv_upload(csv_file)
+    elif csv_path_raw:
+        try:
+            new_path = str(_resolve_csv_path(csv_path_raw))
+        except (FileNotFoundError, IsADirectoryError, ValueError, OSError) as exc:
+            return jsonify({"error": str(exc)}), HTTPStatus.BAD_REQUEST
+    else:
+        return jsonify({"error": "CSV file or path is required."}), HTTPStatus.BAD_REQUEST
+
+    is_valid, warnings, error = _validate_csv_for_study(new_path, study_data["study"])
+    if not is_valid:
+        return jsonify({"error": error or "CSV validation failed."}), HTTPStatus.BAD_REQUEST
+
+    updated = update_csv_path(study_id, new_path)
+    if not updated:
+        return jsonify({"error": "Failed to update CSV path."}), HTTPStatus.INTERNAL_SERVER_ERROR
+
+    return jsonify({"status": "updated", "warnings": warnings, "csv_file_path": new_path})
+
+
+@app.post("/api/studies/<string:study_id>/trials/<int:trial_number>/trades")
+def download_trial_trades(study_id: str, trial_number: int) -> object:
+    study_data = load_study_from_db(study_id)
+    if not study_data:
+        return jsonify({"error": "Study not found."}), HTTPStatus.NOT_FOUND
+
+    study = study_data["study"]
+    if study.get("optimization_mode") != "optuna":
+        return jsonify({"error": "Trade export is only supported for Optuna studies."}), HTTPStatus.BAD_REQUEST
+
+    csv_path = study.get("csv_file_path")
+    if not csv_path or not Path(csv_path).exists():
+        return jsonify({"error": "CSV file is missing for this study."}), HTTPStatus.BAD_REQUEST
+
+    trial = get_study_trial(study_id, trial_number)
+    if not trial:
+        return jsonify({"error": "Trial not found."}), HTTPStatus.NOT_FOUND
+
+    config = study.get("config_json") or {}
+    fixed_params = config.get("fixed_params") or {}
+
+    params = {**fixed_params, **(trial.get("params") or {})}
+
+    start = params.get("start")
+    end = params.get("end")
+    if isinstance(start, str):
+        start = pd.Timestamp(start, tz="UTC")
+    if isinstance(end, str):
+        end = pd.Timestamp(end, tz="UTC")
+
+    warmup_bars = study.get("warmup_bars") or config.get("warmup_bars") or 1000
+
+    from strategies import get_strategy
+
+    try:
+        strategy_class = get_strategy(study.get("strategy_id"))
+    except ValueError as exc:
+        return jsonify({"error": str(exc)}), HTTPStatus.BAD_REQUEST
+
+    try:
+        df = load_data(csv_path)
+    except Exception as exc:
+        return jsonify({"error": str(exc)}), HTTPStatus.BAD_REQUEST
+
+    trade_start_idx = 0
+    if params.get("dateFilter"):
+        try:
+            df, trade_start_idx = prepare_dataset_with_warmup(df, start, end, int(warmup_bars))
+        except Exception:
+            return jsonify({"error": "Failed to prepare dataset with warmup."}), HTTPStatus.BAD_REQUEST
+
+    try:
+        result = strategy_class.run(df, params, trade_start_idx)
+    except Exception as exc:
+        return jsonify({"error": str(exc)}), HTTPStatus.BAD_REQUEST
+
+    from core.export import _extract_symbol_from_csv_filename
+
+    symbol = _extract_symbol_from_csv_filename(study.get("csv_file_name") or "")
+    csv_content = export_trades_csv(result.trades, symbol=symbol)
+    buffer = io.BytesIO(csv_content.encode("utf-8"))
+    buffer.seek(0)
+
+    filename = f"{study.get('study_name', 'study')}_trial_{trial_number}_trades.csv"
+    return send_file(
+        buffer,
+        mimetype="text/csv",
+        as_attachment=True,
+        download_name=filename,
+    )
+
+
+@app.post("/api/studies/<string:study_id>/wfa/trades")
+def download_wfa_trades(study_id: str) -> object:
+    study_data = load_study_from_db(study_id)
+    if not study_data:
+        return jsonify({"error": "Study not found."}), HTTPStatus.NOT_FOUND
+
+    study = study_data["study"]
+    if study.get("optimization_mode") != "wfa":
+        return jsonify({"error": "Trade export is only supported for WFA studies."}), HTTPStatus.BAD_REQUEST
+
+    csv_path = study.get("csv_file_path")
+    if not csv_path or not Path(csv_path).exists():
+        return jsonify({"error": "CSV file is missing for this study."}), HTTPStatus.BAD_REQUEST
+
+    windows = study_data.get("windows") or []
+    if not windows:
+        return jsonify({"error": "No WFA windows available for this study."}), HTTPStatus.BAD_REQUEST
+
+    config = study.get("config_json") or {}
+    fixed_params = config.get("fixed_params") or {}
+    warmup_bars = study.get("warmup_bars") or config.get("warmup_bars") or 1000
+
+    from strategies import get_strategy
+
+    try:
+        strategy_class = get_strategy(study.get("strategy_id"))
+    except ValueError as exc:
+        return jsonify({"error": str(exc)}), HTTPStatus.BAD_REQUEST
+
+    try:
+        df = load_data(csv_path)
+    except Exception as exc:
+        return jsonify({"error": str(exc)}), HTTPStatus.BAD_REQUEST
+
+    def _normalize_ts(value: Any) -> Optional[pd.Timestamp]:
+        if value is None or value == "":
+            return None
+        if isinstance(value, pd.Timestamp):
+            ts = value
+        else:
+            ts = pd.Timestamp(value)
+        if ts.tzinfo is None:
+            return ts.tz_localize("UTC")
+        return ts.tz_convert("UTC")
+
+    def _align_window_ts(value: Any, *, side: str) -> Optional[pd.Timestamp]:
+        """Align date-only window boundaries to actual bar timestamps in the dataset."""
+        ts = _normalize_ts(value)
+        if ts is None or df.empty:
+            return ts
+        is_date_only = False
+        if isinstance(value, str):
+            stripped = value.strip()
+            is_date_only = bool(re.match(r"^\d{4}-\d{2}-\d{2}$", stripped))
+        if not is_date_only:
+            return ts
+        if side == "start":
+            idx = df.index.searchsorted(ts, side="left")
+            if idx >= len(df.index):
+                return None
+            return df.index[idx]
+        if side == "end":
+            day_end = ts + pd.Timedelta(days=1) - pd.Timedelta(microseconds=1)
+            idx = df.index.searchsorted(day_end, side="right") - 1
+            if idx < 0:
+                return None
+            return df.index[idx]
+        return ts
+
+    all_trades = []
+    for window in windows:
+        start = _align_window_ts(window.get("oos_start_date") or window.get("oos_start"), side="start")
+        end = _align_window_ts(window.get("oos_end_date") or window.get("oos_end"), side="end")
+        if start is None or end is None:
+            continue
+
+        params = {**fixed_params, **(window.get("best_params") or {})}
+        params["dateFilter"] = True
+        params["start"] = start
+        params["end"] = end
+
+        try:
+            df_prepared, trade_start_idx = prepare_dataset_with_warmup(
+                df, start, end, int(warmup_bars)
+            )
+        except Exception:
+            return jsonify({"error": "Failed to prepare dataset with warmup."}), HTTPStatus.BAD_REQUEST
+
+        try:
+            result = strategy_class.run(df_prepared, params, trade_start_idx)
+        except Exception as exc:
+            return jsonify({"error": str(exc)}), HTTPStatus.BAD_REQUEST
+
+        window_trades = [
+            trade
+            for trade in result.trades
+            if trade.entry_time and start <= trade.entry_time <= end
+        ]
+        all_trades.extend(window_trades)
+
+
+    all_trades.sort(key=lambda t: t.entry_time or pd.Timestamp.min)
+
+    from core.export import _extract_symbol_from_csv_filename
+
+    symbol = _extract_symbol_from_csv_filename(study.get("csv_file_name") or "")
+    csv_content = export_trades_csv(all_trades, symbol=symbol)
+    buffer = io.BytesIO(csv_content.encode("utf-8"))
+    buffer.seek(0)
+
+    filename = f"{study.get('study_name', 'study')}_wfa_oos_trades.csv"
+    return send_file(
+        buffer,
+        mimetype="text/csv",
+        as_attachment=True,
+        download_name=filename,
+    )
 
 
 @app.get("/api/presets")
@@ -631,15 +1099,19 @@ def run_walkforward_optimization() -> object:
     csv_file = request.files.get("file")
     csv_path_raw = (data.get("csvPath") or "").strip()
     data_source = None
-    opened_file = None
+    data_path = ""
+    original_csv_name = ""
 
     try:
         if csv_file and csv_file.filename:
-            data_source = csv_file
+            data_path = _persist_csv_upload(csv_file)
+            data_source = data_path
+            original_csv_name = csv_file.filename
         elif csv_path_raw:
             resolved_path = _resolve_csv_path(csv_path_raw)
-            opened_file = resolved_path.open("rb")
-            data_source = opened_file
+            data_source = str(resolved_path)
+            data_path = str(resolved_path)
+            original_csv_name = Path(resolved_path).name
         else:
             return jsonify({"error": "CSV file is required."}), HTTPStatus.BAD_REQUEST
     except (FileNotFoundError, IsADirectoryError, ValueError):
@@ -649,16 +1121,39 @@ def run_walkforward_optimization() -> object:
 
     config_raw = data.get("config")
     if not config_raw:
-        if opened_file:
-            opened_file.close()
         return jsonify({"error": "Missing optimization config."}), HTTPStatus.BAD_REQUEST
 
     try:
         config_payload = json.loads(config_raw)
     except json.JSONDecodeError:
-        if opened_file:
-            opened_file.close()
         return jsonify({"error": "Invalid optimization config JSON."}), HTTPStatus.BAD_REQUEST
+
+    objectives = config_payload.get("objectives", [])
+    primary_objective = config_payload.get("primary_objective")
+    valid, error = validate_objectives_config(objectives, primary_objective)
+    if not valid:
+        return jsonify({"error": error}), HTTPStatus.BAD_REQUEST
+
+    constraints = config_payload.get("constraints", [])
+    valid, error = validate_constraints_config(constraints)
+    if not valid:
+        return jsonify({"error": error}), HTTPStatus.BAD_REQUEST
+
+    sampler_type = str(config_payload.get("sampler", "tpe")).strip().lower()
+    population_size = config_payload.get("population_size")
+    crossover_prob = config_payload.get("crossover_prob")
+    try:
+        population_size_val = int(population_size) if population_size is not None else None
+    except (TypeError, ValueError):
+        return jsonify({"error": "Population size must be a number."}), HTTPStatus.BAD_REQUEST
+    try:
+        crossover_prob_val = float(crossover_prob) if crossover_prob is not None else None
+    except (TypeError, ValueError):
+        return jsonify({"error": "Crossover probability must be a number."}), HTTPStatus.BAD_REQUEST
+
+    valid, error = validate_sampler_config(sampler_type, population_size_val, crossover_prob_val)
+    if not valid:
+        return jsonify({"error": error}), HTTPStatus.BAD_REQUEST
 
     strategy_id, error_response = _resolve_strategy_id_from_request()
     if error_response:
@@ -679,18 +1174,12 @@ def run_walkforward_optimization() -> object:
             strategy_id=strategy_id,
         )
     except ValueError as exc:
-        if opened_file:
-            opened_file.close()
         return jsonify({"error": str(exc)}), HTTPStatus.BAD_REQUEST
     except Exception:  # pragma: no cover - defensive
-        if opened_file:
-            opened_file.close()
         app.logger.exception("Failed to build optimization config for walk-forward")
         return jsonify({"error": "Failed to prepare optimization config."}), HTTPStatus.INTERNAL_SERVER_ERROR
 
     if optimization_config.optimization_mode != "optuna":
-        if opened_file:
-            opened_file.close()
         return jsonify({"error": "Walk-Forward requires Optuna optimization mode."}), HTTPStatus.BAD_REQUEST
 
     if hasattr(data_source, "seek"):
@@ -702,12 +1191,8 @@ def run_walkforward_optimization() -> object:
     try:
         df = load_data(data_source)
     except ValueError as exc:
-        if opened_file:
-            opened_file.close()
         return jsonify({"error": str(exc)}), HTTPStatus.BAD_REQUEST
     except Exception:  # pragma: no cover - defensive
-        if opened_file:
-            opened_file.close()
         app.logger.exception("Failed to load CSV for walk-forward")
         return jsonify({"error": "Failed to load CSV data."}), HTTPStatus.INTERNAL_SERVER_ERROR
 
@@ -756,8 +1241,6 @@ def run_walkforward_optimization() -> object:
             # Check that we have enough data in the ACTUAL trading period (start_ts to end_ts)
             df_trading_period = df[(df.index >= start_ts) & (df.index <= end_ts)]
             if len(df_trading_period) < 1000:
-                if opened_file:
-                    opened_file.close()
                 return jsonify({
                     "error": f"Selected date range contains only {len(df_trading_period)} bars. Need at least 1000 bars for Walk-Forward Analysis."
                 }), HTTPStatus.BAD_REQUEST
@@ -769,11 +1252,10 @@ def run_walkforward_optimization() -> object:
             print(f"  Trading period: {len(df_trading_period)} bars from {start_ts} to {end_ts}")
 
         except Exception as e:
-            if opened_file:
-                opened_file.close()
             return jsonify({"error": f"Failed to apply date filter: {str(e)}"}), HTTPStatus.BAD_REQUEST
 
     optimization_config.warmup_bars = warmup_bars
+    optimization_config.csv_original_name = original_csv_name
 
     base_template = {
         "enabled_params": json.loads(json.dumps(optimization_config.enabled_params)),
@@ -789,202 +1271,124 @@ def run_walkforward_optimization() -> object:
         "score_config": json.loads(json.dumps(optimization_config.score_config or {})),
         "strategy_id": optimization_config.strategy_id,
         "warmup_bars": optimization_config.warmup_bars,
+        "csv_original_name": original_csv_name,
+        "objectives": list(getattr(optimization_config, "objectives", []) or []),
+        "primary_objective": getattr(optimization_config, "primary_objective", None),
+        "constraints": json.loads(json.dumps(getattr(optimization_config, "constraints", []) or [])),
+        "sampler_type": getattr(optimization_config, "sampler_type", "tpe"),
+        "population_size": getattr(optimization_config, "population_size", None),
+        "crossover_prob": getattr(optimization_config, "crossover_prob", None),
+        "mutation_prob": getattr(optimization_config, "mutation_prob", None),
+        "swapping_prob": getattr(optimization_config, "swapping_prob", None),
+        "n_startup_trials": getattr(optimization_config, "n_startup_trials", 20),
     }
 
     optuna_settings = {
-        "target": getattr(optimization_config, "optuna_target", "score"),
+        "objectives": list(getattr(optimization_config, "objectives", []) or []),
+        "primary_objective": getattr(optimization_config, "primary_objective", None),
+        "constraints": json.loads(json.dumps(getattr(optimization_config, "constraints", []) or [])),
         "budget_mode": getattr(optimization_config, "optuna_budget_mode", "trials"),
         "n_trials": int(getattr(optimization_config, "optuna_n_trials", 100)),
         "time_limit": int(getattr(optimization_config, "optuna_time_limit", 3600)),
         "convergence_patience": int(getattr(optimization_config, "optuna_convergence", 50)),
         "enable_pruning": bool(getattr(optimization_config, "optuna_enable_pruning", True)),
-        "sampler": getattr(optimization_config, "optuna_sampler", "tpe"),
+        "sampler": getattr(optimization_config, "sampler_type", "tpe"),
+        "population_size": getattr(optimization_config, "population_size", None),
+        "crossover_prob": getattr(optimization_config, "crossover_prob", None),
+        "mutation_prob": getattr(optimization_config, "mutation_prob", None),
+        "swapping_prob": getattr(optimization_config, "swapping_prob", None),
         "pruner": getattr(optimization_config, "optuna_pruner", "median"),
-        "warmup_trials": int(getattr(optimization_config, "optuna_warmup_trials", 20)),
+        "warmup_trials": int(getattr(optimization_config, "n_startup_trials", 20)),
         "save_study": bool(getattr(optimization_config, "optuna_save_study", False)),
     }
 
     try:
-        num_windows = int(data.get("wf_num_windows", 5))
-        gap_bars = int(data.get("wf_gap_bars", 100))
-        topk = int(data.get("wf_topk", 20))
+        is_period_days = int(data.get("wf_is_period_days", 90))
+        oos_period_days = int(data.get("wf_oos_period_days", 30))
     except (TypeError, ValueError):
-        if opened_file:
-            opened_file.close()
         return jsonify({"error": "Invalid Walk-Forward parameters."}), HTTPStatus.BAD_REQUEST
 
-    num_windows = max(1, min(20, num_windows))
-    gap_bars = max(0, gap_bars)
-    topk = max(1, min(200, topk))
+    is_period_days = max(1, min(3650, is_period_days))
+    oos_period_days = max(1, min(3650, oos_period_days))
 
-    from core.walkforward_engine import WFConfig, WalkForwardEngine, export_wf_results_csv
+    from core.walkforward_engine import WFConfig, WalkForwardEngine
 
     wf_config = WFConfig(
-        num_windows=num_windows,
-        gap_bars=gap_bars,
-        topk_per_window=topk,
+        is_period_days=is_period_days,
+        oos_period_days=oos_period_days,
         warmup_bars=warmup_bars,
         strategy_id=strategy_id,
     )
-    engine = WalkForwardEngine(wf_config, base_template, optuna_settings)
+    engine = WalkForwardEngine(wf_config, base_template, optuna_settings, csv_file_path=data_path)
+
+    _set_optimization_state(
+        {
+            "status": "running",
+            "mode": "wfa",
+            "strategy_id": strategy_id,
+            "data_path": data_path,
+            "config": config_payload,
+            "wfa": {
+                "is_period_days": is_period_days,
+                "oos_period_days": oos_period_days,
+            },
+        }
+    )
 
     try:
-        result = engine.run_wf_optimization(df)
+        result, study_id = engine.run_wf_optimization(df)
     except ValueError as exc:
-        if opened_file:
-            opened_file.close()
+        _set_optimization_state(
+            {
+                "status": "error",
+                "mode": "wfa",
+                "strategy_id": strategy_id,
+                "error": str(exc),
+            }
+        )
         return jsonify({"error": str(exc)}), HTTPStatus.BAD_REQUEST
     except Exception:  # pragma: no cover - defensive
-        if opened_file:
-            opened_file.close()
+        _set_optimization_state(
+            {
+                "status": "error",
+                "mode": "wfa",
+                "strategy_id": strategy_id,
+                "error": "Walk-forward optimization failed.",
+            }
+        )
         app.logger.exception("Walk-forward optimization failed")
         return jsonify({"error": "Walk-forward optimization failed."}), HTTPStatus.INTERNAL_SERVER_ERROR
 
-    # Generate CSV content without saving to disk
-    csv_content = export_wf_results_csv(result, df)
+    stitched_oos = result.stitched_oos
 
-    # Build top10 summary (common for both modes)
-    top10: List[Dict[str, Any]] = []
-    for rank, agg in enumerate(result.aggregated[:10], 1):
-        forward_profit = result.forward_profits[rank - 1] if rank <= len(result.forward_profits) else None
-        top10.append(
-            {
-                "rank": rank,
-                "param_id": agg.param_id,
-                "appearances": agg.appearances,
-                "avg_oos_profit": round(agg.avg_oos_profit, 2),
-                "oos_win_rate": round(agg.oos_win_rate * 100, 1),
-                "forward_profit": round(forward_profit, 2) if isinstance(forward_profit, (int, float)) else None,
-            }
-        )
+    response_payload = {
+        "status": "success",
+        "summary": {
+            "total_windows": result.total_windows,
+            "stitched_oos_net_profit_pct": round(result.stitched_oos.final_net_profit_pct, 2),
+            "stitched_oos_max_drawdown_pct": round(result.stitched_oos.max_drawdown_pct, 2),
+            "stitched_oos_total_trades": result.stitched_oos.total_trades,
+            "wfe": round(result.stitched_oos.wfe, 2),
+            "oos_win_rate": round(result.stitched_oos.oos_win_rate, 1),
+        },
+        "mode": "wfa",
+        "strategy_id": strategy_id,
+        "data_path": data_path,
+        "study_id": study_id,
+    }
 
-    # Get export trades settings from request
-    export_trades = data.get("exportTrades") == "true"
-    top_k_str = data.get("topK", "10")
-    try:
-        top_k = min(100, max(1, int(top_k_str)))
-    except (ValueError, TypeError):
-        top_k = 10
-
-    # Get dates for filename generation
-    start_date = df.index[0]
-    end_date = df.index[-1]
-
-    # Get original CSV filename
-    original_csv_name = csv_file.filename if csv_file and hasattr(csv_file, 'filename') else ""
-    if not original_csv_name and csv_path_raw:
-        original_csv_name = csv_path_raw
-
-    # Generate filenames
-    from core.walkforward_engine import (
-        _extract_symbol_from_csv_filename,
-        export_wfa_trades_history,
-        generate_wfa_output_filename,
-    )
-
-    csv_filename = generate_wfa_output_filename(
-        original_csv_name,
-        start_date,
-        end_date,
-        include_trades=False
-    )
-
-    if export_trades:
-        # Export trades history for top-K combinations
-        import tempfile
-        import zipfile
-        import shutil
-        import base64
-        from pathlib import Path
-
-        # Extract symbol from CSV filename
-        symbol = _extract_symbol_from_csv_filename(original_csv_name)
-
-        # Create temporary directory for all files
-        temp_dir = Path(tempfile.mkdtemp())
-
-        try:
-            # Export trades to CSVs
-            trade_files = export_wfa_trades_history(
-                wf_result=result,
-                df=df,
-                symbol=symbol,
-                top_k=top_k,
-                output_dir=temp_dir
-            )
-
-            # Create ZIP with trade CSVs only
-            zip_filename = generate_wfa_output_filename(
-                original_csv_name,
-                start_date,
-                end_date,
-                include_trades=True
-            )
-            zip_path = temp_dir / zip_filename
-
-            with zipfile.ZipFile(zip_path, 'w', zipfile.ZIP_DEFLATED) as zf:
-                # Add all trade CSVs
-                for trade_file in trade_files:
-                    trade_path = temp_dir / trade_file
-                    zf.write(trade_path, trade_file)
-
-            # Read ZIP into base64
-            with open(zip_path, 'rb') as f:
-                zip_bytes = f.read()
-            zip_base64 = base64.b64encode(zip_bytes).decode('utf-8')
-
-            # Cleanup temporary directory
-            shutil.rmtree(temp_dir, ignore_errors=True)
-
-            # Close opened file before sending response
-            if opened_file:
-                opened_file.close()
-
-            # Return JSON with embedded ZIP
-            response_payload = {
-                "status": "success",
-                "summary": {
-                    "total_windows": len(result.windows),
-                    "top_param_id": result.aggregated[0].param_id if result.aggregated else "N/A",
-                    "top_avg_oos_profit": round(result.aggregated[0].avg_oos_profit, 2) if result.aggregated else 0.0,
-                },
-                "top10": top10,
-                "csv_content": csv_content,
-                "csv_filename": csv_filename,
-                "export_trades": True,
-                "zip_filename": zip_filename,
-                "zip_base64": zip_base64,
-            }
-
-            return jsonify(response_payload)
-
-        except Exception as e:
-            # Cleanup on error
-            if temp_dir.exists():
-                shutil.rmtree(temp_dir, ignore_errors=True)
-            if opened_file:
-                opened_file.close()
-            app.logger.exception("Failed to export trades history")
-            return jsonify({"error": f"Failed to export trades: {str(e)}"}), HTTPStatus.INTERNAL_SERVER_ERROR
-
-    else:
-        # No trades export - return JSON response (existing behavior)
-        response_payload = {
-            "status": "success",
-            "summary": {
-                "total_windows": len(result.windows),
-                "top_param_id": result.aggregated[0].param_id if result.aggregated else "N/A",
-                "top_avg_oos_profit": round(result.aggregated[0].avg_oos_profit, 2) if result.aggregated else 0.0,
-            },
-            "top10": top10,
-            "csv_content": csv_content,
-            "csv_filename": csv_filename,
+    _set_optimization_state(
+        {
+            "status": "completed",
+            "mode": "wfa",
+            "strategy_id": strategy_id,
+            "data_path": data_path,
+            "summary": response_payload.get("summary", {}),
+            "study_id": study_id,
         }
+    )
 
-        if opened_file:
-            opened_file.close()
-
-        return jsonify(response_payload)
+    return jsonify(response_payload)
 
 
 @app.post("/api/backtest")
@@ -1187,6 +1591,35 @@ def _build_optimization_config(
         if isinstance(normalization_value, str) and normalization_value.strip():
             normalized["normalization_method"] = normalization_value.strip().lower()
 
+        bounds_raw = source.get("metric_bounds")
+        if isinstance(bounds_raw, dict):
+            bounds: Dict[str, Dict[str, float]] = {}
+            for metric_key in SCORE_METRIC_KEYS:
+                if metric_key in bounds_raw and isinstance(bounds_raw[metric_key], dict):
+                    metric_bounds = bounds_raw[metric_key]
+                    try:
+                        bounds[metric_key] = {
+                            "min": float(
+                                metric_bounds.get(
+                                    "min", normalized["metric_bounds"][metric_key]["min"]
+                                )
+                            ),
+                            "max": float(
+                                metric_bounds.get(
+                                    "max", normalized["metric_bounds"][metric_key]["max"]
+                                )
+                            ),
+                        }
+                    except (TypeError, ValueError, KeyError):
+                        bounds[metric_key] = normalized["metric_bounds"].get(
+                            metric_key, {"min": 0.0, "max": 100.0}
+                        )
+                else:
+                    bounds[metric_key] = normalized["metric_bounds"].get(
+                        metric_key, {"min": 0.0, "max": 100.0}
+                    )
+            normalized["metric_bounds"] = bounds
+
         return normalized
 
     if strategy_id is None:
@@ -1292,13 +1725,18 @@ def _build_optimization_config(
 
     score_config_payload = payload.get("score_config")
     score_config = _sanitize_score_config(score_config_payload)
+    detailed_log = _parse_bool(payload.get("detailed_log", False), False)
 
     optimization_mode_raw = payload.get("optimization_mode", "optuna")
     optimization_mode = str(optimization_mode_raw).strip().lower() or "optuna"
     if optimization_mode != "optuna":
         raise ValueError("Grid Search has been removed. Use Optuna optimization only.")
 
-    optuna_target = str(payload.get("optuna_target", "score")).strip().lower()
+    objectives = payload.get("objectives", [])
+    if not isinstance(objectives, list):
+        objectives = []
+    primary_objective = payload.get("primary_objective")
+
     optuna_budget_mode = str(payload.get("optuna_budget_mode", "trials")).strip().lower()
 
     try:
@@ -1317,45 +1755,85 @@ def _build_optimization_config(
         optuna_convergence = 50
 
     try:
-        optuna_warmup_trials = int(payload.get("optuna_warmup_trials", 20))
+        n_startup_trials = int(payload.get("n_startup_trials", 20))
     except (TypeError, ValueError):
-        optuna_warmup_trials = 20
+        n_startup_trials = 20
 
     optuna_enable_pruning = _parse_bool(payload.get("optuna_enable_pruning", True), True)
-    optuna_sampler = str(payload.get("optuna_sampler", "tpe")).strip().lower()
     optuna_pruner = str(payload.get("optuna_pruner", "median")).strip().lower()
     optuna_save_study = _parse_bool(payload.get("optuna_save_study", False), False)
 
-    allowed_targets = {"score", "net_profit", "romad", "sharpe", "max_drawdown"}
+    sanitize_enabled = _parse_bool(payload.get("sanitize_enabled", True), True)
+    sanitize_trades_threshold_raw = payload.get("sanitize_trades_threshold", 0)
+    try:
+        sanitize_trades_threshold = int(sanitize_trades_threshold_raw)
+    except (TypeError, ValueError):
+        raise ValueError("sanitize_trades_threshold must be a non-negative integer.")
+    if sanitize_trades_threshold < 0:
+        raise ValueError("sanitize_trades_threshold must be >= 0.")
+
+    sampler_type = str(payload.get("sampler", "tpe")).strip().lower()
+    population_size = payload.get("population_size")
+    crossover_prob = payload.get("crossover_prob")
+    mutation_prob = payload.get("mutation_prob")
+    swapping_prob = payload.get("swapping_prob")
+
+    def _parse_optional_int(value):
+        if value in (None, ""):
+            return None
+        try:
+            return int(value)
+        except (TypeError, ValueError):
+            return None
+
+    def _parse_optional_float(value):
+        if value in (None, ""):
+            return None
+        try:
+            return float(value)
+        except (TypeError, ValueError):
+            return None
+
+    population_size = _parse_optional_int(population_size)
+    crossover_prob = _parse_optional_float(crossover_prob)
+    mutation_prob = _parse_optional_float(mutation_prob)
+    swapping_prob = _parse_optional_float(swapping_prob)
+
     allowed_budget_modes = {"trials", "time", "convergence"}
-    allowed_samplers = {"tpe", "random"}
     allowed_pruners = {"median", "percentile", "patient", "none"}
 
-    if optuna_target not in allowed_targets:
-        raise ValueError(f"Invalid Optuna target: {optuna_target}")
     if optuna_budget_mode not in allowed_budget_modes:
         raise ValueError(f"Invalid Optuna budget mode: {optuna_budget_mode}")
-    if optuna_sampler not in allowed_samplers:
-        raise ValueError(f"Invalid Optuna sampler: {optuna_sampler}")
     if optuna_pruner not in allowed_pruners:
         raise ValueError(f"Invalid Optuna pruner: {optuna_pruner}")
 
     optuna_n_trials = max(10, optuna_n_trials)
     optuna_time_limit = max(60, optuna_time_limit)
     optuna_convergence = max(10, optuna_convergence)
-    optuna_warmup_trials = max(0, optuna_warmup_trials)
+    n_startup_trials = max(0, n_startup_trials)
+
+    if len(objectives) > 1:
+        optuna_enable_pruning = False
 
     optuna_params: Dict[str, Any] = {
-        "optuna_target": optuna_target,
+        "objectives": objectives,
+        "primary_objective": primary_objective,
+        "constraints": payload.get("constraints", []),
+        "sampler_type": sampler_type,
+        "population_size": population_size,
+        "crossover_prob": crossover_prob,
+        "mutation_prob": mutation_prob,
+        "swapping_prob": swapping_prob,
+        "n_startup_trials": n_startup_trials,
         "optuna_budget_mode": optuna_budget_mode,
         "optuna_n_trials": optuna_n_trials,
         "optuna_time_limit": optuna_time_limit,
         "optuna_convergence": optuna_convergence,
         "optuna_enable_pruning": optuna_enable_pruning,
-        "optuna_sampler": optuna_sampler,
         "optuna_pruner": optuna_pruner,
-        "optuna_warmup_trials": optuna_warmup_trials,
         "optuna_save_study": optuna_save_study,
+        "sanitize_enabled": sanitize_enabled,
+        "sanitize_trades_threshold": sanitize_trades_threshold,
     }
 
     config = OptimizationConfig(
@@ -1373,7 +1851,19 @@ def _build_optimization_config(
         filter_min_profit=filter_min_profit,
         min_profit_threshold=min_profit_threshold,
         score_config=score_config,
+        detailed_log=detailed_log,
         optimization_mode=optimization_mode,
+        objectives=objectives,
+        primary_objective=primary_objective,
+        constraints=payload.get("constraints", []),
+        sanitize_enabled=sanitize_enabled,
+        sanitize_trades_threshold=sanitize_trades_threshold,
+        sampler_type=sampler_type,
+        population_size=population_size if population_size is not None else 50,
+        crossover_prob=crossover_prob if crossover_prob is not None else 0.9,
+        mutation_prob=mutation_prob if mutation_prob is not None else None,
+        swapping_prob=swapping_prob if swapping_prob is not None else 0.5,
+        n_startup_trials=n_startup_trials,
     )
 
     if optimization_mode == "optuna":
@@ -1500,11 +1990,12 @@ def generate_output_filename(csv_filename: str, config: OptimizationConfig, mode
 def run_optimization_endpoint() -> object:
     csv_file = request.files.get("file")
     csv_path_raw = (request.form.get("csvPath") or "").strip()
-    opened_file = None
+    data_path = ""
     source_name = ""
 
     if csv_file and csv_file.filename:
-        data_source = csv_file
+        data_path = _persist_csv_upload(csv_file)
+        data_source = data_path
         source_name = csv_file.filename
     elif csv_path_raw:
         try:
@@ -1517,12 +2008,9 @@ def run_optimization_endpoint() -> object:
             return ("CSV file is required.", HTTPStatus.BAD_REQUEST)
         except OSError:
             return ("Failed to access CSV file.", HTTPStatus.BAD_REQUEST)
-        try:
-            opened_file = resolved_path.open("rb")
-        except OSError:
-            return ("Failed to access CSV file.", HTTPStatus.BAD_REQUEST)
-        data_source = opened_file
-        source_name = str(resolved_path)
+        data_source = str(resolved_path)
+        data_path = str(resolved_path)
+        source_name = Path(resolved_path).name
     else:
         return ("CSV file is required.", HTTPStatus.BAD_REQUEST)
 
@@ -1534,10 +2022,35 @@ def run_optimization_endpoint() -> object:
     except json.JSONDecodeError:
         return ("Invalid optimization config JSON.", HTTPStatus.BAD_REQUEST)
 
+    objectives = config_payload.get("objectives", [])
+    primary_objective = config_payload.get("primary_objective")
+    valid, error = validate_objectives_config(objectives, primary_objective)
+    if not valid:
+        return (error, HTTPStatus.BAD_REQUEST)
+
+    constraints = config_payload.get("constraints", [])
+    valid, error = validate_constraints_config(constraints)
+    if not valid:
+        return (error, HTTPStatus.BAD_REQUEST)
+
+    sampler_type = str(config_payload.get("sampler", "tpe")).strip().lower()
+    population_size = config_payload.get("population_size")
+    crossover_prob = config_payload.get("crossover_prob")
+    try:
+        population_size_val = int(population_size) if population_size is not None else None
+    except (TypeError, ValueError):
+        return ("Population size must be a number.", HTTPStatus.BAD_REQUEST)
+    try:
+        crossover_prob_val = float(crossover_prob) if crossover_prob is not None else None
+    except (TypeError, ValueError):
+        return ("Crossover probability must be a number.", HTTPStatus.BAD_REQUEST)
+
+    valid, error = validate_sampler_config(sampler_type, population_size_val, crossover_prob_val)
+    if not valid:
+        return (error, HTTPStatus.BAD_REQUEST)
+
     strategy_id, error_response = _resolve_strategy_id_from_request()
     if error_response:
-        if opened_file:
-            opened_file.close()
         return error_response
 
     warmup_bars_raw = request.form.get("warmupBars", "1000")
@@ -1571,22 +2084,39 @@ def run_optimization_endpoint() -> object:
             warmup_bars,
         )
     except ValueError as exc:
-        if opened_file:
-            opened_file.close()
-            opened_file = None
+        _set_optimization_state({
+            "status": "error",
+            "mode": "optuna",
+            "error": str(exc),
+        })
         return (str(exc), HTTPStatus.BAD_REQUEST)
-    except Exception as exc:  # pragma: no cover - defensive
-        if opened_file:
-            opened_file.close()
-            opened_file = None
+    except Exception:  # pragma: no cover - defensive
+        _set_optimization_state({
+            "status": "error",
+            "mode": "optuna",
+            "error": "Failed to prepare optimization config.",
+        })
         app.logger.exception("Failed to construct optimization config")
         return ("Failed to prepare optimization config.", HTTPStatus.INTERNAL_SERVER_ERROR)
 
+    optimization_config.csv_original_name = source_name
+
+    _set_optimization_state({
+        "status": "running",
+        "mode": "optuna",
+        "strategy_id": optimization_config.strategy_id,
+        "data_path": data_path,
+        "source_name": source_name,
+        "warmup_bars": warmup_bars,
+        "config": config_payload,
+    })
+
     results: List[OptimizationResult] = []
     optimization_metadata: Optional[Dict[str, Any]] = None
+    study_id: Optional[str] = None
     try:
         start_time = time.time()
-        results = run_optimization(optimization_config)
+        results, study_id = run_optimization(optimization_config)
         end_time = time.time()
 
         optimization_time_seconds = max(0.0, end_time - start_time)
@@ -1594,97 +2124,105 @@ def run_optimization_endpoint() -> object:
         seconds = int(optimization_time_seconds % 60)
         optimization_time_str = f"{minutes}m {seconds}s"
 
-        target_labels = {
-            "score": "Composite Score",
-            "net_profit": "Net Profit %",
-            "romad": "RoMaD",
-            "sharpe": "Sharpe Ratio",
-            "max_drawdown": "Max Drawdown %",
-        }
-
         summary = getattr(optimization_config, "optuna_summary", {})
         total_trials = int(summary.get("total_trials", getattr(optimization_config, "optuna_n_trials", 0)))
         completed_trials = int(summary.get("completed_trials", len(results)))
         pruned_trials = int(summary.get("pruned_trials", 0))
         best_value = summary.get("best_value")
+        best_values = summary.get("best_values")
 
-        if best_value is None and results:
+        if best_value is None and best_values is None and results:
             best_result = results[0]
-            if optimization_config.optuna_target == "score":
-                best_value = best_result.score
-            elif optimization_config.optuna_target == "net_profit":
-                best_value = best_result.net_profit_pct
-            elif optimization_config.optuna_target == "romad":
-                best_value = best_result.romad
-            elif optimization_config.optuna_target == "sharpe":
-                best_value = best_result.sharpe_ratio
-            elif optimization_config.optuna_target == "max_drawdown":
-                best_value = best_result.max_drawdown_pct
+            if getattr(best_result, "objective_values", None):
+                if len(best_result.objective_values) > 1:
+                    best_values = dict(
+                        zip(
+                            getattr(optimization_config, "objectives", []) or [],
+                            best_result.objective_values,
+                        )
+                    )
+                else:
+                    best_value = best_result.objective_values[0]
 
         best_value_str = "-"
-        if best_value is not None:
+        if best_values:
+            parts = []
+            for metric, value in best_values.items():
+                label = OBJECTIVE_DISPLAY_NAMES.get(metric, metric)
+                try:
+                    formatted = f"{float(value):.4f}"
+                except (TypeError, ValueError):
+                    formatted = str(value)
+                parts.append(f"{label}={formatted}")
+            best_value_str = ", ".join(parts) if parts else "-"
+        elif best_value is not None:
             try:
                 best_value_str = f"{float(best_value):.4f}"
             except (TypeError, ValueError):
                 best_value_str = str(best_value)
 
+        objectives = getattr(optimization_config, "objectives", []) or []
+        primary_objective = getattr(optimization_config, "primary_objective", None)
+        objective_label = (
+            OBJECTIVE_DISPLAY_NAMES.get(objectives[0], objectives[0])
+            if len(objectives) == 1
+            else "Multi-objective"
+        )
+
         optimization_metadata = {
             "method": "Optuna",
-            "target": target_labels.get(optimization_config.optuna_target, "Composite Score"),
+            "target": objective_label,
+            "objectives": objectives,
+            "primary_objective": primary_objective,
             "total_trials": total_trials,
             "completed_trials": completed_trials,
             "pruned_trials": pruned_trials,
             "best_trial_number": summary.get("best_trial_number"),
             "best_value": best_value_str,
+            "pareto_front_size": summary.get("pareto_front_size"),
             "optimization_time": optimization_time_str,
         }
     except ValueError as exc:
-        if opened_file:
-            opened_file.close()
-            opened_file = None
+        _set_optimization_state({
+            "status": "error",
+            "mode": "optuna",
+            "strategy_id": optimization_config.strategy_id,
+            "error": str(exc),
+        })
         return (str(exc), HTTPStatus.BAD_REQUEST)
-    except Exception as exc:  # pragma: no cover - defensive
-        if opened_file:
-            opened_file.close()
-            opened_file = None
+    except Exception:  # pragma: no cover - defensive
+        _set_optimization_state({
+            "status": "error",
+            "mode": "optuna",
+            "strategy_id": optimization_config.strategy_id,
+            "error": "Optimization execution failed.",
+        })
         app.logger.exception("Optimization run failed")
         return ("Optimization execution failed.", HTTPStatus.INTERNAL_SERVER_ERROR)
-    finally:
-        if opened_file:
-            try:
-                opened_file.close()
-            except OSError:  # pragma: no cover - defensive
-                pass
-            opened_file = None
 
-    fixed_parameters = []
-
-    for name in _get_frontend_param_order(optimization_config.strategy_id):
-        if bool(optimization_config.enabled_params.get(name, False)):
-            continue
-
-        value = optimization_config.fixed_params.get(name)
-        if value is None:
-            if results:
-                value = getattr(results[0], "params", {}).get(name)
-        fixed_parameters.append((name, value))
-
-    csv_content = export_optuna_results(
-        results,
-        fixed_parameters,
-        filter_min_profit=optimization_config.filter_min_profit,
-        min_profit_threshold=optimization_config.min_profit_threshold,
-        optimization_metadata=optimization_metadata,
-        strategy_id=optimization_config.strategy_id,
+    _set_optimization_state(
+        {
+            "status": "completed",
+            "mode": "optuna",
+            "strategy_id": optimization_config.strategy_id,
+            "data_path": data_path,
+            "source_name": source_name,
+            "warmup_bars": optimization_config.warmup_bars,
+            "config": config_payload,
+            "summary": optimization_metadata or {},
+            "study_id": study_id,
+        }
     )
-    buffer = io.BytesIO(csv_content.encode("utf-8"))
-    filename = generate_output_filename(source_name, optimization_config)
-    buffer.seek(0)
-    return send_file(
-        buffer,
-        mimetype="text/csv",
-        as_attachment=True,
-        download_name=filename,
+
+    return jsonify(
+        {
+            "status": "success",
+            "mode": "optuna",
+            "study_id": study_id,
+            "summary": optimization_metadata or {},
+            "strategy_id": optimization_config.strategy_id,
+            "data_path": data_path,
+        }
     )
 
 

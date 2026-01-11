@@ -130,6 +130,8 @@ def run_baseline():
         print(f"Profit Factor: {result.profit_factor:.4f}")
     if result.romad is not None:
         print(f"RoMaD: {result.romad:.4f}")
+    if result.sqn is not None:
+        print(f"SQN: {result.sqn:.4f}")
 
     # Save metrics to JSON
     metrics_file = OUTPUT_DIR / "s01_metrics.json"
@@ -141,7 +143,7 @@ def run_baseline():
         "profit_factor": float(result.profit_factor) if result.profit_factor is not None else None,
         "romad": float(result.romad) if result.romad is not None else None,
         "ulcer_index": float(result.ulcer_index) if result.ulcer_index is not None else None,
-        "recovery_factor": float(result.recovery_factor) if result.recovery_factor is not None else None,
+        "sqn": float(result.sqn) if result.sqn is not None else None,
         "consistency_score": float(result.consistency_score) if result.consistency_score is not None else None,
         "generated_at": datetime.now().isoformat(),
         "parameters": BASELINE_PARAMS,

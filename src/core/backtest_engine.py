@@ -50,7 +50,7 @@ class StrategyResult:
     profit_factor: Optional[float] = None
     romad: Optional[float] = None  # Return Over Maximum Drawdown
     ulcer_index: Optional[float] = None
-    recovery_factor: Optional[float] = None
+    sqn: Optional[float] = None
     consistency_score: Optional[float] = None  # % of profitable months
 
     def to_dict(self) -> Dict[str, Any]:
@@ -74,7 +74,7 @@ class StrategyResult:
             "profit_factor": self.profit_factor,
             "romad": self.romad,
             "ulcer_index": self.ulcer_index,
-            "recovery_factor": self.recovery_factor,
+            "sqn": self.sqn,
             "consistency_score": self.consistency_score,
         }
 
@@ -192,3 +192,46 @@ def prepare_dataset_with_warmup(
     trade_start_idx = start_idx - warmup_start_idx
 
     return trimmed_df, trade_start_idx
+
+
+def build_forced_close_trade(
+    *,
+    position: int,
+    entry_time: Optional[pd.Timestamp],
+    exit_time: pd.Timestamp,
+    entry_price: float,
+    exit_price: float,
+    size: float,
+    entry_commission: float,
+    commission_rate: float,
+    commission_is_pct: bool = False,
+) -> tuple[Optional[TradeRecord], float, float, float]:
+    """
+    Build a TradeRecord for a forced close at the end of the dataset.
+
+    Returns:
+        (trade, gross_pnl, exit_commission, net_pnl)
+    """
+    if position == 0 or entry_time is None or size == 0:
+        return None, 0.0, 0.0, 0.0
+
+    gross_pnl = (exit_price - entry_price) * size if position > 0 else (entry_price - exit_price) * size
+    rate = commission_rate / 100.0 if commission_is_pct else commission_rate
+    exit_commission = exit_price * size * rate
+    net_pnl = gross_pnl - exit_commission - entry_commission
+    entry_value = entry_price * size
+    profit_pct = (net_pnl / entry_value * 100.0) if entry_value else None
+    direction = "long" if position > 0 else "short"
+    side = "LONG" if position > 0 else "SHORT"
+    trade = TradeRecord(
+        direction=direction,
+        side=side,
+        entry_time=entry_time,
+        exit_time=exit_time,
+        entry_price=entry_price,
+        exit_price=exit_price,
+        size=size,
+        net_pnl=net_pnl,
+        profit_pct=profit_pct,
+    )
+    return trade, gross_pnl, exit_commission, net_pnl

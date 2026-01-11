@@ -152,7 +152,7 @@ import numpy as np
 import pandas as pd
 
 from core import metrics
-from core.backtest_engine import StrategyResult, TradeRecord
+from core.backtest_engine import StrategyResult, TradeRecord, build_forced_close_trade
 from strategies.base import BaseStrategy
 
 class S05MyStrategy(BaseStrategy):
@@ -189,6 +189,28 @@ class S05MyStrategy(BaseStrategy):
             # Your entry/exit logic here
             # ...
 
+            # Force-close any open position at the final bar (required for all modes).
+            if i == len(df) - 1 and position != 0:
+                trade, gross_pnl, exit_commission, _ = build_forced_close_trade(
+                    position=position,
+                    entry_time=entry_time,
+                    exit_time=df.index[i],
+                    entry_price=entry_price,
+                    exit_price=close.iat[i],
+                    size=position_size,
+                    entry_commission=entry_commission,
+                    commission_rate=p.commissionPct,
+                    commission_is_pct=True,
+                )
+                if trade:
+                    trades.append(trade)
+                    balance += gross_pnl - exit_commission - entry_commission
+                position = 0
+                position_size = 0.0
+                entry_price = np.nan
+                entry_commission = 0.0
+                entry_time = None
+
             # Track equity
             timestamps.append(df.index[i])
             equity_curve.append(balance)
@@ -202,19 +224,18 @@ class S05MyStrategy(BaseStrategy):
             timestamps=timestamps,
         )
 
-        # Calculate metrics
-        basic = metrics.calculate_basic(result, p.initialCapital)
-        advanced = metrics.calculate_advanced(result)
-
-        result.net_profit_pct = basic.net_profit_pct
-        result.max_drawdown_pct = basic.max_drawdown_pct
-        result.total_trades = basic.total_trades
-        result.win_rate = basic.win_rate
-        result.sharpe_ratio = advanced.sharpe_ratio
-        result.romad = advanced.romad
-
+        # Compute and attach all declared metrics to result
+        # This automatically handles the intersection of calculated metrics
+        # with StrategyResult's declared fields (no manual assignment needed)
+        metrics.enrich_strategy_result(result, initial_balance=p.initialCapital)
         return result
 ```
+
+**Note on metrics:** `enrich_strategy_result()` calculates BasicMetrics and
+AdvancedMetrics, then attaches only the metrics that StrategyResult declares
+as fields. Additional metrics (like `win_rate`, `sortino_ratio`) are available
+in Optuna optimization results but are not exposed in single-backtest output
+by design.
 
 **Key patterns from existing strategies:**
 - Use `trade_start_idx` to skip warmup bars

@@ -5,6 +5,24 @@
 document.addEventListener('DOMContentLoaded', async () => {
   await loadStrategiesList();
 
+  const resultsNav = document.querySelector('.nav-tab[data-nav="results"]');
+  if (resultsNav) {
+    resultsNav.addEventListener('click', (event) => {
+      const raw = sessionStorage.getItem('merlinOptimizationState')
+        || localStorage.getItem('merlinOptimizationState');
+      if (!raw) return;
+      try {
+        const state = JSON.parse(raw);
+        if (state && state.status === 'running') {
+          event.preventDefault();
+          window.open('/results', '_blank', 'noopener');
+        }
+      } catch (error) {
+        return;
+      }
+    });
+  }
+
   document.querySelectorAll('.collapsible').forEach((collapsible) => {
     const header = collapsible.querySelector('.collapsible-header');
     if (!header) return;
@@ -17,18 +35,16 @@ document.addEventListener('DOMContentLoaded', async () => {
   if (linkToScoreConfig) {
     linkToScoreConfig.addEventListener('click', (event) => {
       event.preventDefault();
-      const scoreConfigBtn = document.getElementById('scoreConfigBtn');
       const scoreConfigCollapsible = document.getElementById('scoreConfigCollapsible');
-      if (scoreConfigBtn && scoreConfigCollapsible) {
-        if (!scoreConfigCollapsible.classList.contains('open')) {
-          scoreConfigCollapsible.classList.add('open');
-        }
-        scoreConfigBtn.scrollIntoView({ behavior: 'smooth', block: 'center' });
-        scoreConfigCollapsible.style.outline = '3px solid #90caf9';
-        window.setTimeout(() => {
-          scoreConfigCollapsible.style.outline = '';
-        }, 2000);
+      if (!scoreConfigCollapsible) return;
+      if (!scoreConfigCollapsible.classList.contains('open')) {
+        scoreConfigCollapsible.classList.add('open');
       }
+      scoreConfigCollapsible.scrollIntoView({ behavior: 'smooth', block: 'center' });
+      scoreConfigCollapsible.style.outline = '3px solid #90caf9';
+      window.setTimeout(() => {
+        scoreConfigCollapsible.style.outline = '';
+      }, 2000);
     });
   }
 
@@ -152,7 +168,23 @@ document.addEventListener('DOMContentLoaded', async () => {
   bindOptimizerInputs();
   bindMinProfitFilterControl();
   bindScoreControls();
+  bindOptunaUiControls();
   bindMASelectors();
 
   await initializePresets();
+});
+
+window.addEventListener('storage', (event) => {
+  if (event.key !== 'merlinOptimizationControl') return;
+  if (!event.newValue) return;
+  try {
+    const payload = JSON.parse(event.newValue);
+    if (payload && payload.action === 'cancel') {
+      if (window.optimizationAbortController) {
+        window.optimizationAbortController.abort();
+      }
+    }
+  } catch (error) {
+    return;
+  }
 });

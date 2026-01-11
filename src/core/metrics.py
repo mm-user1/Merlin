@@ -1,20 +1,24 @@
 """
-Metrics calculation module for S01 Trailing MA v26.
+Metrics calculation module.
 
 This module provides:
 - BasicMetrics: Net profit, drawdown, trade statistics
-- AdvancedMetrics: Sharpe, RoMaD, Profit Factor, Ulcer Index, Consistency
+- AdvancedMetrics: Sharpe, RoMaD, Profit Factor, SQN, Ulcer Index, Consistency
 - Calculation functions that operate on StrategyResult
+- enrich_strategy_result: Helper to compute and attach metrics to StrategyResult
 
 Architectural note: This module ONLY calculates metrics.
 It does NOT orchestrate backtests or optimization.
 Other modules (backtest_engine, optuna_engine, walkforward_engine) consume these metrics.
+
+Strategies should use enrich_strategy_result() to avoid manual field assignment
+and prevent drift where undeclared attributes get set on StrategyResult.
 """
 from __future__ import annotations
 
 import logging
 import math
-from dataclasses import dataclass
+from dataclasses import dataclass, fields
 from typing import TYPE_CHECKING, Any, Dict, List, Optional
 
 import numpy as np
@@ -86,7 +90,7 @@ class AdvancedMetrics:
 
     These metrics provide deeper insight into strategy quality:
     - Risk-adjusted returns (Sharpe, Sortino)
-    - Efficiency ratios (Profit Factor, RoMaD, Recovery Factor)
+    - Efficiency ratios (Profit Factor, RoMaD, SQN)
     - Volatility measures (Ulcer Index)
     - Consistency indicators (monthly profitability)
 
@@ -98,7 +102,7 @@ class AdvancedMetrics:
     sortino_ratio: Optional[float] = None
     profit_factor: Optional[float] = None
     romad: Optional[float] = None
-    recovery_factor: Optional[float] = None
+    sqn: Optional[float] = None
     ulcer_index: Optional[float] = None
     consistency_score: Optional[float] = None
 
@@ -109,7 +113,7 @@ class AdvancedMetrics:
             "sortino_ratio": self.sortino_ratio,
             "profit_factor": self.profit_factor,
             "romad": self.romad,
-            "recovery_factor": self.recovery_factor,
+            "sqn": self.sqn,
             "ulcer_index": self.ulcer_index,
             "consistency_score": self.consistency_score,
         }
@@ -202,7 +206,7 @@ def _calculate_profit_factor_value(trades: List[TradeRecord]) -> Optional[float]
     if gross_loss > 0:
         return gross_profit / gross_loss
     if gross_profit > 0:
-        return 999.0
+        return float("inf")
     return 1.0
 
 
@@ -227,6 +231,32 @@ def _calculate_sharpe_ratio_value(
     rfr_monthly = (risk_free_rate * 100.0) / 12.0
     sharpe = (avg_return - rfr_monthly) / sd_return
     return sharpe
+
+
+def _calculate_sortino_ratio_value(
+    monthly_returns: List[float],
+    risk_free_rate: float = 0.02,
+) -> Optional[float]:
+    """Calculate annualized Sortino Ratio from monthly returns."""
+    if len(monthly_returns) < 2:
+        return None
+
+    monthly_array = np.array(monthly_returns, dtype=float)
+    if monthly_array.size < 2:
+        return None
+
+    rfr_monthly = (risk_free_rate * 100.0) / 12.0
+    downside = monthly_array[monthly_array < rfr_monthly] - rfr_monthly
+    if downside.size == 0:
+        return None
+
+    downside_dev = float(np.std(downside, ddof=0))
+    if downside_dev == 0:
+        return None
+
+    avg_return = float(np.mean(monthly_array))
+    sortino = (avg_return - rfr_monthly) / downside_dev
+    return sortino
 
 
 def _calculate_ulcer_index_value(equity_curve: List[float]) -> Optional[float]:
@@ -256,6 +286,32 @@ def _calculate_consistency_score_value(monthly_returns: List[float]) -> Optional
 
     consistency = (profitable_months / total_months) * 100.0
     return consistency
+
+
+def _calculate_sqn_value(trades: List[TradeRecord]) -> Optional[float]:
+    """
+    Calculate System Quality Number (Van Tharp).
+
+    SQN = sqrt(N) * mean(trade_pnl) / std(trade_pnl)
+
+    Measures trading system quality by combining profitability and consistency.
+    Requires minimum 30 trades for statistical significance.
+    """
+    if len(trades) < 30:
+        return None
+
+    trade_pnl = np.array([t.net_pnl for t in trades], dtype=float)
+    if trade_pnl.size < 30:
+        return None
+
+    mean_pnl = float(np.mean(trade_pnl))
+    std_pnl = float(np.std(trade_pnl, ddof=1))
+
+    if std_pnl == 0.0 or std_pnl < 1e-10:
+        return None
+
+    sqn = math.sqrt(trade_pnl.size) * mean_pnl / std_pnl
+    return sqn
 
 
 # ============================================================================
@@ -347,12 +403,13 @@ def calculate_advanced(
     sortino_ratio = None
     profit_factor = None
     romad = None
-    recovery_factor = None
+    sqn = None
     ulcer_index = None
     consistency_score = None
 
     if trades:
         profit_factor = _calculate_profit_factor_value(trades)
+        sqn = _calculate_sqn_value(trades)
 
     monthly_returns: List[float] = []
     if trades and timestamps:
@@ -361,6 +418,7 @@ def calculate_advanced(
 
     if len(monthly_returns) >= 2:
         sharpe_ratio = _calculate_sharpe_ratio_value(monthly_returns, risk_free_rate)
+        sortino_ratio = _calculate_sortino_ratio_value(monthly_returns, risk_free_rate)
 
     if len(monthly_returns) >= 1:
         consistency_score = _calculate_consistency_score_value(monthly_returns)
@@ -380,18 +438,52 @@ def calculate_advanced(
     else:
         romad = 0.0
 
-    if basic.max_drawdown > 0:
-        recovery_factor = basic.net_profit / basic.max_drawdown
-
     return AdvancedMetrics(
         sharpe_ratio=sharpe_ratio,
         sortino_ratio=sortino_ratio,
         profit_factor=profit_factor,
         romad=romad,
-        recovery_factor=recovery_factor,
+        sqn=sqn,
         ulcer_index=ulcer_index,
         consistency_score=consistency_score,
     )
+
+
+def enrich_strategy_result(
+    result: StrategyResult,
+    *,
+    initial_balance: Optional[float] = None,
+    risk_free_rate: float = 0.02,
+) -> tuple[BasicMetrics, AdvancedMetrics]:
+    """
+    Compute metrics and attach declared fields to StrategyResult.
+
+    Calculates BasicMetrics and AdvancedMetrics, then copies only the
+    metric values whose keys match declared StrategyResult dataclass fields.
+    This prevents drift where strategies assign undeclared attributes.
+
+    Args:
+        result: StrategyResult instance to enrich
+        initial_balance: Starting capital for percentage calculations
+        risk_free_rate: Annual risk-free rate for Sharpe/Sortino (default 0.02)
+
+    Returns:
+        Tuple of (BasicMetrics, AdvancedMetrics) for callers who need full metrics
+    """
+    basic = calculate_basic(result, initial_balance=initial_balance)
+    advanced = calculate_advanced(
+        result,
+        initial_balance=initial_balance,
+        risk_free_rate=risk_free_rate,
+    )
+
+    values = {**basic.to_dict(), **advanced.to_dict()}
+    allowed = {field.name for field in fields(result)}
+    for key, value in values.items():
+        if key in allowed:
+            setattr(result, key, value)
+
+    return basic, advanced
 
 
 def calculate_for_wfa(wfa_results: List[Dict[str, Any]]) -> WFAMetrics:

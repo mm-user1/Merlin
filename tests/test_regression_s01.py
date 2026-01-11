@@ -285,8 +285,8 @@ class TestS01Regression:
             "sharpe_ratio",
             "profit_factor",
             "romad",
+            "sqn",
             "ulcer_index",
-            "recovery_factor",
             "consistency_score"
         ]
 

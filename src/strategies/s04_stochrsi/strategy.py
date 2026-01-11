@@ -5,7 +5,7 @@ import numpy as np
 import pandas as pd
 
 from core import metrics
-from core.backtest_engine import StrategyResult, TradeRecord
+from core.backtest_engine import StrategyResult, TradeRecord, build_forced_close_trade
 from indicators.ma import sma
 from indicators.oscillators import stoch_rsi
 from strategies.base import BaseStrategy
@@ -301,6 +301,28 @@ class S04StochRSI(BaseStrategy):
                             entry_price = np.nan
                             stop_price = np.nan
 
+            if i == len(df) - 1 and position != 0:
+                trade, gross_pnl, exit_commission, _ = build_forced_close_trade(
+                    position=position,
+                    entry_time=entry_time,
+                    exit_time=timestamp,
+                    entry_price=entry_price,
+                    exit_price=close_val,
+                    size=position_size,
+                    entry_commission=entry_commission,
+                    commission_rate=p.commissionPct,
+                    commission_is_pct=True,
+                )
+                if trade:
+                    trades.append(trade)
+                    balance += gross_pnl - exit_commission - entry_commission
+                position = 0
+                position_size = 0.0
+                entry_price = np.nan
+                stop_price = np.nan
+                entry_commission = 0.0
+                entry_time = None
+
             unrealized = 0.0
             if position > 0:
                 unrealized = (close_val - entry_price) * position_size
@@ -323,24 +345,6 @@ class S04StochRSI(BaseStrategy):
             timestamps=timestamps,
         )
 
-        basic = metrics.calculate_basic(result, initial_balance=p.initialCapital)
-        result.net_profit = basic.net_profit
-        result.net_profit_pct = basic.net_profit_pct
-        result.gross_profit = basic.gross_profit
-        result.gross_loss = basic.gross_loss
-        result.max_drawdown = basic.max_drawdown
-        result.max_drawdown_pct = basic.max_drawdown_pct
-        result.total_trades = basic.total_trades
-        result.winning_trades = basic.winning_trades
-        result.losing_trades = basic.losing_trades
-
-        advanced = metrics.calculate_advanced(result, initial_balance=p.initialCapital)
-        result.profit_factor = advanced.profit_factor
-        result.romad = advanced.romad
-        result.ulcer_index = advanced.ulcer_index
-        result.consistency_score = advanced.consistency_score
-        result.sharpe_ratio = advanced.sharpe_ratio
-        result.recovery_factor = advanced.recovery_factor
-        result.sortino_ratio = advanced.sortino_ratio
+        metrics.enrich_strategy_result(result, initial_balance=p.initialCapital, risk_free_rate=0.02)
 
         return result

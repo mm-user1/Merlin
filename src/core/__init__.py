@@ -31,16 +31,11 @@ from .walkforward_engine import (
     WFConfig,
     WFResult,
     WalkForwardEngine,
-    export_wfa_trades_history,
-    export_wf_results_csv,
-    generate_wfa_output_filename,
-    _extract_symbol_from_csv_filename,
 )
 
 from .export import (
-    export_optuna_results,
     export_trades_csv,
-    export_trades_zip,
+    _extract_symbol_from_csv_filename,
 )
 
 from .metrics import (
@@ -50,6 +45,7 @@ from .metrics import (
     calculate_basic,
     calculate_advanced,
     calculate_for_wfa,
+    enrich_strategy_result,
 )
 
 __all__ = [
@@ -69,15 +65,10 @@ __all__ = [
     "WFConfig",
     "WFResult",
     "WalkForwardEngine",
-    "export_wfa_trades_history",
-    "export_wf_results_csv",
-    "generate_wfa_output_filename",
-    "_extract_symbol_from_csv_filename",
 
     # export
-    "export_optuna_results",
     "export_trades_csv",
-    "export_trades_zip",
+    "_extract_symbol_from_csv_filename",
 
     # metrics
     "BasicMetrics",
@@ -86,4 +77,5 @@ __all__ = [
     "calculate_basic",
     "calculate_advanced",
     "calculate_for_wfa",
+    "enrich_strategy_result",
 ]

@@ -3,14 +3,14 @@
  * Dependencies: utils.js, api.js, strategy-config.js, presets.js
  */
 
-const SCORE_METRICS = ['romad', 'sharpe', 'pf', 'ulcer', 'recovery', 'consistency'];
+const SCORE_METRICS = ['romad', 'sharpe', 'pf', 'ulcer', 'sqn', 'consistency'];
 const SCORE_DEFAULT_THRESHOLD = 60;
 const SCORE_DEFAULT_WEIGHTS = {
   romad: 0.25,
   sharpe: 0.20,
   pf: 0.20,
   ulcer: 0.15,
-  recovery: 0.10,
+  sqn: 0.10,
   consistency: 0.10
 };
 const SCORE_DEFAULT_ENABLED = {
@@ -18,12 +18,193 @@ const SCORE_DEFAULT_ENABLED = {
   sharpe: true,
   pf: true,
   ulcer: true,
-  recovery: true,
+  sqn: true,
   consistency: true
 };
 const SCORE_DEFAULT_INVERT = {
   ulcer: true
 };
+const SCORE_DEFAULT_BOUNDS = {
+  romad: { min: 0, max: 10 },
+  sharpe: { min: -1, max: 3 },
+  pf: { min: 0, max: 5 },
+  ulcer: { min: 0, max: 20 },
+  sqn: { min: -2, max: 7 },
+  consistency: { min: 0, max: 100 }
+};
+
+const OPT_STATE_KEY = 'merlinOptimizationState';
+const OPT_CONTROL_KEY = 'merlinOptimizationControl';
+let optimizationAbortController = null;
+
+function saveOptimizationState(state) {
+  try {
+    const payload = JSON.stringify(state || {});
+    sessionStorage.setItem(OPT_STATE_KEY, payload);
+    localStorage.setItem(OPT_STATE_KEY, payload);
+  } catch (error) {
+    console.warn('Failed to store optimization state', error);
+  }
+}
+
+function loadOptimizationState() {
+  const fromSession = sessionStorage.getItem(OPT_STATE_KEY);
+  const fromLocal = localStorage.getItem(OPT_STATE_KEY);
+  const raw = fromSession || fromLocal;
+  if (!raw) return null;
+  try {
+    return JSON.parse(raw);
+  } catch (error) {
+    return null;
+  }
+}
+
+function updateOptimizationState(patch) {
+  const current = loadOptimizationState() || {};
+  const updated = { ...current, ...patch };
+  saveOptimizationState(updated);
+  return updated;
+}
+
+function openResultsPage() {
+  try {
+    window.open('/results', '_blank', 'noopener');
+  } catch (error) {
+    window.location.href = '/results';
+  }
+}
+
+function getStrategySummary() {
+  const config = window.currentStrategyConfig || {};
+  return {
+    id: window.currentStrategyId || '',
+    name: config.name || '',
+    version: config.version || '',
+    description: config.description || ''
+  };
+}
+
+function getDatasetLabel() {
+  const fileInput = document.getElementById('csvFile');
+  const file = fileInput && fileInput.files && fileInput.files[0];
+  if (file && file.name) return file.name;
+  if (window.selectedCsvPath) return window.selectedCsvPath;
+  return '';
+}
+
+function parseCsvLine(line) {
+  const values = [];
+  let current = '';
+  let inQuotes = false;
+  for (let i = 0; i < line.length; i += 1) {
+    const ch = line[i];
+    if (ch === '"') {
+      if (inQuotes && line[i + 1] === '"') {
+        current += '"';
+        i += 1;
+      } else {
+        inQuotes = !inQuotes;
+      }
+      continue;
+    }
+    if (ch === ',' && !inQuotes) {
+      values.push(current);
+      current = '';
+      continue;
+    }
+    current += ch;
+  }
+  values.push(current);
+  return values;
+}
+
+function parseOptunaCsv(csvText, strategyConfig) {
+  const results = [];
+  if (!csvText) return results;
+
+  const lines = csvText.split(/\r?\n/);
+  let headerIndex = -1;
+  for (let i = 0; i < lines.length; i += 1) {
+    const line = lines[i].trim();
+    if (!line) continue;
+    if (line.includes('Net Profit%') && line.includes('Max DD%')) {
+      headerIndex = i;
+      break;
+    }
+  }
+  if (headerIndex === -1) return results;
+
+  const header = parseCsvLine(lines[headerIndex]);
+  const paramLabelMap = {};
+  const paramsConfig = (strategyConfig && strategyConfig.parameters) || {};
+  Object.entries(paramsConfig).forEach(([name, def]) => {
+    const label = (def && def.label) ? String(def.label) : name;
+    paramLabelMap[label] = name;
+    paramLabelMap[name] = name;
+  });
+
+  const metricMap = {
+    'Net Profit%': 'net_profit_pct',
+    'Max DD%': 'max_drawdown_pct',
+    'Trades': 'total_trades',
+    'Score': 'score',
+    'RoMaD': 'romad',
+    'Sharpe': 'sharpe_ratio',
+    'PF': 'profit_factor',
+    'Ulcer': 'ulcer_index',
+    'SQN': 'sqn',
+    'Consist': 'consistency_score'
+  };
+
+  for (let i = headerIndex + 1; i < lines.length; i += 1) {
+    const line = lines[i];
+    if (!line || !line.trim()) break;
+    const values = parseCsvLine(line);
+    const params = {};
+    const metrics = {};
+    header.forEach((col, idx) => {
+      const value = values[idx] ?? '';
+      const trimmed = String(value).trim();
+      if (metricMap[col]) {
+        const metricKey = metricMap[col];
+        const cleaned = trimmed.replace('%', '');
+        const num = Number(cleaned);
+        metrics[metricKey] = Number.isFinite(num) ? num : trimmed;
+        return;
+      }
+      const paramName = paramLabelMap[col];
+      if (!paramName) return;
+      const def = paramsConfig[paramName] || {};
+      if (def.type === 'int') {
+        const num = Number(trimmed);
+        params[paramName] = Number.isFinite(num) ? Math.round(num) : trimmed;
+      } else if (def.type === 'float') {
+        const num = Number(trimmed);
+        params[paramName] = Number.isFinite(num) ? num : trimmed;
+      } else if (def.type === 'bool') {
+        params[paramName] = trimmed.toLowerCase() === 'true';
+      } else {
+        params[paramName] = trimmed;
+      }
+    });
+    results.push({ params, ...metrics });
+  }
+
+  return results;
+}
+
+async function refreshOptimizationStateFromServer() {
+  try {
+    const state = await fetchOptimizationStatus();
+    if (state && state.status) {
+      saveOptimizationState(state);
+      return state;
+    }
+  } catch (error) {
+    console.warn('Failed to refresh optimization status from server', error);
+  }
+  return null;
+}
 
 function toggleWFSettings() {
   const wfToggle = document.getElementById('enableWF');
@@ -116,12 +297,26 @@ function readScoreUIState() {
     ? Math.min(100, Math.max(0, thresholdRaw))
     : SCORE_DEFAULT_THRESHOLD;
 
+  const bounds = {};
+  SCORE_METRICS.forEach((metric) => {
+    const defaults = SCORE_DEFAULT_BOUNDS[metric] || { min: 0, max: 100 };
+    const minInput = document.getElementById(`bound-min-${metric}`);
+    const maxInput = document.getElementById(`bound-max-${metric}`);
+    const minRaw = minInput ? Number(minInput.value) : NaN;
+    const maxRaw = maxInput ? Number(maxInput.value) : NaN;
+    bounds[metric] = {
+      min: Number.isFinite(minRaw) ? minRaw : defaults.min,
+      max: Number.isFinite(maxRaw) ? maxRaw : defaults.max
+    };
+  });
+
   return {
     scoreFilterEnabled: Boolean(checkbox && checkbox.checked),
     scoreThreshold: threshold,
     scoreWeights: weights,
     scoreEnabledMetrics: enabled,
-    scoreInvertMetrics: invert
+    scoreInvertMetrics: invert,
+    scoreMetricBounds: bounds
   };
 }
 
@@ -130,6 +325,10 @@ function applyScoreSettings(settings = {}) {
   const thresholdInput = document.getElementById('scoreThreshold');
 
   const defaultScoreConfig = window.defaults?.scoreConfig || {};
+  const baseBounds = {
+    ...SCORE_DEFAULT_BOUNDS,
+    ...(defaultScoreConfig.metric_bounds || {})
+  };
   const effectiveWeights = {
     ...SCORE_DEFAULT_WEIGHTS,
     ...(defaultScoreConfig.weights || {}),
@@ -182,6 +381,17 @@ function applyScoreSettings(settings = {}) {
     invertCheckbox.checked = Boolean(effectiveInvert.ulcer);
   }
 
+  SCORE_METRICS.forEach((metric) => {
+    const bounds = settings.scoreMetricBounds?.[metric] || {};
+    const base = baseBounds[metric] || { min: 0, max: 100 };
+    const minValue = Number.isFinite(Number(bounds.min)) ? Number(bounds.min) : base.min;
+    const maxValue = Number.isFinite(Number(bounds.max)) ? Number(bounds.max) : base.max;
+    const minInput = document.getElementById(`bound-min-${metric}`);
+    const maxInput = document.getElementById(`bound-max-${metric}`);
+    if (minInput) minInput.value = minValue;
+    if (maxInput) maxInput.value = maxValue;
+  });
+
   syncScoreFilterUI();
   updateScoreFormulaPreview();
 }
@@ -199,7 +409,7 @@ function updateScoreFormulaPreview() {
         sharpe: 'Sharpe Ratio',
         pf: 'Profit Factor',
         ulcer: 'Ulcer Index',
-        recovery: 'Recovery Factor',
+        sqn: 'SQN',
         consistency: 'Consistency Score'
       };
       const label = labelMap[metric] || metric;
@@ -222,7 +432,8 @@ function collectScoreConfig() {
     weights: {},
     enabled_metrics: {},
     invert_metrics: {},
-    normalization_method: 'percentile'
+    normalization_method: 'minmax',
+    metric_bounds: state.scoreMetricBounds
   };
 
   SCORE_METRICS.forEach((metric) => {
@@ -568,6 +779,7 @@ function buildOptimizationConfig(state) {
     filter_min_profit: filterEnabled,
     min_profit_threshold: minProfitThreshold,
     score_config: collectScoreConfig(),
+    detailed_log: Boolean(document.getElementById('detailedLog')?.checked),
     optimization_mode: 'optuna'
   };
 }
@@ -578,18 +790,26 @@ function buildOptunaConfig(state) {
   const optunaTrials = document.getElementById('optunaTrials');
   const optunaTimeLimit = document.getElementById('optunaTimeLimit');
   const optunaConvergence = document.getElementById('optunaConvergence');
-  const optunaTarget = document.getElementById('optunaTarget');
   const optunaPruning = document.getElementById('optunaPruning');
   const optunaSampler = document.getElementById('optunaSampler');
   const optunaPruner = document.getElementById('optunaPruner');
   const optunaWarmupTrials = document.getElementById('optunaWarmupTrials');
   const optunaSaveStudy = document.getElementById('optunaSaveStudy');
+  const nsgaPopulation = document.getElementById('nsgaPopulationSize');
+  const nsgaCrossover = document.getElementById('nsgaCrossoverProb');
+  const nsgaMutation = document.getElementById('nsgaMutationProb');
+  const nsgaSwapping = document.getElementById('nsgaSwappingProb');
 
   const selectedBudget = Array.from(budgetModeRadios).find((radio) => radio.checked)?.value || 'trials';
   const trialsValue = Number(optunaTrials?.value);
   const timeLimitMinutes = Number(optunaTimeLimit?.value);
   const convergenceValue = Number(optunaConvergence?.value);
   const warmupValue = Number(optunaWarmupTrials?.value);
+  const populationValue = Number(nsgaPopulation?.value);
+  const crossoverValue = Number(nsgaCrossover?.value);
+  const mutationRaw = nsgaMutation?.value;
+  const mutationValue = mutationRaw === '' || mutationRaw === undefined ? null : Number(mutationRaw);
+  const swappingValue = Number(nsgaSwapping?.value);
 
   const normalizedTrials = Number.isFinite(trialsValue) ? Math.max(10, Math.min(10000, Math.round(trialsValue))) : 500;
   const normalizedMinutes = Number.isFinite(timeLimitMinutes) ? Math.max(1, Math.round(timeLimitMinutes)) : 60;
@@ -597,113 +817,52 @@ function buildOptunaConfig(state) {
     ? Math.max(10, Math.min(500, Math.round(convergenceValue)))
     : 50;
   const normalizedWarmup = Number.isFinite(warmupValue) ? Math.max(0, Math.min(50000, Math.round(warmupValue))) : 20;
+  const normalizedPopulation = Number.isFinite(populationValue) ? Math.max(2, Math.min(1000, Math.round(populationValue))) : 50;
+  const normalizedCrossover = Number.isFinite(crossoverValue) ? Math.max(0, Math.min(1, crossoverValue)) : 0.9;
+  const normalizedMutation = Number.isFinite(mutationValue) ? Math.max(0, Math.min(1, mutationValue)) : null;
+  const normalizedSwapping = Number.isFinite(swappingValue) ? Math.max(0, Math.min(1, swappingValue)) : 0.5;
+
+  const objectiveConfig = window.OptunaUI
+    ? window.OptunaUI.collectObjectives()
+    : { objectives: ['net_profit_pct'], primary_objective: null };
+  const constraints = window.OptunaUI ? window.OptunaUI.collectConstraints() : [];
+  const sanitizeConfig = window.OptunaUI
+    ? window.OptunaUI.collectSanitizeConfig()
+    : { sanitize_enabled: true, sanitize_trades_threshold: 0 };
+  const selectedObjectives = objectiveConfig.objectives || [];
 
   return {
     ...baseConfig,
     optimization_mode: 'optuna',
-    optuna_target: optunaTarget ? optunaTarget.value : 'score',
     optuna_budget_mode: selectedBudget,
     optuna_n_trials: normalizedTrials,
     optuna_time_limit: normalizedMinutes * 60,
     optuna_convergence: normalizedConvergence,
-    optuna_enable_pruning: Boolean(optunaPruning && optunaPruning.checked),
-    optuna_sampler: optunaSampler ? optunaSampler.value : 'tpe',
+    optuna_enable_pruning: selectedObjectives.length > 1 ? false : Boolean(optunaPruning && optunaPruning.checked),
+    sampler: optunaSampler ? optunaSampler.value : 'tpe',
     optuna_pruner: optunaPruner ? optunaPruner.value : 'median',
-    optuna_warmup_trials: normalizedWarmup,
-    optuna_save_study: Boolean(optunaSaveStudy && optunaSaveStudy.checked)
+    n_startup_trials: normalizedWarmup,
+    optuna_save_study: Boolean(optunaSaveStudy && optunaSaveStudy.checked),
+    objectives: selectedObjectives,
+    primary_objective: objectiveConfig.primary_objective,
+    constraints,
+    sanitize_enabled: sanitizeConfig.sanitize_enabled,
+    sanitize_trades_threshold: sanitizeConfig.sanitize_trades_threshold,
+    population_size: normalizedPopulation,
+    crossover_prob: normalizedCrossover,
+    mutation_prob: normalizedMutation,
+    swapping_prob: normalizedSwapping
   };
 }
 function clearWFResults() {
-  const wfResultsContainer = document.getElementById('wfResults');
-  const wfSummaryEl = document.getElementById('wfSummary');
-  const wfTableBody = document.getElementById('wfTableBody');
   const wfStatusEl = document.getElementById('wfStatus');
-
-  if (wfResultsContainer) {
-    wfResultsContainer.style.display = 'none';
-  }
-  if (wfSummaryEl) {
-    wfSummaryEl.textContent = '';
-  }
-  if (wfTableBody) {
-    wfTableBody.innerHTML = '';
-  }
   if (wfStatusEl) {
     wfStatusEl.textContent = '';
   }
 }
 
-function displayWFResults(data) {
-  const wfResultsContainer = document.getElementById('wfResults');
-  const wfSummaryEl = document.getElementById('wfSummary');
-  const wfTableBody = document.getElementById('wfTableBody');
-  const wfStatusEl = document.getElementById('wfStatus');
-
-  if (!wfResultsContainer || !wfSummaryEl || !wfTableBody || !wfStatusEl) {
-    return;
-  }
-
-  wfResultsContainer.style.display = 'block';
-  wfStatusEl.textContent = '';
-
-  const summary = data.summary || {};
-  const totalWindowsValue = Number(summary.total_windows);
-  const totalWindows = Number.isFinite(totalWindowsValue) ? totalWindowsValue : 0;
-  const topParamId = summary.top_param_id || 'N/A';
-  const topAvgValue = Number(summary.top_avg_oos_profit);
-  const topAvgProfit = Number.isFinite(topAvgValue) ? topAvgValue : 0;
-
-  wfSummaryEl.innerHTML = `
-          <strong>Summary:</strong><br>
-          Total Windows: ${totalWindows}<br>
-          Best Parameter Set: ${topParamId}<br>
-          Best Avg OOS Profit: ${topAvgProfit.toFixed(2)}%
-        `;
-
-  wfTableBody.innerHTML = '';
-  (data.top10 || []).forEach((row) => {
-    const avgValue = Number(row.avg_oos_profit);
-    const winValue = Number(row.oos_win_rate);
-    const forwardValue = row.forward_profit === null || row.forward_profit === undefined
-      ? null
-      : Number(row.forward_profit);
-    const tr = document.createElement('tr');
-    const avgOos = Number.isFinite(avgValue) ? avgValue.toFixed(2) : row.avg_oos_profit;
-    const winRate = Number.isFinite(winValue) ? winValue.toFixed(1) : row.oos_win_rate;
-    const forward = forwardValue === null || forwardValue === undefined || Number.isNaN(forwardValue)
-      ? 'N/A'
-      : `${forwardValue.toFixed(2)}%`;
-    tr.innerHTML = `
-            <td style="padding: 10px; border: 1px solid #ddd; text-align: center;">${row.rank}</td>
-            <td style="padding: 10px; border: 1px solid #ddd;">${row.param_id}</td>
-            <td style="padding: 10px; border: 1px solid #ddd; text-align: center;">${row.appearances}</td>
-            <td style="padding: 10px; border: 1px solid #ddd; text-align: center;">${avgOos}%</td>
-            <td style="padding: 10px; border: 1px solid #ddd; text-align: center;">${winRate}%</td>
-            <td style="padding: 10px; border: 1px solid #ddd; text-align: center;">${forward}</td>
-          `;
-    wfTableBody.appendChild(tr);
-  });
-
-  if (data.csv_content) {
-    window.setTimeout(() => {
-      const blob = new Blob([data.csv_content], { type: 'text/csv;charset=utf-8;' });
-      const url = URL.createObjectURL(blob);
-      const link = document.createElement('a');
-      link.href = url;
-      link.download = data.csv_filename || `wf_results_${new Date().getTime()}.csv`;
-      document.body.appendChild(link);
-      link.click();
-      document.body.removeChild(link);
-      URL.revokeObjectURL(url);
-    }, 200);
-  }
-}
-
 async function runWalkForward({ sources, state }) {
   const wfStatusEl = document.getElementById('wfStatus');
-  const wfResultsContainer = document.getElementById('wfResults');
-  const wfSummaryEl = document.getElementById('wfSummary');
-  const wfTableBody = document.getElementById('wfTableBody');
 
   if (!sources.length) {
     if (wfStatusEl) {
@@ -737,11 +896,43 @@ async function runWalkForward({ sources, state }) {
     return;
   }
 
-  const wfNumWindows = document.getElementById('wfNumWindows').value;
-  const wfGapBars = document.getElementById('wfGapBars').value;
-  const wfTopK = document.getElementById('wfTopK').value;
-  const exportTrades = document.getElementById('wfExportTrades').checked;
-  const exportTopK = document.getElementById('wfExportTopK').value;
+  const wfIsPeriodDays = document.getElementById('wfIsPeriodDays').value;
+  const wfOosPeriodDays = document.getElementById('wfOosPeriodDays').value;
+  const warmupValue = document.getElementById('warmupBars')?.value || '1000';
+  const strategySummary = getStrategySummary();
+
+  optimizationAbortController = new AbortController();
+  window.optimizationAbortController = optimizationAbortController;
+  saveOptimizationState({
+    status: 'running',
+    mode: 'wfa',
+    strategy: strategySummary,
+    dataset: {
+      label: getDatasetLabel()
+    },
+    warmupBars: Number(warmupValue) || 1000,
+    dateFilter: state.payload.dateFilter,
+    start: state.start,
+    end: state.end,
+    optuna: {
+      objectives: config.objectives,
+      primaryObjective: config.primary_objective,
+      budgetMode: config.optuna_budget_mode,
+      nTrials: config.optuna_n_trials,
+      timeLimit: config.optuna_time_limit,
+      convergence: config.optuna_convergence,
+      sampler: config.sampler,
+      pruner: config.optuna_pruner,
+      workers: config.worker_processes
+    },
+    wfa: {
+      isPeriodDays: Number(wfIsPeriodDays),
+      oosPeriodDays: Number(wfOosPeriodDays)
+    },
+    fixedParams: clonePreset(config.fixed_params || {}),
+    strategyConfig: clonePreset(window.currentStrategyConfig || {})
+  });
+  openResultsPage();
 
   const statusMessages = new Array(totalSources).fill('');
   const updateStatus = (index, message) => {
@@ -751,17 +942,8 @@ async function runWalkForward({ sources, state }) {
     }
   };
 
-  if (wfResultsContainer) {
-    wfResultsContainer.style.display = 'block';
-  }
   if (wfStatusEl) {
     wfStatusEl.textContent = '';
-  }
-  if (wfSummaryEl) {
-    wfSummaryEl.textContent = '';
-  }
-  if (wfTableBody) {
-    wfTableBody.innerHTML = '';
   }
 
   const errors = [];
@@ -780,7 +962,6 @@ async function runWalkForward({ sources, state }) {
 
     const formData = new FormData();
     formData.append('strategy', window.currentStrategyId);
-    const warmupValue = document.getElementById('warmupBars')?.value || '1000';
     formData.append('warmupBars', warmupValue);
     if (isFileObject) {
       formData.append('file', source, source.name);
@@ -789,57 +970,20 @@ async function runWalkForward({ sources, state }) {
     }
 
     formData.append('config', JSON.stringify(config));
-    formData.append('wf_num_windows', wfNumWindows);
-    formData.append('wf_gap_bars', wfGapBars);
-    formData.append('wf_topk', wfTopK);
-    formData.append('exportTrades', exportTrades ? 'true' : 'false');
-    formData.append('topK', exportTopK);
-
+    formData.append('wf_is_period_days', wfIsPeriodDays);
+    formData.append('wf_oos_period_days', wfOosPeriodDays);
     try {
-      const data = await runWalkForwardRequest(formData);
-
-      if (data.csv_content && totalSources > 1) {
-        try {
-          const blob = new Blob([data.csv_content], { type: 'text/csv;charset=utf-8;' });
-          const url = window.URL.createObjectURL(blob);
-          const link = document.createElement('a');
-          link.href = url;
-          link.download = data.csv_filename || `wf_results_${Date.now()}.csv`;
-          document.body.appendChild(link);
-          link.click();
-          document.body.removeChild(link);
-          window.URL.revokeObjectURL(url);
-        } catch (csvError) {
-          console.error('Failed to download CSV:', csvError);
-        }
-      }
-
-      if (data.export_trades && data.zip_base64) {
-        try {
-          const binaryString = atob(data.zip_base64);
-          const bytes = new Uint8Array(binaryString.length);
-          for (let i = 0; i < binaryString.length; i++) {
-            bytes[i] = binaryString.charCodeAt(i);
-          }
-          const blob = new Blob([bytes], { type: 'application/zip' });
-
-          const url = window.URL.createObjectURL(blob);
-          const link = document.createElement('a');
-          link.href = url;
-          link.download = data.zip_filename || `wf_results_${Date.now()}.zip`;
-          document.body.appendChild(link);
-          link.click();
-          document.body.removeChild(link);
-          window.URL.revokeObjectURL(url);
-        } catch (zipError) {
-          console.error('Failed to download ZIP:', zipError);
-        }
-      }
+      const data = await runWalkForwardRequest(formData, optimizationAbortController.signal);
 
       updateStatus(index, `Success: Source ${sourceNumber} of ${totalSources} (${sourceName}) completed successfully.`);
       successCount += 1;
       lastSuccessfulData = data;
     } catch (err) {
+      if (err && err.name === 'AbortError') {
+        updateStatus(index, `Cancelled: Source ${sourceNumber} of ${totalSources} (${sourceName}).`);
+        updateOptimizationState({ status: 'cancelled', mode: 'wfa' });
+        break;
+      }
       const message = err && err.message ? err.message : 'Walk-Forward failed.';
       console.error(`Walk-Forward failed for source ${sourceName}`, err);
       errors.push({ file: sourceName, message });
@@ -857,14 +1001,18 @@ async function runWalkForward({ sources, state }) {
     }
 
     if (totalSources === 1 && lastSuccessfulData) {
-      displayWFResults(lastSuccessfulData);
+      // Results are available in the Results page; keep main page status only.
+    }
 
-      if (lastSuccessfulData.export_trades && wfSummaryEl) {
-        const currentSummary = wfSummaryEl.innerHTML;
-        wfSummaryEl.innerHTML = currentSummary + '<br><strong>Trade history exported!</strong> Downloaded ZIP contains WFA results CSV and individual trade history files.';
-      }
-    } else if (totalSources > 1 && wfSummaryEl) {
-      wfSummaryEl.innerHTML = `<strong>Multi-file Walk-Forward Analysis completed!</strong><br>Processed ${totalSources} files. Check downloaded CSV/ZIP files for detailed results.`;
+    if (lastSuccessfulData) {
+      updateOptimizationState({
+        status: 'completed',
+        mode: 'wfa',
+        study_id: lastSuccessfulData.study_id || '',
+        summary: lastSuccessfulData.summary || {},
+        dataPath: lastSuccessfulData.data_path || '',
+        strategyId: lastSuccessfulData.strategy_id || strategySummary.id || ''
+      });
     }
   } else if (successCount > 0) {
     const summaryMsg = `Partial: ${successCount} of ${totalSources} files processed successfully, ${errors.length} failed.`;
@@ -873,13 +1021,25 @@ async function runWalkForward({ sources, state }) {
     }
 
     if (successCount === 1 && lastSuccessfulData) {
-      displayWFResults(lastSuccessfulData);
+      updateOptimizationState({
+        status: 'completed',
+        mode: 'wfa',
+        study_id: lastSuccessfulData.study_id || '',
+        summary: lastSuccessfulData.summary || {},
+        dataPath: lastSuccessfulData.data_path || '',
+        strategyId: lastSuccessfulData.strategy_id || strategySummary.id || ''
+      });
     }
   } else {
     const summaryMsg = `Error: All ${totalSources} files failed.`;
     if (wfStatusEl) {
       wfStatusEl.textContent = summaryMsg + '\n\n' + statusMessages.filter(Boolean).join('\n');
     }
+    updateOptimizationState({
+      status: 'error',
+      mode: 'wfa',
+      error: 'All walk-forward runs failed.'
+    });
   }
 }
 
@@ -1035,6 +1195,40 @@ async function submitOptimization(event) {
     optimizerResultsEl.style.display = 'block';
     return;
   }
+
+  const warmupValue = document.getElementById('warmupBars')?.value || '1000';
+  const strategySummary = getStrategySummary();
+
+  optimizationAbortController = new AbortController();
+  window.optimizationAbortController = optimizationAbortController;
+  saveOptimizationState({
+    status: 'running',
+    mode: 'optuna',
+    strategy: strategySummary,
+    dataset: {
+      label: getDatasetLabel()
+    },
+    warmupBars: Number(warmupValue) || 1000,
+    dateFilter: state.payload.dateFilter,
+    start: state.start,
+    end: state.end,
+    optuna: {
+      objectives: config.objectives,
+      primaryObjective: config.primary_objective,
+      budgetMode: config.optuna_budget_mode,
+      nTrials: config.optuna_n_trials,
+      timeLimit: config.optuna_time_limit,
+      convergence: config.optuna_convergence,
+      sampler: config.sampler,
+      pruner: config.optuna_pruner,
+      workers: config.worker_processes,
+      sanitizeEnabled: config.sanitize_enabled,
+      sanitizeTradesThreshold: config.sanitize_trades_threshold
+    },
+    fixedParams: clonePreset(config.fixed_params || {}),
+    strategyConfig: clonePreset(window.currentStrategyConfig || {})
+  });
+  openResultsPage();
   const totalSources = sources.length;
   const statusMessages = new Array(totalSources).fill('');
   const updateStatus = (index, message) => {
@@ -1076,6 +1270,9 @@ async function submitOptimization(event) {
 
   const errors = [];
   let successCount = 0;
+  let lastStudyId = '';
+  let lastSummary = null;
+  let lastDataPath = '';
   const optunaBudgetMode = config.optuna_budget_mode;
   const plannedTrials = optunaBudgetMode === 'trials' ? config.optuna_n_trials : null;
 
@@ -1104,7 +1301,6 @@ async function submitOptimization(event) {
 
     const formData = new FormData();
     formData.append('strategy', window.currentStrategyId);
-    const warmupValue = document.getElementById('warmupBars')?.value || '1000';
     formData.append('warmupBars', warmupValue);
     if (isFileObject) {
       formData.append('file', source, source.name);
@@ -1114,32 +1310,10 @@ async function submitOptimization(event) {
     formData.append('config', JSON.stringify(config));
 
     try {
-      const { blob, headers } = await runOptimizationRequest(formData);
-
-      const url = window.URL.createObjectURL(blob);
-      const link = document.createElement('a');
-      link.href = url;
-
-      const disposition = headers.get('Content-Disposition');
-      let downloadName = `optimization_${Date.now()}.csv`;
-      if (disposition) {
-        const utf8Match = disposition.match(/filename\*=UTF-8''([^;]+)/i);
-        const asciiMatch = disposition.match(/filename="?([^";]+)"?/i);
-        if (utf8Match && utf8Match[1]) {
-          try {
-            downloadName = decodeURIComponent(utf8Match[1]);
-          } catch (err) {
-            downloadName = utf8Match[1];
-          }
-        } else if (asciiMatch && asciiMatch[1]) {
-          downloadName = asciiMatch[1];
-        }
-      }
-      link.download = downloadName;
-      document.body.appendChild(link);
-      link.click();
-      link.remove();
-      window.URL.revokeObjectURL(url);
+      const data = await runOptimizationRequest(formData, optimizationAbortController.signal);
+      lastStudyId = data.study_id || '';
+      lastSummary = data.summary || null;
+      lastDataPath = data.data_path || lastDataPath;
 
       if (optunaProgressFill) {
         optunaProgressFill.style.width = '100%';
@@ -1152,12 +1326,17 @@ async function submitOptimization(event) {
         }
       }
       if (optunaBestTrial) {
-        optunaBestTrial.textContent = 'Review the downloaded CSV to inspect the best trial and metrics.';
+        optunaBestTrial.textContent = 'Optimization completed. Results saved to Studies Manager.';
       }
 
       updateStatus(index, `Success: Source ${sourceNumber} of ${totalSources} (${sourceName}) processed successfully.`);
       successCount += 1;
     } catch (err) {
+      if (err && err.name === 'AbortError') {
+        updateStatus(index, `Cancelled: Source ${sourceNumber} of ${totalSources} (${sourceName}).`);
+        updateOptimizationState({ status: 'cancelled', mode: 'optuna' });
+        break;
+      }
       const message = err && err.message ? err.message : 'Optimization failed.';
       console.error(`Optimization failed for source ${sourceName}`, err);
       errors.push({ file: sourceName, message });
@@ -1183,12 +1362,39 @@ async function submitOptimization(event) {
   const summaryMessages = statusMessages.filter(Boolean);
   if (successCount === totalSources) {
     summaryMessages.push(`Optimization complete! All ${totalSources} data source(s) processed successfully.`);
+    const serverState = await refreshOptimizationStateFromServer();
+    if (!serverState) {
+      updateOptimizationState({
+        status: 'completed',
+        mode: 'optuna',
+        study_id: lastStudyId,
+        summary: lastSummary || {},
+        dataPath: lastDataPath,
+        strategyId: strategySummary.id || ''
+      });
+    }
   } else if (successCount > 0) {
     summaryMessages.push(
       `Optimization finished with ${successCount} successful data source(s) and ${errors.length} error(s).`
     );
+    const serverState = await refreshOptimizationStateFromServer();
+    if (!serverState) {
+      updateOptimizationState({
+        status: 'completed',
+        mode: 'optuna',
+        study_id: lastStudyId,
+        summary: lastSummary || {},
+        dataPath: lastDataPath,
+        strategyId: strategySummary.id || ''
+      });
+    }
   } else {
     summaryMessages.push('Optimization failed for all selected data sources. See error details above.');
+    updateOptimizationState({
+      status: 'error',
+      mode: 'optuna',
+      error: 'Optimization failed for all selected data sources.'
+    });
   }
   optimizerResultsEl.textContent = summaryMessages.join('\n');
 }
@@ -1271,23 +1477,44 @@ function bindScoreControls() {
     invertCheckbox.addEventListener('change', updateScoreFormulaPreview);
   }
 
-  const resetButton = document.getElementById('scoreReset');
+  const resetButton = document.getElementById('resetScoreBtn');
   if (resetButton) {
     resetButton.addEventListener('click', () => {
       const defaultsConfig = window.defaults?.scoreConfig || {};
+      const mergedBounds = {
+        ...SCORE_DEFAULT_BOUNDS,
+        ...(defaultsConfig.metric_bounds || {})
+      };
       applyScoreSettings({
         scoreFilterEnabled: Boolean(defaultsConfig.filter_enabled),
         scoreThreshold: defaultsConfig.min_score_threshold ?? SCORE_DEFAULT_THRESHOLD,
         scoreWeights: clonePreset({ ...SCORE_DEFAULT_WEIGHTS, ...(defaultsConfig.weights || {}) }),
         scoreEnabledMetrics: clonePreset({ ...SCORE_DEFAULT_ENABLED, ...(defaultsConfig.enabled_metrics || {}) }),
-        scoreInvertMetrics: clonePreset({ ...SCORE_DEFAULT_INVERT, ...(defaultsConfig.invert_metrics || {}) })
+        scoreInvertMetrics: clonePreset({ ...SCORE_DEFAULT_INVERT, ...(defaultsConfig.invert_metrics || {}) }),
+        scoreMetricBounds: clonePreset(mergedBounds)
       });
       updateScoreFormulaPreview();
     });
   }
 
+  applyScoreSettings();
   syncScoreFilterUI();
   updateScoreFormulaPreview();
+}
+
+function bindOptunaUiControls() {
+  if (!window.OptunaUI) return;
+  const checkboxes = document.querySelectorAll('.objective-checkbox');
+  checkboxes.forEach((checkbox) => {
+    checkbox.addEventListener('change', window.OptunaUI.updateObjectiveSelection);
+  });
+  const sampler = document.getElementById('optunaSampler');
+  if (sampler) {
+    sampler.addEventListener('change', window.OptunaUI.toggleNsgaSettings);
+  }
+  window.OptunaUI.initSanitizeControls();
+  window.OptunaUI.updateObjectiveSelection();
+  window.OptunaUI.toggleNsgaSettings();
 }
 
 function setCheckboxGroup(group, selectedTypes) {
