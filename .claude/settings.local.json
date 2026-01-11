@@ -3,7 +3,13 @@
     "allow": [
       "Bash(cat:*)"
     ],
-    "deny": [],
+    "deny": [
+      "Read(../**)",
+      "Read(~/**)",
+      "Read(C:/Users/mt/**)",
+      "Edit(../**)",
+      "Write(../**)"
+    ],
     "ask": []
   }
 }
