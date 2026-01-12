@@ -17,6 +17,7 @@ from . import metrics
 from .backtest_engine import prepare_dataset_with_warmup
 from .optuna_engine import OptunaConfig, OptimizationConfig, SamplerConfig, run_optuna_optimization
 from .storage import save_wfa_study_to_db
+from .post_process import PostProcessConfig, run_forward_test
 
 logger = logging.getLogger(__name__)
 
@@ -32,6 +33,7 @@ class WFConfig:
     # Strategy and warmup
     strategy_id: str = ""
     warmup_bars: int = 1000
+    post_process: Optional[PostProcessConfig] = None
 
 
 @dataclass
@@ -323,17 +325,53 @@ class WalkForwardEngine:
                 f"{window.is_start.date()} to {window.is_end.date()}"
             )
 
-            optimization_results = self._run_optuna_on_window(
-                df, window.is_start, window.is_end
-            )
+            ft_config = self.config.post_process
+            optimization_start = window.is_start
+            optimization_end = window.is_end
+            training_end = None
 
-            if not optimization_results:
+            if ft_config and ft_config.enabled:
+                is_days = (window.is_end - window.is_start).days
+                ft_days = int(ft_config.ft_period_days)
+                if ft_days > 0 and ft_days < is_days and self.csv_file_path:
+                    training_end = window.is_end - pd.Timedelta(days=ft_days)
+                    if training_end > window.is_start:
+                        optimization_end = training_end
+                else:
+                    logger.warning(
+                        "Skipping FT for window %s: insufficient IS period or missing CSV path.",
+                        window.window_id,
+                    )
+
+            optimization_results = self._run_optuna_on_window(
+                df, optimization_start, optimization_end
+            )
+            best_result = optimization_results[0] if optimization_results else None
+
+            if ft_config and ft_config.enabled and training_end and best_result:
+                worker_count = int(self.base_config_template.get("worker_processes", 1))
+                ft_results = run_forward_test(
+                    csv_path=self.csv_file_path,
+                    strategy_id=self.config.strategy_id,
+                    optuna_results=optimization_results,
+                    config=ft_config,
+                    is_period_days=max(0, (training_end - window.is_start).days),
+                    ft_period_days=int(ft_config.ft_period_days),
+                    ft_start_date=training_end.strftime("%Y-%m-%d"),
+                    ft_end_date=window.is_end.strftime("%Y-%m-%d"),
+                    n_workers=worker_count,
+                )
+                if ft_results:
+                    best_result = ft_results[0]
+
+            if not best_result:
                 raise ValueError(f"No optimization results for window {window.window_id}.")
 
-            best_result = optimization_results[0]
             best_params = self._result_to_params(best_result)
             param_id = self._create_param_id(best_params)
             best_trial_number = getattr(best_result, "optuna_trial_number", None)
+            if best_trial_number is None and hasattr(best_result, "trial_number"):
+                best_trial_number = getattr(best_result, "trial_number")
 
             print(f"Best param ID: {param_id}")
 

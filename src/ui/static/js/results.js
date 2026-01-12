@@ -19,6 +19,18 @@ const ResultsState = {
   wfa: {},
   summary: {},
   results: [],
+  forwardTest: {
+    enabled: false,
+    trials: [],
+    startDate: '',
+    endDate: '',
+    periodDays: null,
+    sortMetric: 'profit_degradation'
+  },
+  manualTests: [],
+  activeManualTest: null,
+  manualTestResults: [],
+  activeTab: 'optuna',
   stitched_oos: {},
   dataPath: '',
   selectedRowId: null,
@@ -128,6 +140,79 @@ function updateResultsHeader() {
   } else {
     header.textContent = 'Optimization Results';
   }
+}
+
+function updateTableHeader(title, subtitle) {
+  const titleEl = document.getElementById('resultsTableTitle');
+  const subtitleEl = document.getElementById('resultsTableSubtitle');
+  if (titleEl) titleEl.textContent = title || '';
+  if (subtitleEl) subtitleEl.textContent = subtitle || '';
+}
+
+function setComparisonLine(text) {
+  const line = document.getElementById('comparisonLine');
+  if (!line) return;
+  if (text) {
+    line.textContent = text;
+    line.style.display = 'flex';
+  } else {
+    line.textContent = '';
+    line.style.display = 'none';
+  }
+}
+
+function formatSigned(value, digits = 2, suffix = '') {
+  const num = Number(value);
+  if (!Number.isFinite(num)) return 'N/A';
+  const sign = num > 0 ? '+' : '';
+  return `${sign}${num.toFixed(digits)}${suffix}`;
+}
+
+function updateTabsVisibility() {
+  const tabs = document.querySelectorAll('.tab-btn');
+  const forwardTab = document.querySelector('.tab-btn[data-tab="forward_test"]');
+  const manualTab = document.querySelector('.tab-btn[data-tab="manual_tests"]');
+  const tabsContainer = document.getElementById('resultsTabs');
+  const manualBtn = document.getElementById('manualTestBtn');
+
+  if (ResultsState.mode !== 'optuna') {
+    if (tabsContainer) tabsContainer.style.display = 'none';
+    if (manualBtn) manualBtn.style.display = 'none';
+    return;
+  }
+
+  if (tabsContainer) tabsContainer.style.display = 'flex';
+
+  const hasForwardTest = ResultsState.forwardTest.enabled && ResultsState.forwardTest.trials.length > 0;
+  const hasManualTests = ResultsState.manualTests.length > 0;
+
+  if (forwardTab) forwardTab.style.display = hasForwardTest ? 'inline-flex' : 'none';
+  if (manualTab) manualTab.style.display = hasManualTests ? 'inline-flex' : 'none';
+  if (manualBtn) {
+    manualBtn.style.display = ['optuna', 'forward_test'].includes(ResultsState.activeTab) ? 'inline-flex' : 'none';
+  }
+
+  if (!hasForwardTest && ResultsState.activeTab === 'forward_test') {
+    ResultsState.activeTab = 'optuna';
+  }
+  if (!hasManualTests && ResultsState.activeTab === 'manual_tests') {
+    ResultsState.activeTab = 'optuna';
+  }
+
+  tabs.forEach((tab) => {
+    const tabId = tab.dataset.tab;
+    tab.classList.toggle('active', tabId === ResultsState.activeTab);
+  });
+}
+
+async function activateTab(tabId) {
+  ResultsState.activeTab = tabId;
+  ResultsState.selectedRowId = null;
+  updateTabsVisibility();
+  if (tabId === 'manual_tests') {
+    await ensureManualTestSelection();
+  }
+  refreshResultsView();
 }
 
 function renderStudiesList(studies) {
@@ -254,6 +339,31 @@ async function applyStudyPayload(data) {
   }
   ResultsState.selectedRowId = null;
 
+  ResultsState.forwardTest.enabled = Boolean(study.ft_enabled);
+  ResultsState.forwardTest.startDate = study.ft_start_date || '';
+  ResultsState.forwardTest.endDate = study.ft_end_date || '';
+  ResultsState.forwardTest.periodDays = study.ft_period_days ?? null;
+  ResultsState.forwardTest.sortMetric = study.ft_sort_metric || 'profit_degradation';
+  ResultsState.forwardTest.trials = (data.trials || []).filter((trial) => trial.ft_rank !== null && trial.ft_rank !== undefined);
+  ResultsState.forwardTest.trials.sort((a, b) => (a.ft_rank || 0) - (b.ft_rank || 0));
+  ResultsState.manualTests = data.manual_tests || [];
+  ResultsState.activeManualTest = null;
+  ResultsState.manualTestResults = [];
+
+  if (ResultsState.mode === 'optuna') {
+    const hasForward = ResultsState.forwardTest.enabled && ResultsState.forwardTest.trials.length > 0;
+    const hasManual = ResultsState.manualTests.length > 0;
+    if (ResultsState.activeTab === 'forward_test' && !hasForward) {
+      ResultsState.activeTab = 'optuna';
+    }
+    if (ResultsState.activeTab === 'manual_tests' && !hasManual) {
+      ResultsState.activeTab = 'optuna';
+    }
+    if (!ResultsState.activeTab) {
+      ResultsState.activeTab = 'optuna';
+    }
+  }
+
   if (ResultsState.mode === 'wfa') {
     const stitched = buildStitchedFromWindows(ResultsState.results);
     const summary = calculateSummaryFromEquity(stitched.equity_curve);
@@ -331,6 +441,9 @@ async function openStudy(studyId) {
     }
 
     await applyStudyPayload(data);
+    if (ResultsState.activeTab === 'manual_tests') {
+      await ensureManualTestSelection();
+    }
     setQueryStudyId(studyId);
     await loadStudiesList();
     refreshResultsView();
@@ -413,6 +526,101 @@ function bindMissingCsvDialog() {
       }
     });
   }
+}
+
+async function refreshManualTestsList() {
+  if (!ResultsState.studyId) return;
+  try {
+    const data = await fetchManualTestsList(ResultsState.studyId);
+    ResultsState.manualTests = data.tests || [];
+  } catch (error) {
+    ResultsState.manualTests = [];
+  }
+}
+
+async function loadManualTestResultsById(testId) {
+  if (!ResultsState.studyId || !testId) return;
+  try {
+    const data = await fetchManualTestResults(ResultsState.studyId, testId);
+    ResultsState.activeManualTest = {
+      id: data.id,
+      source_tab: data.source_tab,
+      config: data.results_json?.config || null
+    };
+    ResultsState.manualTestResults = data.results_json?.results || [];
+  } catch (error) {
+    ResultsState.activeManualTest = null;
+    ResultsState.manualTestResults = [];
+  }
+}
+
+async function ensureManualTestSelection() {
+  if (!ResultsState.manualTests.length) {
+    ResultsState.activeManualTest = null;
+    ResultsState.manualTestResults = [];
+    return;
+  }
+  const activeId = ResultsState.activeManualTest?.id;
+  const exists = ResultsState.manualTests.some((test) => test.id === activeId);
+  if (activeId && exists) {
+    await loadManualTestResultsById(activeId);
+    return;
+  }
+  await loadManualTestResultsById(ResultsState.manualTests[0].id);
+}
+
+function renderManualTestControls() {
+  const controls = document.getElementById('testResultsControls');
+  const select = document.getElementById('manualTestSelect');
+  const baseline = document.getElementById('manualTestBaselineLabel');
+
+  if (!controls || !select) return;
+
+  if (ResultsState.activeTab !== 'manual_tests') {
+    controls.style.display = 'none';
+    return;
+  }
+
+  controls.style.display = 'flex';
+  select.innerHTML = '';
+
+  ResultsState.manualTests.forEach((test) => {
+    const option = document.createElement('option');
+    const dateLabel = test.created_at ? new Date(test.created_at).toLocaleString() : 'Unknown';
+    const name = test.test_name ? ` - ${test.test_name}` : '';
+    option.value = test.id;
+    option.textContent = `#${test.id}${name} (${dateLabel})`;
+    if (ResultsState.activeManualTest && ResultsState.activeManualTest.id === test.id) {
+      option.selected = true;
+    }
+    select.appendChild(option);
+  });
+
+  if (baseline) {
+    const source = ResultsState.activeManualTest?.source_tab;
+    if (source === 'forward_test') {
+      baseline.textContent = 'Compared against: Forward Test Results';
+    } else if (source === 'optuna') {
+      baseline.textContent = 'Compared against: Optuna Results';
+    } else {
+      baseline.textContent = '';
+    }
+  }
+}
+
+function getTrialsForActiveTab() {
+  if (ResultsState.activeTab === 'forward_test') {
+    return ResultsState.forwardTest.trials || [];
+  }
+  return ResultsState.results || [];
+}
+
+function bindTabs() {
+  document.querySelectorAll('.tab-btn').forEach((tab) => {
+    tab.addEventListener('click', async () => {
+      await activateTab(tab.dataset.tab);
+    });
+  });
 }
 
 function updateStatusBadge(status) {
@@ -545,16 +753,195 @@ function renderOptunaTable(results) {
     const hashCell = row.querySelector('.param-hash');
     if (hashCell) hashCell.textContent = paramId;
 
-    row.addEventListener('click', async () => {
-      selectTableRow(index, trialNumber);
-      showParameterDetails({ ...result, param_id: paramId });
-      if (result.equity_curve && result.equity_curve.length) {
-        renderEquityChart(result.equity_curve);
-        return;
-      }
-      const equity = await fetchEquityCurve(result);
+      row.addEventListener('click', async () => {
+        selectTableRow(index, trialNumber);
+        showParameterDetails({ ...result, param_id: paramId });
+        setComparisonLine('');
+        if (result.equity_curve && result.equity_curve.length) {
+          renderEquityChart(result.equity_curve);
+          return;
+        }
+        const equity = await fetchEquityCurve(result);
       if (equity && equity.length) {
         renderEquityChart(equity);
+      }
+    });
+
+    tbody.appendChild(row);
+  });
+}
+
+function renderForwardTestTable(results) {
+  const tbody = document.querySelector('.data-table tbody');
+  if (!tbody) return;
+
+  tbody.innerHTML = '';
+
+  const thead = document.querySelector('.data-table thead tr');
+  const objectives = ResultsState.optuna.objectives || [];
+  const constraints = ResultsState.optuna.constraints || [];
+  const hasConstraints = constraints.some((c) => c && c.enabled);
+  if (thead && window.OptunaResultsUI) {
+    thead.innerHTML = window.OptunaResultsUI.buildTrialTableHeaders(objectives, hasConstraints);
+  }
+
+  const optunaRankMap = {};
+  (ResultsState.results || []).forEach((trial, idx) => {
+    if (trial.trial_number !== undefined) {
+      optunaRankMap[trial.trial_number] = idx + 1;
+    }
+  });
+
+  (results || []).forEach((trial, index) => {
+    const mapped = {
+      ...trial,
+      net_profit_pct: trial.ft_net_profit_pct,
+      max_drawdown_pct: trial.ft_max_drawdown_pct,
+      total_trades: trial.ft_total_trades,
+      win_rate: trial.ft_win_rate,
+      sharpe_ratio: trial.ft_sharpe_ratio,
+      sortino_ratio: trial.ft_sortino_ratio,
+      romad: trial.ft_romad,
+      profit_factor: trial.ft_profit_factor,
+      ulcer_index: trial.ft_ulcer_index,
+      sqn: trial.ft_sqn,
+      consistency_score: trial.ft_consistency_score,
+      score: null
+    };
+
+    const temp = document.createElement('tbody');
+    if (window.OptunaResultsUI) {
+      temp.innerHTML = window.OptunaResultsUI.renderTrialRow(mapped, objectives, { hasConstraints }).trim();
+    }
+    const row = temp.firstElementChild || document.createElement('tr');
+    row.className = 'clickable';
+    row.dataset.index = index;
+    const trialNumber = trial.trial_number ?? (index + 1);
+    row.dataset.trialNumber = trialNumber;
+
+    const paramId = trial.param_id
+      || createParamId(trial.params || {}, ResultsState.strategyConfig, ResultsState.fixedParams);
+
+    const rankCell = row.querySelector('.rank');
+    if (rankCell) rankCell.textContent = trial.ft_rank || index + 1;
+    const hashCell = row.querySelector('.param-hash');
+    if (hashCell) hashCell.textContent = paramId;
+
+    row.addEventListener('click', async () => {
+      selectTableRow(index, trialNumber);
+      showParameterDetails({ ...trial, param_id: paramId });
+
+      const comparison = window.PostProcessUI
+        ? window.PostProcessUI.buildComparisonMetrics(trial)
+        : null;
+      const optunaRank = optunaRankMap[trialNumber];
+      const rankChange = optunaRank && trial.ft_rank ? optunaRank - trial.ft_rank : null;
+
+      if (comparison) {
+        const line = [
+          rankChange !== null ? `Rank: ${formatSigned(rankChange, 0)}` : null,
+          `Profit Deg: ${formatSigned(comparison.profit_degradation || 0, 2)}`,
+          `Max DD: ${formatSigned(comparison.max_dd_change || 0, 2, '%')}`,
+          `ROMAD: ${formatSigned(comparison.romad_change || 0, 2)}`,
+          `Sharpe: ${formatSigned(comparison.sharpe_change || 0, 2)}`,
+          `PF: ${formatSigned(comparison.pf_change || 0, 2)}`
+        ].filter(Boolean).join(' | ');
+        setComparisonLine(line);
+      }
+
+      const equity = await fetchEquityCurve(trial, {
+        start: ResultsState.forwardTest.startDate,
+        end: ResultsState.forwardTest.endDate
+      });
+      if (equity && equity.length) {
+        renderEquityChart(equity);
+      }
+    });
+
+    tbody.appendChild(row);
+  });
+}
+
+function renderManualTestTable(results) {
+  const tbody = document.querySelector('.data-table tbody');
+  if (!tbody) return;
+
+  tbody.innerHTML = '';
+
+  const thead = document.querySelector('.data-table thead tr');
+  const objectives = ResultsState.optuna.objectives || [];
+  const constraints = ResultsState.optuna.constraints || [];
+  const hasConstraints = constraints.some((c) => c && c.enabled);
+  if (thead && window.OptunaResultsUI) {
+    thead.innerHTML = window.OptunaResultsUI.buildTrialTableHeaders(objectives, hasConstraints);
+  }
+
+  const trialMap = {};
+  (ResultsState.results || []).forEach((trial) => {
+    if (trial.trial_number !== undefined) {
+      trialMap[trial.trial_number] = trial;
+    }
+  });
+
+  (results || []).forEach((entry, index) => {
+    const trialNumber = entry.trial_number;
+    const baseTrial = trialMap[trialNumber] || {};
+    const metrics = entry.test_metrics || {};
+    const mapped = {
+      ...baseTrial,
+      net_profit_pct: metrics.net_profit_pct,
+      max_drawdown_pct: metrics.max_drawdown_pct,
+      total_trades: metrics.total_trades,
+      win_rate: metrics.win_rate,
+      sharpe_ratio: metrics.sharpe_ratio,
+      romad: metrics.romad,
+      profit_factor: metrics.profit_factor,
+      score: null
+    };
+
+    const temp = document.createElement('tbody');
+    if (window.OptunaResultsUI) {
+      temp.innerHTML = window.OptunaResultsUI.renderTrialRow(mapped, objectives, { hasConstraints }).trim();
+    }
+    const row = temp.firstElementChild || document.createElement('tr');
+    row.className = 'clickable';
+    row.dataset.index = index;
+    row.dataset.trialNumber = trialNumber;
+
+    const paramId = baseTrial.param_id
+      || createParamId(baseTrial.params || {}, ResultsState.strategyConfig, ResultsState.fixedParams);
+
+    const rankCell = row.querySelector('.rank');
+    if (rankCell) rankCell.textContent = index + 1;
+    const hashCell = row.querySelector('.param-hash');
+    if (hashCell) hashCell.textContent = paramId;
+
+    row.addEventListener('click', async () => {
+      selectTableRow(index, trialNumber);
+      showParameterDetails({ ...baseTrial, param_id: paramId });
+
+      const comparison = entry.comparison || {};
+      const line = [
+        comparison.rank_change !== undefined && comparison.rank_change !== null
+          ? `Rank: ${formatSigned(comparison.rank_change, 0)}`
+          : null,
+        `Profit Deg: ${formatSigned(comparison.profit_degradation || 0, 2)}`,
+        `Max DD: ${formatSigned(comparison.max_dd_change || 0, 2, '%')}`,
+        `ROMAD: ${formatSigned(comparison.romad_change || 0, 2)}`,
+        `Sharpe: ${formatSigned(comparison.sharpe_change || 0, 2)}`,
+        `PF: ${formatSigned(comparison.pf_change || 0, 2)}`
+      ].filter(Boolean).join(' | ');
+      setComparisonLine(line);
+
+      if (ResultsState.activeManualTest && ResultsState.activeManualTest.config) {
+        const config = ResultsState.activeManualTest.config;
+        const equity = await fetchEquityCurve(baseTrial, {
+          start: config.start_date,
+          end: config.end_date
+        });
+        if (equity && equity.length) {
+          renderEquityChart(equity);
+        }
       }
     });
 
@@ -601,11 +988,12 @@ function renderWFATable(windows) {
       <td class="val-negative">-${Math.abs(Number(window.oos_max_drawdown_pct || 0)).toFixed(2)}%</td>
     `;
 
-    row.addEventListener('click', () => {
-      const windowNumber = window.window_number || window.window_id || index + 1;
-      selectTableRow(index, windowNumber);
-      showParameterDetails(window);
-    });
+      row.addEventListener('click', () => {
+        const windowNumber = window.window_number || window.window_id || index + 1;
+        selectTableRow(index, windowNumber);
+        showParameterDetails(window);
+        setComparisonLine('');
+      });
 
     tbody.appendChild(row);
   });
@@ -828,14 +1216,24 @@ function renderWindowIndicators(total) {
   }
 }
 
-async function fetchEquityCurve(result) {
+async function fetchEquityCurve(result, options = null) {
   if (!ResultsState.dataPath) {
     return null;
   }
   const params = { ...(ResultsState.fixedParams || {}), ...(result.params || {}) };
-  if (ResultsState.start) params.start = ResultsState.start;
-  if (ResultsState.end) params.end = ResultsState.end;
-  if (typeof ResultsState.dateFilter === 'boolean') params.dateFilter = ResultsState.dateFilter;
+  let start = ResultsState.start;
+  let end = ResultsState.end;
+  let dateFilter = typeof ResultsState.dateFilter === 'boolean' ? ResultsState.dateFilter : false;
+
+  if (options && options.start && options.end) {
+    start = options.start;
+    end = options.end;
+    dateFilter = true;
+  }
+
+  if (start) params.start = start;
+  if (end) params.end = end;
+  params.dateFilter = dateFilter;
 
   const formData = new FormData();
   formData.append('strategy', ResultsState.strategyId || ResultsState.strategy.id || '');
@@ -858,6 +1256,7 @@ function refreshResultsView() {
   updateStatusBadge(ResultsState.status || 'idle');
   updateSidebarSettings();
   updateResultsHeader();
+  updateTabsVisibility();
 
   const progressLabel = document.getElementById('progressLabel');
   const progressPercent = document.getElementById('progressPercent');
@@ -865,6 +1264,7 @@ function refreshResultsView() {
   if (progressPercent) progressPercent.textContent = '0%';
 
   if (ResultsState.mode === 'wfa') {
+    setComparisonLine('');
     const summary = ResultsState.stitched_oos || ResultsState.summary || {};
     displaySummaryCards(summary);
     renderWFATable(ResultsState.results || []);
@@ -872,9 +1272,20 @@ function refreshResultsView() {
     renderEquityChart(summary.equity_curve || [], boundaries);
     renderWindowIndicators(ResultsState.summary?.total_windows || ResultsState.results?.length || 0);
   } else {
+    setComparisonLine('');
     const summaryRow = document.querySelector('.summary-row');
     if (summaryRow) summaryRow.style.display = 'none';
-    renderOptunaTable(ResultsState.results || []);
+    if (ResultsState.activeTab === 'forward_test') {
+      updateTableHeader('Forward Test', 'Sorted by FT results');
+      renderForwardTestTable(ResultsState.forwardTest.trials || []);
+    } else if (ResultsState.activeTab === 'manual_tests') {
+      updateTableHeader('Test Results', 'Manual test results');
+      renderManualTestTable(ResultsState.manualTestResults || []);
+    } else {
+      updateTableHeader('Top Parameter Sets', 'Sorted by objectives');
+      renderOptunaTable(ResultsState.results || []);
+    }
+    renderManualTestControls();
   }
 }
 
@@ -947,6 +1358,111 @@ function toggleStudySelection(studyId) {
   ResultsState.selectedStudies = Array.from(selected);
   loadStudiesList();
 }
+
+function openManualTestModal() {
+  const modal = document.getElementById('manualTestModal');
+  const selectedLabel = document.getElementById('manualSelectedLabel');
+  const dataFile = document.getElementById('manualDataFile');
+  const dataOriginal = document.getElementById('manualDataOriginal');
+  if (selectedLabel) {
+    selectedLabel.textContent = ResultsState.selectedRowId
+      ? `Trial #${ResultsState.selectedRowId}`
+      : 'Trial # -';
+  }
+  if (dataFile && dataOriginal) {
+    dataFile.disabled = dataOriginal.checked;
+  }
+  if (modal) modal.classList.add('show');
+}
+
+function closeManualTestModal() {
+  const modal = document.getElementById('manualTestModal');
+  if (modal) modal.classList.remove('show');
+}
+
+function bindManualDataSourceToggle() {
+  const dataOriginal = document.getElementById('manualDataOriginal');
+  const dataNew = document.getElementById('manualDataNew');
+  const dataFile = document.getElementById('manualDataFile');
+  if (!dataFile) return;
+  const sync = () => {
+    dataFile.disabled = dataOriginal && dataOriginal.checked;
+  };
+  if (dataOriginal) dataOriginal.addEventListener('change', sync);
+  if (dataNew) dataNew.addEventListener('change', sync);
+  sync();
+}
+
+function getManualTrialNumbers() {
+  const topMode = document.getElementById('manualTrialTop');
+  const topInput = document.getElementById('manualTopK');
+  const selectedMode = document.getElementById('manualTrialSelected');
+
+  if (selectedMode && selectedMode.checked) {
+    if (!ResultsState.selectedRowId) return [];
+    return [ResultsState.selectedRowId];
+  }
+
+  const topK = topInput ? Number(topInput.value) : 0;
+  const normalized = Number.isFinite(topK) ? Math.max(1, Math.round(topK)) : 1;
+  const trials = getTrialsForActiveTab();
+  return trials.slice(0, normalized).map((trial) => trial.trial_number);
+}
+
+async function runManualTestFromModal() {
+  const dataOriginal = document.getElementById('manualDataOriginal');
+  const dataFile = document.getElementById('manualDataFile');
+  const startInput = document.getElementById('manualStartDate');
+  const endInput = document.getElementById('manualEndDate');
+
+  const dataSource = dataOriginal && dataOriginal.checked ? 'original_csv' : 'new_csv';
+  const startDate = startInput ? startInput.value.trim() : '';
+  const endDate = endInput ? endInput.value.trim() : '';
+
+  const trialNumbers = getManualTrialNumbers();
+  if (!trialNumbers.length) {
+    alert('Select at least one trial.');
+    return;
+  }
+
+  let csvPath = null;
+  if (dataSource === 'new_csv') {
+    const file = dataFile && dataFile.files && dataFile.files[0];
+    if (!file) {
+      alert('Select a CSV file for the manual test.');
+      return;
+    }
+    csvPath = file.path || file.name || '';
+    if (!csvPath) {
+      alert('Unable to resolve CSV path for the selected file.');
+      return;
+    }
+  }
+
+  const sourceTab = ResultsState.activeTab === 'forward_test' ? 'forward_test' : 'optuna';
+
+  const payload = {
+    dataSource,
+    csvPath,
+    startDate,
+    endDate,
+    trialNumbers,
+    sourceTab
+  };
+
+  try {
+    await runManualTestRequest(ResultsState.studyId, payload);
+    await refreshManualTestsList();
+    ResultsState.activeTab = 'manual_tests';
+    await ensureManualTestSelection();
+    updateTabsVisibility();
+    renderManualTestControls();
+    refreshResultsView();
+    closeManualTestModal();
+  } catch (error) {
+    alert(error.message || 'Manual test failed.');
+  }
+}
 function bindEventHandlers() {
   const cancelBtn = document.querySelector('.control-btn.cancel');
   if (cancelBtn) {
@@ -977,7 +1493,7 @@ function bindEventHandlers() {
     });
   }
 
-  const downloadBtn = document.querySelector('.header-actions .btn-secondary');
+  const downloadBtn = document.getElementById('downloadTradesBtn');
   if (downloadBtn) {
     downloadBtn.addEventListener('click', async () => {
       if (!ResultsState.studyId) {
@@ -1024,6 +1540,65 @@ function bindEventHandlers() {
         window.URL.revokeObjectURL(url);
       } catch (error) {
         alert(error.message || 'Trade export failed.');
+      }
+    });
+  }
+
+  const manualBtn = document.getElementById('manualTestBtn');
+  if (manualBtn) {
+    manualBtn.addEventListener('click', () => {
+      if (!ResultsState.studyId) {
+        alert('Select a study first.');
+        return;
+      }
+      openManualTestModal();
+    });
+  }
+
+  const manualCancel = document.getElementById('manualTestCancel');
+  if (manualCancel) {
+    manualCancel.addEventListener('click', () => {
+      closeManualTestModal();
+    });
+  }
+
+  const manualRun = document.getElementById('manualTestRun');
+  if (manualRun) {
+    manualRun.addEventListener('click', async () => {
+      await runManualTestFromModal();
+    });
+  }
+
+  const manualSelect = document.getElementById('manualTestSelect');
+  if (manualSelect) {
+    manualSelect.addEventListener('change', async () => {
+      const testId = manualSelect.value;
+      await loadManualTestResultsById(testId);
+      renderManualTestControls();
+      refreshResultsView();
+    });
+  }
+
+  const manualDelete = document.getElementById('manualTestDelete');
+  if (manualDelete) {
+    manualDelete.addEventListener('click', async () => {
+      const testId = ResultsState.activeManualTest?.id;
+      if (!testId) {
+        alert('Select a test to delete.');
+        return;
+      }
+      const confirmed = window.confirm('Delete this manual test? This cannot be undone.');
+      if (!confirmed) return;
+      try {
+        await deleteManualTestRequest(ResultsState.studyId, testId);
+        await refreshManualTestsList();
+        ResultsState.activeManualTest = null;
+        ResultsState.manualTestResults = [];
+        await ensureManualTestSelection();
+        renderManualTestControls();
+        refreshResultsView();
+      } catch (error) {
+        alert(error.message || 'Failed to delete manual test.');
       }
     });
   }
@@ -1085,6 +1660,8 @@ function initResultsPage() {
   bindStudiesManager();
   bindEventHandlers();
   bindMissingCsvDialog();
+  bindTabs();
+  bindManualDataSourceToggle();
 
   const stored = readStoredState();
   if (stored) {

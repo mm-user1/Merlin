@@ -1364,6 +1364,30 @@
       margin-top: 8px;
     }
 
+    .modal-section {
+      margin-bottom: 14px;
+      display: flex;
+      flex-direction: column;
+      gap: 8px;
+    }
+
+    .modal-section strong {
+      font-size: 13px;
+      color: #2a2a2a;
+    }
+
+    .radio-row {
+      display: flex;
+      align-items: center;
+      gap: 10px;
+      font-size: 13px;
+      color: #2a2a2a;
+    }
+
+    .radio-row label {
+      min-width: auto;
+    }
+
     .modal-actions {
       display: flex;
       justify-content: flex-end;
@@ -1403,6 +1427,22 @@
     .chart-svg {
       width: 100%;
       height: 100%;
+    }
+
+    .comparison-line {
+      position: absolute;
+      bottom: 12px;
+      left: 16px;
+      right: 16px;
+      background: rgba(255, 255, 255, 0.9);
+      border: 1px solid #cccccc;
+      border-radius: 4px;
+      padding: 6px 10px;
+      font-size: 12px;
+      color: #2a2a2a;
+      display: flex;
+      gap: 12px;
+      flex-wrap: wrap;
     }
 
     .summary-row {
@@ -1451,6 +1491,57 @@
       border: 1px solid #cccccc;
       border-radius: 4px;
       overflow: hidden;
+    }
+
+    .results-tabs {
+      display: flex;
+      gap: 6px;
+      margin-bottom: 12px;
+    }
+
+    .tab-btn {
+      padding: 6px 14px;
+      border-radius: 3px;
+      font-size: 13px;
+      cursor: pointer;
+      border: 1px solid #bbbbbb;
+      background: #e8e8e8;
+      color: #2a2a2a;
+      transition: all 0.2s ease;
+    }
+
+    .tab-btn.active {
+      background: #d4e9ff;
+      border-color: #4a90e2;
+      color: #1e5ea8;
+      font-weight: 600;
+    }
+
+    .table-card-header .table-header-left {
+      display: flex;
+      flex-direction: column;
+      gap: 4px;
+    }
+
+    .test-results-controls {
+      display: flex;
+      align-items: center;
+      gap: 8px;
+    }
+
+    .test-results-controls label {
+      min-width: auto;
+      font-size: 12px;
+      color: #555;
+    }
+
+    .test-results-controls select {
+      min-width: 220px;
+    }
+
+    .baseline-label {
+      font-size: 12px;
+      color: #555;
     }
 
     .table-card-header {

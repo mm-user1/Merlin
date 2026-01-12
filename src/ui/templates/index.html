@@ -646,6 +646,39 @@
             <h2>Optimizer Run</h2>
           </div>
           <div class="content">
+            <div class="collapsible" id="postProcessSection">
+              <div class="collapsible-header">
+                <span class="collapsible-icon">¢-?</span>
+                <span class="section-title" style="margin: 0; border: none;">POST PROCESS</span>
+              </div>
+              <div class="collapsible-content">
+                <div class="form-group">
+                  <div class="checkbox-group">
+                    <input type="checkbox" id="enablePostProcess" />
+                    <label for="enablePostProcess"><strong>Enable Forward Test</strong></label>
+                  </div>
+                </div>
+
+                <div class="form-group">
+                  <label for="ftPeriodDays">Forward Test Period (days):</label>
+                  <input type="number" id="ftPeriodDays" value="30" min="1" max="3650" style="width: 100px;" />
+                </div>
+
+                <div class="form-group">
+                  <label for="ftTopK">Top Candidates:</label>
+                  <input type="number" id="ftTopK" value="20" min="1" max="10000" style="width: 100px;" />
+                </div>
+
+                <div class="form-group">
+                  <label for="ftSortMetric">Sort FT Results By:</label>
+                  <select id="ftSortMetric" style="width: 200px;">
+                    <option value="profit_degradation" selected>Profit Degradation</option>
+                    <option value="ft_romad">FT RoMaD</option>
+                  </select>
+                </div>
+              </div>
+            </div>
+
             <!-- Walk-Forward Analysis Section -->
             <div class="wf-section" style="margin-top: 0; padding: 20px; border: 2px solid #3498db; border-radius: 8px; background-color: #f8f9fa;">
               <h3 style="color: #3498db; margin-bottom: 12px;">? Walk-Forward Analysis</h3>
@@ -728,6 +761,7 @@
   <script src="/static/js/optuna-ui.js"></script>
   <script src="/static/js/ui-handlers.js"></script>
   <script src="/static/js/presets.js"></script>
+  <script src="/static/js/post-process-ui.js"></script>
   <script src="/static/js/main.js"></script>
 </body>
 </html>

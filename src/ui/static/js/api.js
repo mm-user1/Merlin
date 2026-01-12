@@ -121,6 +121,47 @@ async function updateStudyCsvPathRequest(studyId, formData) {
   return response.json();
 }
 
+async function runManualTestRequest(studyId, payload) {
+  const response = await fetch(`/api/studies/${encodeURIComponent(studyId)}/test`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(payload)
+  });
+  if (!response.ok) {
+    const message = await response.text();
+    throw new Error(message || 'Manual test failed.');
+  }
+  return response.json();
+}
+
+async function fetchManualTestsList(studyId) {
+  const response = await fetch(`/api/studies/${encodeURIComponent(studyId)}/tests`);
+  if (!response.ok) {
+    const message = await response.text();
+    throw new Error(message || 'Failed to fetch manual tests.');
+  }
+  return response.json();
+}
+
+async function fetchManualTestResults(studyId, testId) {
+  const response = await fetch(`/api/studies/${encodeURIComponent(studyId)}/tests/${encodeURIComponent(testId)}`);
+  if (!response.ok) {
+    const message = await response.text();
+    throw new Error(message || 'Failed to fetch manual test.');
+  }
+  return response.json();
+}
+
+async function deleteManualTestRequest(studyId, testId) {
+  const response = await fetch(`/api/studies/${encodeURIComponent(studyId)}/tests/${encodeURIComponent(testId)}`, {
+    method: 'DELETE'
+  });
+  if (!response.ok) {
+    const message = await response.text();
+    throw new Error(message || 'Failed to delete manual test.');
+  }
+}
+
 async function cancelOptimizationRequest() {
   const response = await fetch('/api/optimization/cancel', { method: 'POST' });
   if (!response.ok) {

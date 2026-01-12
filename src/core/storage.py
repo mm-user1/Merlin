@@ -112,6 +112,14 @@ def _create_schema(conn: sqlite3.Connection) -> None:
             dataset_end_date TEXT,
             warmup_bars INTEGER,
 
+            ft_enabled INTEGER DEFAULT 0,
+            ft_period_days INTEGER,
+            ft_top_k INTEGER,
+            ft_sort_metric TEXT,
+            ft_start_date TEXT,
+            ft_end_date TEXT,
+            is_period_days INTEGER,
+
             created_at TEXT DEFAULT (datetime('now')),
             completed_at TEXT,
 
@@ -158,6 +166,20 @@ def _create_schema(conn: sqlite3.Connection) -> None:
 
             composite_score REAL,
 
+            ft_net_profit_pct REAL,
+            ft_max_drawdown_pct REAL,
+            ft_total_trades INTEGER,
+            ft_win_rate REAL,
+            ft_sharpe_ratio REAL,
+            ft_sortino_ratio REAL,
+            ft_romad REAL,
+            ft_profit_factor REAL,
+            ft_ulcer_index REAL,
+            ft_sqn REAL,
+            ft_consistency_score REAL,
+            profit_degradation REAL,
+            ft_rank INTEGER,
+
             created_at TEXT DEFAULT (datetime('now')),
 
             UNIQUE(study_id, trial_number),
@@ -166,6 +188,32 @@ def _create_schema(conn: sqlite3.Connection) -> None:
 
         CREATE INDEX IF NOT EXISTS idx_trials_pareto ON trials(study_id, is_pareto_optimal);
         CREATE INDEX IF NOT EXISTS idx_trials_constraints ON trials(study_id, constraints_satisfied);
+
+        CREATE TABLE IF NOT EXISTS manual_tests (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            study_id TEXT NOT NULL,
+            created_at TEXT DEFAULT (datetime('now')),
+
+            test_name TEXT,
+            data_source TEXT NOT NULL,
+            csv_path TEXT,
+            start_date TEXT NOT NULL,
+            end_date TEXT NOT NULL,
+
+            source_tab TEXT NOT NULL,
+
+            trials_count INTEGER NOT NULL,
+            trials_tested_csv TEXT NOT NULL,
+            best_profit_degradation REAL,
+            worst_profit_degradation REAL,
+
+            results_json TEXT NOT NULL,
+
+            FOREIGN KEY (study_id) REFERENCES studies(study_id) ON DELETE CASCADE
+        );
+
+        CREATE INDEX IF NOT EXISTS idx_manual_tests_study ON manual_tests(study_id);
+        CREATE INDEX IF NOT EXISTS idx_manual_tests_created ON manual_tests(created_at DESC);
 
         CREATE TABLE IF NOT EXISTS wfa_windows (
             window_id TEXT PRIMARY KEY,
@@ -412,6 +460,14 @@ def save_optuna_study_to_db(
     if optuna_config is not None:
         config_payload["optuna_config"] = _safe_dict(optuna_config)
 
+    ft_enabled = int(getattr(config, "ft_enabled", 0) or 0)
+    ft_period_days = getattr(config, "ft_period_days", None)
+    ft_top_k = getattr(config, "ft_top_k", None)
+    ft_sort_metric = getattr(config, "ft_sort_metric", None)
+    ft_start_date = getattr(config, "ft_start_date", None)
+    ft_end_date = getattr(config, "ft_end_date", None)
+    is_period_days = getattr(config, "is_period_days", None)
+
     with get_db_connection() as conn:
         try:
             conn.execute("BEGIN TRANSACTION")
@@ -429,10 +485,12 @@ def save_optuna_study_to_db(
                     score_config_json, config_json,
                     csv_file_path, csv_file_name,
                     dataset_start_date, dataset_end_date, warmup_bars,
+                    ft_enabled, ft_period_days, ft_top_k, ft_sort_metric,
+                    ft_start_date, ft_end_date, is_period_days,
                     completed_at,
                     filter_min_profit, min_profit_threshold,
                     sanitize_enabled, sanitize_trades_threshold
-                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """,
                 (
                     study_id,
@@ -467,6 +525,13 @@ def save_optuna_study_to_db(
                     _format_date(start_date),
                     _format_date(end_date),
                     getattr(config, "warmup_bars", None),
+                    ft_enabled,
+                    ft_period_days,
+                    ft_top_k,
+                    ft_sort_metric,
+                    _format_date(ft_start_date),
+                    _format_date(ft_end_date),
+                    is_period_days,
                     datetime.utcnow().isoformat() + "Z",
                     1 if getattr(config, "filter_min_profit", False) else 0,
                     getattr(config, "min_profit_threshold", None)
@@ -520,6 +585,19 @@ def save_optuna_study_to_db(
                         result.sqn,
                         result.consistency_score,
                         result.score,
+                        None,
+                        None,
+                        None,
+                        None,
+                        None,
+                        None,
+                        None,
+                        None,
+                        None,
+                        None,
+                        None,
+                        None,
+                        None,
                     )
                 )
 
@@ -533,8 +611,11 @@ def save_optuna_study_to_db(
                         net_profit_pct, max_drawdown_pct, total_trades, win_rate, avg_win, avg_loss,
                         gross_profit, gross_loss,
                         romad, sharpe_ratio, sortino_ratio, profit_factor, ulcer_index, sqn,
-                        consistency_score, composite_score
-                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                        consistency_score, composite_score,
+                        ft_net_profit_pct, ft_max_drawdown_pct, ft_total_trades, ft_win_rate,
+                        ft_sharpe_ratio, ft_sortino_ratio, ft_romad, ft_profit_factor,
+                        ft_ulcer_index, ft_sqn, ft_consistency_score, profit_degradation, ft_rank
+                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                     """,
                     trial_rows,
                 )
@@ -760,6 +841,7 @@ def load_study_from_db(study_id: str) -> Optional[Dict]:
 
         trials: List[Dict] = []
         windows: List[Dict] = []
+        manual_tests: List[Dict] = []
 
         if study.get("optimization_mode") == "optuna":
             cursor = conn.execute(
@@ -847,10 +929,25 @@ def load_study_from_db(study_id: str) -> Optional[Dict]:
                     window["is_equity_curve"] = json.loads(window["is_equity_curve"])
                 windows.append(window)
 
+        cursor = conn.execute(
+            """
+            SELECT
+                id, study_id, created_at, test_name, data_source, csv_path,
+                start_date, end_date, source_tab, trials_count, trials_tested_csv,
+                best_profit_degradation, worst_profit_degradation
+            FROM manual_tests
+            WHERE study_id = ?
+            ORDER BY created_at DESC
+            """,
+            (study_id,),
+        )
+        manual_tests = [dict(row) for row in cursor.fetchall()]
+
     return {
         "study": study,
         "trials": trials,
         "windows": windows,
+        "manual_tests": manual_tests,
         "csv_exists": csv_exists,
     }
 
@@ -894,6 +991,211 @@ def update_study_status(study_id: str, status: str, error_message: Optional[str]
             WHERE study_id = ?
             """,
             (datetime.utcnow().isoformat() + "Z", study_id),
+        )
+        conn.commit()
+        return cursor.rowcount > 0
+
+
+def update_study_config_json(study_id: str, config_json: Dict[str, Any]) -> bool:
+    if not isinstance(config_json, dict):
+        return False
+    with get_db_connection() as conn:
+        cursor = conn.execute(
+            """
+            UPDATE studies
+            SET config_json = ?
+            WHERE study_id = ?
+            """,
+            (json.dumps(config_json), study_id),
+        )
+        conn.commit()
+        return cursor.rowcount > 0
+
+
+def save_forward_test_results(
+    study_id: str,
+    ft_results: List[Any],
+    *,
+    ft_enabled: bool,
+    ft_period_days: Optional[int],
+    ft_top_k: Optional[int],
+    ft_sort_metric: Optional[str],
+    ft_start_date: Optional[str],
+    ft_end_date: Optional[str],
+    is_period_days: Optional[int],
+) -> bool:
+    if not study_id:
+        return False
+
+    with get_db_connection() as conn:
+        try:
+            conn.execute("BEGIN TRANSACTION")
+            conn.execute(
+                """
+                UPDATE studies
+                SET
+                    ft_enabled = ?,
+                    ft_period_days = ?,
+                    ft_top_k = ?,
+                    ft_sort_metric = ?,
+                    ft_start_date = ?,
+                    ft_end_date = ?,
+                    is_period_days = ?
+                WHERE study_id = ?
+                """,
+                (
+                    1 if ft_enabled else 0,
+                    ft_period_days,
+                    ft_top_k,
+                    ft_sort_metric,
+                    _format_date(ft_start_date),
+                    _format_date(ft_end_date),
+                    is_period_days,
+                    study_id,
+                ),
+            )
+
+            if ft_results:
+                rows = []
+                for result in ft_results:
+                    payload = result
+                    if hasattr(result, "__dict__"):
+                        payload = result.__dict__
+                    rows.append(
+                        (
+                            payload.get("ft_net_profit_pct"),
+                            payload.get("ft_max_drawdown_pct"),
+                            payload.get("ft_total_trades"),
+                            payload.get("ft_win_rate"),
+                            payload.get("ft_sharpe_ratio"),
+                            payload.get("ft_sortino_ratio"),
+                            payload.get("ft_romad"),
+                            payload.get("ft_profit_factor"),
+                            payload.get("ft_ulcer_index"),
+                            payload.get("ft_sqn"),
+                            payload.get("ft_consistency_score"),
+                            payload.get("profit_degradation"),
+                            payload.get("ft_rank"),
+                            study_id,
+                            payload.get("trial_number"),
+                        )
+                    )
+
+                conn.executemany(
+                    """
+                    UPDATE trials
+                    SET
+                        ft_net_profit_pct = ?,
+                        ft_max_drawdown_pct = ?,
+                        ft_total_trades = ?,
+                        ft_win_rate = ?,
+                        ft_sharpe_ratio = ?,
+                        ft_sortino_ratio = ?,
+                        ft_romad = ?,
+                        ft_profit_factor = ?,
+                        ft_ulcer_index = ?,
+                        ft_sqn = ?,
+                        ft_consistency_score = ?,
+                        profit_degradation = ?,
+                        ft_rank = ?
+                    WHERE study_id = ? AND trial_number = ?
+                    """,
+                    rows,
+                )
+
+            conn.execute("COMMIT")
+        except Exception as exc:
+            conn.execute("ROLLBACK")
+            raise RuntimeError(f"Failed to save FT results: {exc}")
+
+    return True
+
+
+def save_manual_test_to_db(
+    *,
+    study_id: str,
+    test_name: Optional[str],
+    data_source: str,
+    csv_path: Optional[str],
+    start_date: str,
+    end_date: str,
+    source_tab: str,
+    trials_count: int,
+    trials_tested_csv: str,
+    best_profit_degradation: Optional[float],
+    worst_profit_degradation: Optional[float],
+    results_json: Dict[str, Any],
+) -> int:
+    with get_db_connection() as conn:
+        cursor = conn.execute(
+            """
+            INSERT INTO manual_tests (
+                study_id, test_name, data_source, csv_path,
+                start_date, end_date, source_tab,
+                trials_count, trials_tested_csv,
+                best_profit_degradation, worst_profit_degradation,
+                results_json
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            """,
+            (
+                study_id,
+                test_name,
+                data_source,
+                csv_path,
+                start_date,
+                end_date,
+                source_tab,
+                trials_count,
+                trials_tested_csv,
+                best_profit_degradation,
+                worst_profit_degradation,
+                json.dumps(results_json),
+            ),
+        )
+        conn.commit()
+        return int(cursor.lastrowid)
+
+
+def list_manual_tests(study_id: str) -> List[Dict[str, Any]]:
+    with get_db_connection() as conn:
+        cursor = conn.execute(
+            """
+            SELECT
+                id, study_id, created_at, test_name, data_source, csv_path,
+                start_date, end_date, source_tab, trials_count, trials_tested_csv,
+                best_profit_degradation, worst_profit_degradation
+            FROM manual_tests
+            WHERE study_id = ?
+            ORDER BY created_at DESC
+            """,
+            (study_id,),
+        )
+        return [dict(row) for row in cursor.fetchall()]
+
+
+def load_manual_test_results(study_id: str, test_id: int) -> Optional[Dict[str, Any]]:
+    with get_db_connection() as conn:
+        cursor = conn.execute(
+            "SELECT * FROM manual_tests WHERE study_id = ? AND id = ?",
+            (study_id, int(test_id)),
+        )
+        row = cursor.fetchone()
+        if not row:
+            return None
+        payload = dict(row)
+        if payload.get("results_json"):
+            try:
+                payload["results_json"] = json.loads(payload["results_json"])
+            except json.JSONDecodeError:
+                pass
+        return payload
+
+
+def delete_manual_test(study_id: str, test_id: int) -> bool:
+    with get_db_connection() as conn:
+        cursor = conn.execute(
+            "DELETE FROM manual_tests WHERE study_id = ? AND id = ?",
+            (study_id, int(test_id)),
         )
         conn.commit()
         return cursor.rowcount > 0

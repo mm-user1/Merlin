@@ -829,7 +829,10 @@ function buildOptunaConfig(state) {
   const sanitizeConfig = window.OptunaUI
     ? window.OptunaUI.collectSanitizeConfig()
     : { sanitize_enabled: true, sanitize_trades_threshold: 0 };
-  const selectedObjectives = objectiveConfig.objectives || [];
+    const selectedObjectives = objectiveConfig.objectives || [];
+    const postProcessConfig = window.PostProcessUI
+      ? window.PostProcessUI.collectConfig()
+      : { enabled: false, ftPeriodDays: 30, topK: 20, sortMetric: 'profit_degradation' };
 
   return {
     ...baseConfig,
@@ -847,13 +850,14 @@ function buildOptunaConfig(state) {
     primary_objective: objectiveConfig.primary_objective,
     constraints,
     sanitize_enabled: sanitizeConfig.sanitize_enabled,
-    sanitize_trades_threshold: sanitizeConfig.sanitize_trades_threshold,
-    population_size: normalizedPopulation,
-    crossover_prob: normalizedCrossover,
-    mutation_prob: normalizedMutation,
-    swapping_prob: normalizedSwapping
-  };
-}
+      sanitize_trades_threshold: sanitizeConfig.sanitize_trades_threshold,
+      population_size: normalizedPopulation,
+      crossover_prob: normalizedCrossover,
+      mutation_prob: normalizedMutation,
+      swapping_prob: normalizedSwapping,
+      postProcess: postProcessConfig
+    };
+  }
 function clearWFResults() {
   const wfStatusEl = document.getElementById('wfStatus');
   if (wfStatusEl) {

@@ -27,12 +27,26 @@ from core.optuna_engine import (
     OptimizationResult,
     run_optimization,
 )
+from core.post_process import (
+    PostProcessConfig,
+    calculate_comparison_metrics,
+    calculate_ft_dates,
+    calculate_is_period_days,
+    run_forward_test,
+    _parse_timestamp as _parse_pp_timestamp,
+)
 from core.storage import (
+    delete_manual_test,
     delete_study,
     get_study_trial,
+    list_manual_tests,
     list_studies,
+    load_manual_test_results,
     load_study_from_db,
+    save_forward_test_results,
+    save_manual_test_to_db,
     update_csv_path,
+    update_study_config_json,
 )
 
 app = Flask(
@@ -766,6 +780,256 @@ def update_study_csv_path_endpoint(study_id: str) -> object:
     return jsonify({"status": "updated", "warnings": warnings, "csv_file_path": new_path})
 
 
+@app.post("/api/studies/<string:study_id>/test")
+def run_manual_test_endpoint(study_id: str) -> object:
+    payload = request.get_json(silent=True) if request.is_json else None
+    if not isinstance(payload, dict):
+        return jsonify({"error": "Invalid manual test payload."}), HTTPStatus.BAD_REQUEST
+
+    data_source = payload.get("dataSource")
+    csv_path = payload.get("csvPath")
+    start_date = payload.get("startDate")
+    end_date = payload.get("endDate")
+    trial_numbers = payload.get("trialNumbers") or []
+    source_tab = payload.get("sourceTab")
+    test_name = payload.get("testName")
+
+    if data_source not in {"original_csv", "new_csv"}:
+        return jsonify({"error": "dataSource must be 'original_csv' or 'new_csv'."}), HTTPStatus.BAD_REQUEST
+    if source_tab not in {"optuna", "forward_test"}:
+        return jsonify({"error": "sourceTab must be 'optuna' or 'forward_test'."}), HTTPStatus.BAD_REQUEST
+    if not start_date or not end_date:
+        return jsonify({"error": "startDate and endDate are required."}), HTTPStatus.BAD_REQUEST
+    if not isinstance(trial_numbers, list) or not trial_numbers:
+        return jsonify({"error": "trialNumbers must be a non-empty array."}), HTTPStatus.BAD_REQUEST
+
+    study_data = load_study_from_db(study_id)
+    if not study_data:
+        return jsonify({"error": "Study not found."}), HTTPStatus.NOT_FOUND
+    study = study_data["study"]
+    if study.get("optimization_mode") != "optuna":
+        return jsonify({"error": "Manual tests are supported only for Optuna studies."}), HTTPStatus.BAD_REQUEST
+
+    if data_source == "original_csv":
+        csv_path = study.get("csv_file_path")
+        if not csv_path:
+            return jsonify({"error": "Original CSV path is missing."}), HTTPStatus.BAD_REQUEST
+    elif not csv_path:
+        return jsonify({"error": "csvPath is required when dataSource is 'new_csv'."}), HTTPStatus.BAD_REQUEST
+
+    if not csv_path or not Path(csv_path).exists():
+        return jsonify({"error": "CSV file not found."}), HTTPStatus.BAD_REQUEST
+
+    start_ts = _parse_pp_timestamp(start_date)
+    end_ts = _parse_pp_timestamp(end_date)
+    if start_ts is None or end_ts is None:
+        return jsonify({"error": "Invalid startDate/endDate."}), HTTPStatus.BAD_REQUEST
+
+    test_period_days = max(0, (end_ts - start_ts).days)
+    if test_period_days <= 0:
+        return jsonify({"error": "Test period must be at least 1 day."}), HTTPStatus.BAD_REQUEST
+
+    config = study.get("config_json") or {}
+    fixed_params = config.get("fixed_params") or {}
+    warmup_bars = study.get("warmup_bars") or config.get("warmup_bars") or 1000
+
+    trials = study_data.get("trials") or []
+    trial_map = {int(t.get("trial_number")): t for t in trials}
+    missing = [n for n in trial_numbers if int(n) not in trial_map]
+    if missing:
+        return jsonify({"error": f"Trials not found: {', '.join(map(str, missing))}."}), HTTPStatus.BAD_REQUEST
+
+    baseline_rank_map: Dict[int, int] = {}
+    if source_tab == "optuna":
+        for idx, trial in enumerate(trials, 1):
+            number = int(trial.get("trial_number") or 0)
+            if number:
+                baseline_rank_map[number] = idx
+    else:
+        for trial in trials:
+            number = int(trial.get("trial_number") or 0)
+            rank = trial.get("ft_rank")
+            if number and rank:
+                baseline_rank_map[number] = int(rank)
+        if not baseline_rank_map:
+            for idx, trial in enumerate(trials, 1):
+                number = int(trial.get("trial_number") or 0)
+                if number:
+                    baseline_rank_map[number] = idx
+
+    try:
+        df = load_data(csv_path)
+    except Exception as exc:
+        return jsonify({"error": str(exc)}), HTTPStatus.BAD_REQUEST
+
+    from strategies import get_strategy
+    from core import metrics
+
+    try:
+        strategy_class = get_strategy(study.get("strategy_id"))
+    except ValueError as exc:
+        return jsonify({"error": str(exc)}), HTTPStatus.BAD_REQUEST
+
+    baseline_period_days = None
+    if source_tab == "forward_test":
+        baseline_period_days = study.get("ft_period_days")
+    if baseline_period_days is None:
+        baseline_period_days = study.get("is_period_days")
+    if baseline_period_days is None:
+        baseline_period_days = calculate_is_period_days(config) or 0
+
+    results_payload: List[Dict[str, Any]] = []
+    for number in trial_numbers:
+        trial_number = int(number)
+        trial = trial_map[trial_number]
+
+        params = {**fixed_params, **(trial.get("params") or {})}
+        params["dateFilter"] = True
+        params["start"] = start_ts
+        params["end"] = end_ts
+
+        try:
+            df_prepared, trade_start_idx = prepare_dataset_with_warmup(
+                df, start_ts, end_ts, int(warmup_bars)
+            )
+        except Exception as exc:
+            return jsonify({"error": f"Failed to prepare dataset: {exc}"}), HTTPStatus.BAD_REQUEST
+
+        try:
+            result = strategy_class.run(df_prepared, params, trade_start_idx)
+        except Exception as exc:
+            return jsonify({"error": str(exc)}), HTTPStatus.BAD_REQUEST
+
+        basic = metrics.calculate_basic(result, 100.0)
+        advanced = metrics.calculate_advanced(result, 100.0)
+
+        test_metrics = {
+            "net_profit_pct": basic.net_profit_pct,
+            "max_drawdown_pct": basic.max_drawdown_pct,
+            "total_trades": basic.total_trades,
+            "win_rate": basic.win_rate,
+            "sharpe_ratio": advanced.sharpe_ratio,
+            "romad": advanced.romad,
+            "profit_factor": advanced.profit_factor,
+        }
+
+        if source_tab == "forward_test":
+            original_metrics = {
+                "net_profit_pct": trial.get("ft_net_profit_pct") or 0.0,
+                "max_drawdown_pct": trial.get("ft_max_drawdown_pct") or 0.0,
+                "total_trades": trial.get("ft_total_trades") or 0,
+                "win_rate": trial.get("ft_win_rate") or 0.0,
+                "sharpe_ratio": trial.get("ft_sharpe_ratio"),
+                "romad": trial.get("ft_romad"),
+                "profit_factor": trial.get("ft_profit_factor"),
+            }
+        else:
+            original_metrics = {
+                "net_profit_pct": trial.get("net_profit_pct") or 0.0,
+                "max_drawdown_pct": trial.get("max_drawdown_pct") or 0.0,
+                "total_trades": trial.get("total_trades") or 0,
+                "win_rate": trial.get("win_rate") or 0.0,
+                "sharpe_ratio": trial.get("sharpe_ratio"),
+                "romad": trial.get("romad"),
+                "profit_factor": trial.get("profit_factor"),
+            }
+
+        comparison = calculate_comparison_metrics(
+            original_metrics,
+            test_metrics,
+            int(baseline_period_days or 0),
+            int(test_period_days),
+        )
+
+        results_payload.append(
+            {
+                "trial_number": trial_number,
+                "original_metrics": original_metrics,
+                "test_metrics": test_metrics,
+                "comparison": comparison,
+            }
+        )
+
+    sorted_by_deg = sorted(
+        results_payload,
+        key=lambda item: float(item["comparison"].get("profit_degradation", 0.0)),
+        reverse=True,
+    )
+    for idx, item in enumerate(sorted_by_deg, 1):
+        trial_number = item.get("trial_number")
+        baseline_rank = baseline_rank_map.get(trial_number)
+        if baseline_rank is not None:
+            item["comparison"]["rank_change"] = baseline_rank - idx
+        else:
+            item["comparison"]["rank_change"] = None
+
+    degradations = [item["comparison"].get("profit_degradation", 0.0) for item in results_payload]
+    best_deg = max(degradations) if degradations else None
+    worst_deg = min(degradations) if degradations else None
+
+    results_json = {
+        "config": {
+            "data_source": data_source,
+            "csv_path": csv_path,
+            "start_date": start_date,
+            "end_date": end_date,
+            "period_days": int(test_period_days),
+        },
+        "results": results_payload,
+    }
+
+    trials_tested_csv = ",".join(str(int(n)) for n in trial_numbers)
+    test_id = save_manual_test_to_db(
+        study_id=study_id,
+        test_name=test_name,
+        data_source=data_source,
+        csv_path=csv_path,
+        start_date=start_date,
+        end_date=end_date,
+        source_tab=source_tab,
+        trials_count=len(results_payload),
+        trials_tested_csv=trials_tested_csv,
+        best_profit_degradation=best_deg,
+        worst_profit_degradation=worst_deg,
+        results_json=results_json,
+    )
+
+    return jsonify(
+        {
+            "status": "success",
+            "test_id": test_id,
+            "summary": {
+                "trials_count": len(results_payload),
+                "best_profit_degradation": best_deg,
+                "worst_profit_degradation": worst_deg,
+            },
+        }
+    )
+
+
+@app.get("/api/studies/<string:study_id>/tests")
+def list_manual_tests_endpoint(study_id: str) -> object:
+    if not study_id:
+        return jsonify({"error": "Study ID is required."}), HTTPStatus.BAD_REQUEST
+    return jsonify({"tests": list_manual_tests(study_id)})
+
+
+@app.get("/api/studies/<string:study_id>/tests/<int:test_id>")
+def get_manual_test_results_endpoint(study_id: str, test_id: int) -> object:
+    result = load_manual_test_results(study_id, test_id)
+    if not result:
+        return jsonify({"error": "Manual test not found."}), HTTPStatus.NOT_FOUND
+    return jsonify(result)
+
+
+@app.delete("/api/studies/<string:study_id>/tests/<int:test_id>")
+def delete_manual_test_endpoint(study_id: str, test_id: int) -> object:
+    deleted = delete_manual_test(study_id, test_id)
+    if not deleted:
+        return jsonify({"error": "Manual test not found."}), HTTPStatus.NOT_FOUND
+    return ("", HTTPStatus.NO_CONTENT)
+
+
 @app.post("/api/studies/<string:study_id>/trials/<int:trial_number>/trades")
 def download_trial_trades(study_id: str, trial_number: int) -> object:
     study_data = load_study_from_db(study_id)
@@ -1128,6 +1392,10 @@ def run_walkforward_optimization() -> object:
     except json.JSONDecodeError:
         return jsonify({"error": "Invalid optimization config JSON."}), HTTPStatus.BAD_REQUEST
 
+    post_process_payload = config_payload.get("postProcess")
+    if not isinstance(post_process_payload, dict):
+        post_process_payload = {}
+
     objectives = config_payload.get("objectives", [])
     primary_objective = config_payload.get("primary_objective")
     valid, error = validate_objectives_config(objectives, primary_objective)
@@ -1282,6 +1550,8 @@ def run_walkforward_optimization() -> object:
         "swapping_prob": getattr(optimization_config, "swapping_prob", None),
         "n_startup_trials": getattr(optimization_config, "n_startup_trials", 20),
     }
+    if post_process_payload:
+        base_template["postProcess"] = post_process_payload
 
     optuna_settings = {
         "objectives": list(getattr(optimization_config, "objectives", []) or []),
@@ -1313,11 +1583,22 @@ def run_walkforward_optimization() -> object:
 
     from core.walkforward_engine import WFConfig, WalkForwardEngine
 
+    post_process_config = None
+    if post_process_payload.get("enabled"):
+        post_process_config = PostProcessConfig(
+            enabled=True,
+            ft_period_days=int(post_process_payload.get("ftPeriodDays", 15)),
+            top_k=int(post_process_payload.get("topK", 5)),
+            sort_metric=str(post_process_payload.get("sortMetric", "profit_degradation")),
+            warmup_bars=warmup_bars,
+        )
+
     wf_config = WFConfig(
         is_period_days=is_period_days,
         oos_period_days=oos_period_days,
         warmup_bars=warmup_bars,
         strategy_id=strategy_id,
+        post_process=post_process_config,
     )
     engine = WalkForwardEngine(wf_config, base_template, optuna_settings, csv_file_path=data_path)
 
@@ -2022,6 +2303,10 @@ def run_optimization_endpoint() -> object:
     except json.JSONDecodeError:
         return ("Invalid optimization config JSON.", HTTPStatus.BAD_REQUEST)
 
+    post_process_payload = config_payload.get("postProcess")
+    if not isinstance(post_process_payload, dict):
+        post_process_payload = {}
+
     objectives = config_payload.get("objectives", [])
     primary_objective = config_payload.get("primary_objective")
     valid, error = validate_objectives_config(objectives, primary_objective)
@@ -2059,6 +2344,49 @@ def run_optimization_endpoint() -> object:
         warmup_bars = max(100, min(5000, warmup_bars))
     except (TypeError, ValueError):
         warmup_bars = 1000
+
+    ft_enabled = bool(post_process_payload.get("enabled", False))
+    ft_start = None
+    ft_end = None
+    is_days = None
+    ft_days = None
+
+    if ft_enabled:
+        fixed_params_payload = config_payload.get("fixed_params") or {}
+        config_payload["fixed_params"] = fixed_params_payload
+
+        original_user_start = fixed_params_payload.get("start")
+        original_user_end = fixed_params_payload.get("end")
+        user_start = _parse_pp_timestamp(original_user_start)
+        user_end = _parse_pp_timestamp(original_user_end)
+
+        if user_start is None or user_end is None:
+            try:
+                df_temp = load_data(data_source)
+            except Exception as exc:
+                return (f"Failed to load CSV for FT split: {exc}", HTTPStatus.BAD_REQUEST)
+            user_start = df_temp.index.min()
+            user_end = df_temp.index.max()
+
+        if user_start is None or user_end is None:
+            return ("Failed to determine FT date range.", HTTPStatus.BAD_REQUEST)
+
+        try:
+            ft_period_days = int(post_process_payload.get("ftPeriodDays", 30))
+        except (TypeError, ValueError):
+            return ("Invalid FT period days.", HTTPStatus.BAD_REQUEST)
+
+        try:
+            is_end, ft_start, ft_end, is_days, ft_days = calculate_ft_dates(
+                user_start, user_end, ft_period_days
+            )
+        except ValueError as exc:
+            return (str(exc), HTTPStatus.BAD_REQUEST)
+
+        fixed_params_payload["dateFilter"] = True
+        if not fixed_params_payload.get("start"):
+            fixed_params_payload["start"] = user_start.isoformat()
+        fixed_params_payload["end"] = is_end.isoformat()
 
     try:
         worker_processes_raw = config_payload.get("worker_processes")
@@ -2100,6 +2428,14 @@ def run_optimization_endpoint() -> object:
         return ("Failed to prepare optimization config.", HTTPStatus.INTERNAL_SERVER_ERROR)
 
     optimization_config.csv_original_name = source_name
+    optimization_config.ft_enabled = ft_enabled
+    if ft_enabled:
+        optimization_config.ft_period_days = ft_days
+        optimization_config.ft_top_k = int(post_process_payload.get("topK", 20))
+        optimization_config.ft_sort_metric = post_process_payload.get("sortMetric", "profit_degradation")
+        optimization_config.ft_start_date = ft_start.strftime("%Y-%m-%d") if ft_start else None
+        optimization_config.ft_end_date = ft_end.strftime("%Y-%m-%d") if ft_end else None
+        optimization_config.is_period_days = is_days
 
     _set_optimization_state({
         "status": "running",
@@ -2199,6 +2535,44 @@ def run_optimization_endpoint() -> object:
         })
         app.logger.exception("Optimization run failed")
         return ("Optimization execution failed.", HTTPStatus.INTERNAL_SERVER_ERROR)
+
+    if study_id:
+        study_data = load_study_from_db(study_id) or {}
+        config_json = (study_data.get("study") or {}).get("config_json") or {}
+        if post_process_payload:
+            config_json["postProcess"] = post_process_payload
+            update_study_config_json(study_id, config_json)
+
+    if ft_enabled and study_id:
+        pp_config = PostProcessConfig(
+            enabled=True,
+            ft_period_days=int(ft_days or 0),
+            top_k=int(post_process_payload.get("topK", 20)),
+            sort_metric=str(post_process_payload.get("sortMetric", "profit_degradation")),
+            warmup_bars=warmup_bars,
+        )
+        ft_results = run_forward_test(
+            csv_path=data_path,
+            strategy_id=strategy_id,
+            optuna_results=results,
+            config=pp_config,
+            is_period_days=int(is_days or 0),
+            ft_period_days=int(ft_days or 0),
+            ft_start_date=ft_start.strftime("%Y-%m-%d") if ft_start else "",
+            ft_end_date=ft_end.strftime("%Y-%m-%d") if ft_end else "",
+            n_workers=worker_processes,
+        )
+        save_forward_test_results(
+            study_id,
+            ft_results,
+            ft_enabled=True,
+            ft_period_days=int(ft_days or 0),
+            ft_top_k=int(post_process_payload.get("topK", 20)),
+            ft_sort_metric=str(post_process_payload.get("sortMetric", "profit_degradation")),
+            ft_start_date=ft_start.strftime("%Y-%m-%d") if ft_start else None,
+            ft_end_date=ft_end.strftime("%Y-%m-%d") if ft_end else None,
+            is_period_days=int(is_days or 0),
+        )
 
     _set_optimization_state(
         {

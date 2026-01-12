@@ -1,0 +1,76 @@
+(function () {
+  function getPostProcessElements() {
+    return {
+      enable: document.getElementById('enablePostProcess'),
+      period: document.getElementById('ftPeriodDays'),
+      topK: document.getElementById('ftTopK'),
+      sortMetric: document.getElementById('ftSortMetric')
+    };
+  }
+
+  function normalizeInt(value, fallback, min, max) {
+    const parsed = Number(value);
+    if (!Number.isFinite(parsed)) return fallback;
+    const rounded = Math.round(parsed);
+    if (min !== undefined && rounded < min) return min;
+    if (max !== undefined && rounded > max) return max;
+    return rounded;
+  }
+
+  function syncPostProcessUI() {
+    const { enable, period, topK, sortMetric } = getPostProcessElements();
+    if (!enable) return;
+    const disabled = !enable.checked;
+    if (period) period.disabled = disabled;
+    if (topK) topK.disabled = disabled;
+    if (sortMetric) sortMetric.disabled = disabled;
+  }
+
+  function collectConfig() {
+    const { enable, period, topK, sortMetric } = getPostProcessElements();
+    const enabled = Boolean(enable && enable.checked);
+    return {
+      enabled,
+      ftPeriodDays: normalizeInt(period?.value, 30, 1, 3650),
+      topK: normalizeInt(topK?.value, 20, 1, 10000),
+      sortMetric: sortMetric?.value || 'profit_degradation'
+    };
+  }
+
+  function bind() {
+    const { enable } = getPostProcessElements();
+    if (enable) {
+      enable.addEventListener('change', syncPostProcessUI);
+    }
+    syncPostProcessUI();
+  }
+
+  function buildComparisonMetrics(trial) {
+    const isNet = Number(trial.net_profit_pct || 0);
+    const ftNet = Number(trial.ft_net_profit_pct || 0);
+    const isDd = Number(trial.max_drawdown_pct || 0);
+    const ftDd = Number(trial.ft_max_drawdown_pct || 0);
+    const isRomad = Number(trial.romad || 0);
+    const ftRomad = Number(trial.ft_romad || 0);
+    const isSharpe = Number(trial.sharpe_ratio || 0);
+    const ftSharpe = Number(trial.ft_sharpe_ratio || 0);
+    const isPf = Number(trial.profit_factor || 0);
+    const ftPf = Number(trial.ft_profit_factor || 0);
+
+    return {
+      profit_degradation: trial.profit_degradation,
+      max_dd_change: ftDd - isDd,
+      romad_change: ftRomad - isRomad,
+      sharpe_change: ftSharpe - isSharpe,
+      pf_change: ftPf - isPf,
+      is_net_profit_pct: isNet,
+      ft_net_profit_pct: ftNet
+    };
+  }
+
+  window.PostProcessUI = {
+    bind,
+    collectConfig,
+    buildComparisonMetrics
+  };
+})();
