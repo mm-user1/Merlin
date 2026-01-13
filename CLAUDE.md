@@ -30,7 +30,7 @@ pytest tests/ -v
 ```bash
 pip install -r requirements.txt
 ```
-Key: Flask, pandas, numpy, matplotlib, optuna==4.4.0
+Key: Flask, pandas, numpy, matplotlib, optuna==4.6.0
 
 ## Architecture
 

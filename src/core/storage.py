@@ -120,6 +120,12 @@ def _create_schema(conn: sqlite3.Connection) -> None:
             ft_end_date TEXT,
             is_period_days INTEGER,
 
+            dsr_enabled INTEGER DEFAULT 0,
+            dsr_top_k INTEGER,
+            dsr_n_trials INTEGER,
+            dsr_mean_sharpe REAL,
+            dsr_var_sharpe REAL,
+
             created_at TEXT DEFAULT (datetime('now')),
             completed_at TEXT,
 
@@ -179,6 +185,13 @@ def _create_schema(conn: sqlite3.Connection) -> None:
             ft_consistency_score REAL,
             profit_degradation REAL,
             ft_rank INTEGER,
+
+            dsr_probability REAL,
+            dsr_rank INTEGER,
+            dsr_skewness REAL,
+            dsr_kurtosis REAL,
+            dsr_track_length INTEGER,
+            dsr_luck_share_pct REAL,
 
             created_at TEXT DEFAULT (datetime('now')),
 
@@ -248,6 +261,28 @@ def _create_schema(conn: sqlite3.Connection) -> None:
         CREATE INDEX IF NOT EXISTS idx_wfa_windows_number ON wfa_windows(study_id, window_number);
         """
     )
+    _ensure_columns(conn)
+
+
+def _ensure_columns(conn: sqlite3.Connection) -> None:
+    def ensure(table: str, column: str, definition: str) -> None:
+        cursor = conn.execute(f"PRAGMA table_info({table})")
+        existing = {row["name"] for row in cursor.fetchall()}
+        if column not in existing:
+            conn.execute(f"ALTER TABLE {table} ADD COLUMN {column} {definition}")
+
+    ensure("studies", "dsr_enabled", "INTEGER DEFAULT 0")
+    ensure("studies", "dsr_top_k", "INTEGER")
+    ensure("studies", "dsr_n_trials", "INTEGER")
+    ensure("studies", "dsr_mean_sharpe", "REAL")
+    ensure("studies", "dsr_var_sharpe", "REAL")
+
+    ensure("trials", "dsr_probability", "REAL")
+    ensure("trials", "dsr_rank", "INTEGER")
+    ensure("trials", "dsr_skewness", "REAL")
+    ensure("trials", "dsr_kurtosis", "REAL")
+    ensure("trials", "dsr_track_length", "INTEGER")
+    ensure("trials", "dsr_luck_share_pct", "REAL")
 
 
 @contextmanager
@@ -1107,6 +1142,100 @@ def save_forward_test_results(
         except Exception as exc:
             conn.execute("ROLLBACK")
             raise RuntimeError(f"Failed to save FT results: {exc}")
+
+    return True
+
+
+def save_dsr_results(
+    study_id: str,
+    dsr_results: List[Any],
+    *,
+    dsr_enabled: bool,
+    dsr_top_k: Optional[int],
+    dsr_n_trials: Optional[int],
+    dsr_mean_sharpe: Optional[float],
+    dsr_var_sharpe: Optional[float],
+) -> bool:
+    if not study_id:
+        return False
+
+    with get_db_connection() as conn:
+        try:
+            conn.execute("BEGIN TRANSACTION")
+            conn.execute(
+                """
+                UPDATE studies
+                SET
+                    dsr_enabled = ?,
+                    dsr_top_k = ?,
+                    dsr_n_trials = ?,
+                    dsr_mean_sharpe = ?,
+                    dsr_var_sharpe = ?
+                WHERE study_id = ?
+                """,
+                (
+                    1 if dsr_enabled else 0,
+                    dsr_top_k,
+                    dsr_n_trials,
+                    dsr_mean_sharpe,
+                    dsr_var_sharpe,
+                    study_id,
+                ),
+            )
+
+            conn.execute(
+                """
+                UPDATE trials
+                SET
+                    dsr_probability = NULL,
+                    dsr_rank = NULL,
+                    dsr_skewness = NULL,
+                    dsr_kurtosis = NULL,
+                    dsr_track_length = NULL,
+                    dsr_luck_share_pct = NULL
+                WHERE study_id = ?
+                """,
+                (study_id,),
+            )
+
+            if dsr_results:
+                rows = []
+                for result in dsr_results:
+                    payload = result
+                    if hasattr(result, "__dict__"):
+                        payload = result.__dict__
+                    rows.append(
+                        (
+                            payload.get("dsr_probability"),
+                            payload.get("dsr_rank"),
+                            payload.get("dsr_skewness"),
+                            payload.get("dsr_kurtosis"),
+                            payload.get("dsr_track_length"),
+                            payload.get("dsr_luck_share_pct"),
+                            study_id,
+                            payload.get("trial_number"),
+                        )
+                    )
+
+                conn.executemany(
+                    """
+                    UPDATE trials
+                    SET
+                        dsr_probability = ?,
+                        dsr_rank = ?,
+                        dsr_skewness = ?,
+                        dsr_kurtosis = ?,
+                        dsr_track_length = ?,
+                        dsr_luck_share_pct = ?
+                    WHERE study_id = ? AND trial_number = ?
+                    """,
+                    rows,
+                )
+
+            conn.execute("COMMIT")
+        except Exception as exc:
+            conn.execute("ROLLBACK")
+            raise RuntimeError(f"Failed to save DSR results: {exc}")
 
     return True
 

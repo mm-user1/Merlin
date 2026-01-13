@@ -4,7 +4,11 @@
       enable: document.getElementById('enablePostProcess'),
       period: document.getElementById('ftPeriodDays'),
       topK: document.getElementById('ftTopK'),
-      sortMetric: document.getElementById('ftSortMetric')
+      sortMetric: document.getElementById('ftSortMetric'),
+      ftSettings: document.getElementById('ftSettings'),
+      dsrEnable: document.getElementById('enableDSR'),
+      dsrTopK: document.getElementById('dsrTopK'),
+      dsrSettings: document.getElementById('dsrSettings')
     };
   }
 
@@ -18,29 +22,51 @@
   }
 
   function syncPostProcessUI() {
-    const { enable, period, topK, sortMetric } = getPostProcessElements();
-    if (!enable) return;
-    const disabled = !enable.checked;
-    if (period) period.disabled = disabled;
-    if (topK) topK.disabled = disabled;
-    if (sortMetric) sortMetric.disabled = disabled;
+    const {
+      enable,
+      period,
+      topK,
+      sortMetric,
+      ftSettings,
+      dsrEnable,
+      dsrTopK,
+      dsrSettings
+    } = getPostProcessElements();
+    if (enable) {
+      const disabled = !enable.checked;
+      if (period) period.disabled = disabled;
+      if (topK) topK.disabled = disabled;
+      if (sortMetric) sortMetric.disabled = disabled;
+      if (ftSettings) ftSettings.style.display = disabled ? 'none' : 'block';
+    }
+    if (dsrEnable) {
+      const dsrDisabled = !dsrEnable.checked;
+      if (dsrTopK) dsrTopK.disabled = dsrDisabled;
+      if (dsrSettings) dsrSettings.style.display = dsrDisabled ? 'none' : 'block';
+    }
   }
 
   function collectConfig() {
-    const { enable, period, topK, sortMetric } = getPostProcessElements();
+    const { enable, period, topK, sortMetric, dsrEnable, dsrTopK } = getPostProcessElements();
     const enabled = Boolean(enable && enable.checked);
+    const dsrEnabled = Boolean(dsrEnable && dsrEnable.checked);
     return {
       enabled,
       ftPeriodDays: normalizeInt(period?.value, 30, 1, 3650),
       topK: normalizeInt(topK?.value, 20, 1, 10000),
-      sortMetric: sortMetric?.value || 'profit_degradation'
+      sortMetric: sortMetric?.value || 'profit_degradation',
+      dsrEnabled,
+      dsrTopK: normalizeInt(dsrTopK?.value, 20, 1, 10000)
     };
   }
 
   function bind() {
-    const { enable } = getPostProcessElements();
+    const { enable, dsrEnable } = getPostProcessElements();
     if (enable) {
       enable.addEventListener('change', syncPostProcessUI);
+    }
+    if (dsrEnable) {
+      dsrEnable.addEventListener('change', syncPostProcessUI);
     }
     syncPostProcessUI();
   }

@@ -19,6 +19,14 @@ const ResultsState = {
   wfa: {},
   summary: {},
   results: [],
+  dsr: {
+    enabled: false,
+    topK: null,
+    trials: [],
+    nTrials: null,
+    meanSharpe: null,
+    varSharpe: null
+  },
   forwardTest: {
     enabled: false,
     trials: [],
@@ -170,6 +178,7 @@ function formatSigned(value, digits = 2, suffix = '') {
 
 function updateTabsVisibility() {
   const tabs = document.querySelectorAll('.tab-btn');
+  const dsrTab = document.querySelector('.tab-btn[data-tab="dsr"]');
   const forwardTab = document.querySelector('.tab-btn[data-tab="forward_test"]');
   const manualTab = document.querySelector('.tab-btn[data-tab="manual_tests"]');
   const tabsContainer = document.getElementById('resultsTabs');
@@ -183,15 +192,22 @@ function updateTabsVisibility() {
 
   if (tabsContainer) tabsContainer.style.display = 'flex';
 
+  const hasDsr = ResultsState.dsr.enabled && ResultsState.dsr.trials.length > 0;
   const hasForwardTest = ResultsState.forwardTest.enabled && ResultsState.forwardTest.trials.length > 0;
   const hasManualTests = ResultsState.manualTests.length > 0;
 
+  if (dsrTab) dsrTab.style.display = hasDsr ? 'inline-flex' : 'none';
   if (forwardTab) forwardTab.style.display = hasForwardTest ? 'inline-flex' : 'none';
   if (manualTab) manualTab.style.display = hasManualTests ? 'inline-flex' : 'none';
   if (manualBtn) {
-    manualBtn.style.display = ['optuna', 'forward_test'].includes(ResultsState.activeTab) ? 'inline-flex' : 'none';
+    manualBtn.style.display = ['optuna', 'dsr', 'forward_test'].includes(ResultsState.activeTab)
+      ? 'inline-flex'
+      : 'none';
   }
 
+  if (!hasDsr && ResultsState.activeTab === 'dsr') {
+    ResultsState.activeTab = 'optuna';
+  }
   if (!hasForwardTest && ResultsState.activeTab === 'forward_test') {
     ResultsState.activeTab = 'optuna';
   }
@@ -346,13 +362,29 @@ async function applyStudyPayload(data) {
   ResultsState.forwardTest.sortMetric = study.ft_sort_metric || 'profit_degradation';
   ResultsState.forwardTest.trials = (data.trials || []).filter((trial) => trial.ft_rank !== null && trial.ft_rank !== undefined);
   ResultsState.forwardTest.trials.sort((a, b) => (a.ft_rank || 0) - (b.ft_rank || 0));
+
+  const dsrTrials = (data.trials || []).filter((trial) => trial.dsr_rank !== null && trial.dsr_rank !== undefined);
+  dsrTrials.sort((a, b) => (a.dsr_rank || 0) - (b.dsr_rank || 0));
+  ResultsState.dsr = {
+    enabled: Boolean(study.dsr_enabled),
+    topK: study.dsr_top_k ?? null,
+    trials: dsrTrials,
+    nTrials: study.dsr_n_trials ?? null,
+    meanSharpe: study.dsr_mean_sharpe ?? null,
+    varSharpe: study.dsr_var_sharpe ?? null
+  };
+
   ResultsState.manualTests = data.manual_tests || [];
   ResultsState.activeManualTest = null;
   ResultsState.manualTestResults = [];
 
   if (ResultsState.mode === 'optuna') {
+    const hasDsr = ResultsState.dsr.enabled && ResultsState.dsr.trials.length > 0;
     const hasForward = ResultsState.forwardTest.enabled && ResultsState.forwardTest.trials.length > 0;
     const hasManual = ResultsState.manualTests.length > 0;
+    if (ResultsState.activeTab === 'dsr' && !hasDsr) {
+      ResultsState.activeTab = 'optuna';
+    }
     if (ResultsState.activeTab === 'forward_test' && !hasForward) {
       ResultsState.activeTab = 'optuna';
     }
@@ -600,6 +632,8 @@ function renderManualTestControls() {
     const source = ResultsState.activeManualTest?.source_tab;
     if (source === 'forward_test') {
       baseline.textContent = 'Compared against: Forward Test Results';
+    } else if (source === 'dsr') {
+      baseline.textContent = 'Compared against: DSR Results';
     } else if (source === 'optuna') {
       baseline.textContent = 'Compared against: Optuna Results';
     } else {
@@ -611,6 +645,9 @@ function renderManualTestControls() {
 function getTrialsForActiveTab() {
   if (ResultsState.activeTab === 'forward_test') {
     return ResultsState.forwardTest.trials || [];
+  }
+  if (ResultsState.activeTab === 'dsr') {
+    return ResultsState.dsr.trials || [];
   }
   return ResultsState.results || [];
 }
@@ -853,6 +890,77 @@ function renderForwardTestTable(results) {
         start: ResultsState.forwardTest.startDate,
         end: ResultsState.forwardTest.endDate
       });
+      if (equity && equity.length) {
+        renderEquityChart(equity);
+      }
+    });
+
+    tbody.appendChild(row);
+  });
+}
+
+function renderDsrTable(results) {
+  const tbody = document.querySelector('.data-table tbody');
+  if (!tbody) return;
+
+  tbody.innerHTML = '';
+
+  const thead = document.querySelector('.data-table thead tr');
+  const objectives = ResultsState.optuna.objectives || [];
+  const constraints = ResultsState.optuna.constraints || [];
+  const hasConstraints = constraints.some((c) => c && c.enabled);
+  if (thead && window.OptunaResultsUI) {
+    thead.innerHTML = window.OptunaResultsUI.buildTrialTableHeaders(objectives, hasConstraints);
+  }
+
+  const optunaRankMap = {};
+  (ResultsState.results || []).forEach((trial, idx) => {
+    if (trial.trial_number !== undefined) {
+      optunaRankMap[trial.trial_number] = idx + 1;
+    }
+  });
+
+  (results || []).forEach((trial, index) => {
+    const temp = document.createElement('tbody');
+    if (window.OptunaResultsUI) {
+      temp.innerHTML = window.OptunaResultsUI.renderTrialRow(trial, objectives, { hasConstraints }).trim();
+    }
+    const row = temp.firstElementChild || document.createElement('tr');
+    row.className = 'clickable';
+    row.dataset.index = index;
+    const trialNumber = trial.trial_number ?? (index + 1);
+    row.dataset.trialNumber = trialNumber;
+
+    const paramId = trial.param_id
+      || createParamId(trial.params || {}, ResultsState.strategyConfig, ResultsState.fixedParams);
+
+    const rankCell = row.querySelector('.rank');
+    if (rankCell) rankCell.textContent = trial.dsr_rank || index + 1;
+    const hashCell = row.querySelector('.param-hash');
+    if (hashCell) hashCell.textContent = paramId;
+
+    row.addEventListener('click', async () => {
+      selectTableRow(index, trialNumber);
+      showParameterDetails({ ...trial, param_id: paramId });
+
+      const dsrRank = trial.dsr_rank || index + 1;
+      const optunaRank = optunaRankMap[trialNumber];
+      const rankDelta = optunaRank ? (optunaRank - dsrRank) : null;
+      const rankLine = rankDelta !== null ? `Rank: ${formatSigned(rankDelta, 0)}` : null;
+
+      const dsrValue = Number(trial.dsr_probability);
+      const dsrLabel = Number.isFinite(dsrValue) ? dsrValue.toFixed(3) : 'N/A';
+      const luckValue = Number(trial.dsr_luck_share_pct);
+      const luckLabel = Number.isFinite(luckValue) ? `${luckValue.toFixed(1)}%` : 'N/A';
+
+      const line = [
+        rankLine,
+        `DSR: ${dsrLabel}`,
+        `Luck: ${luckLabel}`
+      ].filter(Boolean).join(' | ');
+      setComparisonLine(line);
+
+      const equity = await fetchEquityCurve(trial);
       if (equity && equity.length) {
         renderEquityChart(equity);
       }
@@ -1278,6 +1386,9 @@ function refreshResultsView() {
     if (ResultsState.activeTab === 'forward_test') {
       updateTableHeader('Forward Test', 'Sorted by FT results');
       renderForwardTestTable(ResultsState.forwardTest.trials || []);
+    } else if (ResultsState.activeTab === 'dsr') {
+      updateTableHeader('DSR', 'Sorted by DSR probability');
+      renderDsrTable(ResultsState.dsr.trials || []);
     } else if (ResultsState.activeTab === 'manual_tests') {
       updateTableHeader('Test Results', 'Manual test results');
       renderManualTestTable(ResultsState.manualTestResults || []);
@@ -1439,7 +1550,12 @@ async function runManualTestFromModal() {
     }
   }
 
-  const sourceTab = ResultsState.activeTab === 'forward_test' ? 'forward_test' : 'optuna';
+  let sourceTab = 'optuna';
+  if (ResultsState.activeTab === 'forward_test') {
+    sourceTab = 'forward_test';
+  } else if (ResultsState.activeTab === 'dsr') {
+    sourceTab = 'dsr';
+  }
 
   const payload = {
     dataSource,

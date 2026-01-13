@@ -11,7 +11,10 @@ from __future__ import annotations
 import logging
 import multiprocessing as mp
 from dataclasses import dataclass
+import math
 from typing import Any, Dict, List, Optional, Sequence, Tuple
+
+import numpy as np
 
 import pandas as pd
 
@@ -32,6 +35,16 @@ class PostProcessConfig:
     top_k: int = 20
     sort_metric: str = "profit_degradation"  # or "ft_romad"
     warmup_bars: int = 1000
+
+
+@dataclass
+class DSRConfig:
+    """Configuration for Deflated Sharpe Ratio (DSR) analysis."""
+
+    enabled: bool = False
+    top_k: int = 20
+    warmup_bars: int = 1000
+    risk_free_rate: float = 0.02
 
 
 @dataclass
@@ -70,6 +83,27 @@ class FTResult:
 
     ft_rank: Optional[int] = None
     rank_change: Optional[int] = None
+
+
+@dataclass
+class DSRResult:
+    """DSR analysis result for a single trial."""
+
+    trial_number: int
+    optuna_rank: int
+    params: dict
+    original_result: Any
+
+    dsr_probability: Optional[float]
+    dsr_rank: Optional[int] = None
+    dsr_skewness: Optional[float] = None
+    dsr_kurtosis: Optional[float] = None
+    dsr_track_length: Optional[int] = None
+    dsr_luck_share_pct: Optional[float] = None
+
+
+EULER_GAMMA = 0.5772156649015329
+
 
 
 # ============================================================
@@ -273,6 +307,90 @@ def calculate_comparison_metrics(
     }
 
 
+def calculate_expected_max_sharpe(
+    mu: float,
+    var_sr: float,
+    n_trials: int,
+) -> Optional[float]:
+    """
+    Expected maximum Sharpe ratio under null hypothesis.
+
+    SR0 = mu + sqrt(var_sr) * ((1 - gamma) * norm.ppf(1 - 1/N)
+                               + gamma * norm.ppf(1 - 1/(N * e)))
+    """
+    if n_trials is None or n_trials <= 1:
+        return None
+    if var_sr is None or var_sr < 0 or not math.isfinite(var_sr):
+        return None
+
+    try:
+        from scipy.stats import norm
+    except Exception as exc:  # pragma: no cover - defensive
+        logger.warning("SciPy not available for DSR calculation: %s", exc)
+        return None
+
+    try:
+        p1 = 1.0 - (1.0 / float(n_trials))
+        p2 = 1.0 - (1.0 / (float(n_trials) * math.e))
+        if p1 <= 0.0 or p2 <= 0.0:
+            return None
+        term = ((1.0 - EULER_GAMMA) * norm.ppf(p1)) + (EULER_GAMMA * norm.ppf(p2))
+        return float(mu + math.sqrt(var_sr) * term)
+    except Exception:
+        return None
+
+
+def calculate_dsr(
+    sr: float,
+    sr0: float,
+    skew: float,
+    kurtosis: float,
+    track_length: int,
+) -> Optional[float]:
+    """
+    Calculate Deflated Sharpe Ratio (probability SR exceeds SR0).
+    """
+    if track_length is None or track_length < 3:
+        return None
+    if sr is None or sr0 is None:
+        return None
+    if skew is None or kurtosis is None:
+        return None
+
+    try:
+        from scipy.stats import norm
+    except Exception as exc:  # pragma: no cover - defensive
+        logger.warning("SciPy not available for DSR calculation: %s", exc)
+        return None
+
+    try:
+        denom = 1.0 - (skew * sr) + (((kurtosis - 1.0) / 4.0) * (sr**2))
+        if denom <= 0.0:
+            return None
+        z = ((sr - sr0) * math.sqrt(track_length - 1.0)) / math.sqrt(denom)
+        value = float(norm.cdf(z))
+    except Exception:
+        return None
+
+    if not math.isfinite(value):
+        return None
+    return min(1.0, max(0.0, value))
+
+
+def calculate_luck_share(sr: float, sr0: float) -> Optional[float]:
+    if sr is None or sr0 is None:
+        return None
+    if sr <= 0:
+        return None
+    try:
+        value = (float(sr0) / float(sr)) * 100.0
+    except (TypeError, ValueError, ZeroDivisionError):
+        return None
+    if not math.isfinite(value):
+        return None
+    return value
+
+
 def calculate_is_period_days(config_json: Dict[str, Any]) -> Optional[int]:
     """Calculate IS period days from stored config_json.fixed_params."""
     if not isinstance(config_json, dict):
@@ -295,6 +413,205 @@ def _build_is_metrics(result: Any) -> Dict[str, Any]:
         "romad": getattr(result, "romad", None),
         "profit_factor": getattr(result, "profit_factor", None),
     }
+
+
+def _filter_dsr_candidates(
+    results: Sequence[Any],
+    *,
+    filter_min_profit: bool,
+    min_profit_threshold: float,
+    score_config: Optional[Dict[str, Any]],
+) -> List[Any]:
+    candidates = list(results or [])
+    if not candidates:
+        return []
+
+    if score_config and score_config.get("filter_enabled"):
+        try:
+            threshold = float(score_config.get("min_score_threshold", 0.0))
+        except (TypeError, ValueError):
+            threshold = 0.0
+        candidates = [r for r in candidates if float(getattr(r, "score", 0.0)) >= threshold]
+
+    if filter_min_profit:
+        try:
+            threshold = float(min_profit_threshold)
+        except (TypeError, ValueError):
+            threshold = 0.0
+        candidates = [r for r in candidates if float(getattr(r, "net_profit_pct", 0.0)) >= threshold]
+
+    return candidates
+
+
+def run_dsr_analysis(
+    *,
+    optuna_results: Sequence[Any],
+    config: DSRConfig,
+    n_trials_total: Optional[int],
+    csv_path: Optional[str],
+    strategy_id: str,
+    fixed_params: Optional[Dict[str, Any]],
+    warmup_bars: Optional[int],
+    score_config: Optional[Dict[str, Any]] = None,
+    filter_min_profit: bool = False,
+    min_profit_threshold: float = 0.0,
+    df: Optional[pd.DataFrame] = None,
+) -> Tuple[List[DSRResult], Dict[str, Any]]:
+    """
+    Run DSR analysis for top-K candidates.
+    """
+    results = list(optuna_results or [])
+    if not results or not config.enabled:
+        return [], {}
+
+    sharpe_values = []
+    for item in results:
+        value = getattr(item, "sharpe_ratio", None)
+        if value is None:
+            continue
+        try:
+            numeric = float(value)
+        except (TypeError, ValueError):
+            continue
+        if math.isfinite(numeric):
+            sharpe_values.append(numeric)
+
+    mean_sharpe = float(np.mean(sharpe_values)) if sharpe_values else None
+    var_sharpe = float(np.var(sharpe_values, ddof=0)) if sharpe_values else None
+
+    trials_total = int(n_trials_total) if n_trials_total else len(results)
+    if trials_total <= 0:
+        trials_total = len(results)
+
+    sr0 = None
+    if var_sharpe is not None:
+        sr0 = calculate_expected_max_sharpe(0.0, var_sharpe, trials_total)
+
+    candidates = _filter_dsr_candidates(
+        results,
+        filter_min_profit=filter_min_profit,
+        min_profit_threshold=min_profit_threshold,
+        score_config=score_config,
+    )
+    if not candidates:
+        return [], {
+            "dsr_n_trials": trials_total,
+            "dsr_mean_sharpe": mean_sharpe,
+            "dsr_var_sharpe": var_sharpe,
+        }
+
+    top_k = max(1, int(config.top_k or 1))
+    top_k = min(top_k, len(candidates))
+
+    if df is None:
+        if not csv_path:
+            raise ValueError("CSV path is required for DSR analysis.")
+        from .backtest_engine import load_data
+
+        df = load_data(csv_path)
+
+    from strategies import get_strategy
+    from .backtest_engine import prepare_dataset_with_warmup
+    from . import metrics
+
+    strategy_class = get_strategy(strategy_id)
+
+    fixed = dict(fixed_params or {})
+    date_filter = bool(fixed.get("dateFilter"))
+    start = _parse_timestamp(fixed.get("start")) if date_filter else None
+    end = _parse_timestamp(fixed.get("end")) if date_filter else None
+
+    if date_filter:
+        if start is None:
+            start = df.index.min()
+        if end is None:
+            end = df.index.max()
+
+    analysis_results: List[DSRResult] = []
+    for idx, optuna_result in enumerate(candidates[:top_k], 1):
+        params = {**fixed, **(getattr(optuna_result, "params", {}) or {})}
+        if date_filter:
+            params["dateFilter"] = True
+            params["start"] = start
+            params["end"] = end
+
+        dsr_prob = None
+        skewness = None
+        kurtosis = None
+        track_length = None
+        luck_share = None
+
+        try:
+            df_prepared, trade_start_idx = prepare_dataset_with_warmup(
+                df, start, end, int(warmup_bars or config.warmup_bars)
+            )
+            if not df_prepared.empty:
+                result = strategy_class.run(df_prepared, params, trade_start_idx)
+                timestamps = getattr(result, "timestamps", None) or []
+                equity_curve = getattr(result, "equity_curve", None) or []
+                time_index = pd.DatetimeIndex(timestamps) if timestamps else None
+                if time_index is not None and equity_curve:
+                    monthly_returns = metrics._calculate_monthly_returns(
+                        equity_curve, time_index
+                    )
+                else:
+                    monthly_returns = []
+                track_length = len(monthly_returns)
+                if track_length >= 3:
+                    rfr_monthly = (float(config.risk_free_rate) * 100.0) / 12.0
+                    excess_returns = [ret - rfr_monthly for ret in monthly_returns]
+                    skewness, kurtosis = metrics.calculate_higher_moments_from_monthly_returns(
+                        excess_returns
+                    )
+                    sr_value = getattr(optuna_result, "sharpe_ratio", None)
+                    if sr_value is not None and skewness is not None and kurtosis is not None and sr0 is not None:
+                        try:
+                            sr_value = float(sr_value)
+                        except (TypeError, ValueError):
+                            sr_value = None
+                    if sr_value is not None:
+                        dsr_prob = calculate_dsr(
+                            sr_value,
+                            sr0,
+                            skewness,
+                            kurtosis,
+                            track_length,
+                        )
+                        luck_share = calculate_luck_share(sr_value, sr0)
+        except Exception as exc:
+            logger.warning("DSR re-run failed for trial %s: %s", idx, exc)
+
+        trial_number = getattr(optuna_result, "optuna_trial_number", None) or idx
+        analysis_results.append(
+            DSRResult(
+                trial_number=int(trial_number),
+                optuna_rank=idx,
+                params=dict(getattr(optuna_result, "params", {}) or {}),
+                original_result=optuna_result,
+                dsr_probability=dsr_prob,
+                dsr_skewness=skewness,
+                dsr_kurtosis=kurtosis,
+                dsr_track_length=track_length,
+                dsr_luck_share_pct=luck_share,
+            )
+        )
+
+    def _dsr_sort_key(item: DSRResult) -> tuple:
+        prob = item.dsr_probability
+        prob_key = prob if prob is not None else float("-inf")
+        return (prob is None, -prob_key, item.optuna_rank)
+
+    analysis_results.sort(key=_dsr_sort_key)
+    for rank, item in enumerate(analysis_results, 1):
+        item.dsr_rank = rank
+
+    summary = {
+        "dsr_n_trials": trials_total,
+        "dsr_mean_sharpe": mean_sharpe,
+        "dsr_var_sharpe": var_sharpe,
+    }
+
+    return analysis_results, summary
 
 
 def run_forward_test(

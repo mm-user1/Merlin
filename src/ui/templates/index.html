@@ -646,19 +646,29 @@
             <h2>Optimizer Run</h2>
           </div>
           <div class="content">
-            <div class="collapsible" id="postProcessSection">
-              <div class="collapsible-header">
-                <span class="collapsible-icon">¢-?</span>
-                <span class="section-title" style="margin: 0; border: none;">POST PROCESS</span>
-              </div>
-              <div class="collapsible-content">
-                <div class="form-group">
-                  <div class="checkbox-group">
-                    <input type="checkbox" id="enablePostProcess" />
-                    <label for="enablePostProcess"><strong>Enable Forward Test</strong></label>
-                  </div>
-                </div>
+            <div class="wf-section" style="margin-top: 0; margin-bottom: 16px; padding: 20px; border: 2px solid #3498db; border-radius: 8px; background-color: #f8f9fa;">
+              <h3 style="color: #3498db; margin-bottom: 12px;">Post Process</h3>
 
+              <div class="form-group vertical" style="align-items: flex-start;">
+                <label style="margin-bottom: 8px;">
+                  <input type="checkbox" id="enableDSR" />
+                  <strong>Enable DSR Analysis</strong>
+                </label>
+              </div>
+
+              <div class="form-group" id="dsrSettings" style="display: none;">
+                <label for="dsrTopK">Top Candidates for DSR:</label>
+                <input type="number" id="dsrTopK" value="20" min="1" max="10000" style="width: 100px;" />
+              </div>
+
+              <div class="form-group vertical" style="align-items: flex-start; margin-top: 10px;">
+                <label style="margin-bottom: 8px;">
+                  <input type="checkbox" id="enablePostProcess" />
+                  <strong>Enable Forward Test</strong>
+                </label>
+              </div>
+
+              <div id="ftSettings" style="display: none;">
                 <div class="form-group">
                   <label for="ftPeriodDays">Forward Test Period (days):</label>
                   <input type="number" id="ftPeriodDays" value="30" min="1" max="3650" style="width: 100px;" />
@@ -680,8 +690,8 @@
             </div>
 
             <!-- Walk-Forward Analysis Section -->
-            <div class="wf-section" style="margin-top: 0; padding: 20px; border: 2px solid #3498db; border-radius: 8px; background-color: #f8f9fa;">
-              <h3 style="color: #3498db; margin-bottom: 12px;">? Walk-Forward Analysis</h3>
+            <div class="wf-section" style="margin-top: 0; margin-bottom: 16px; padding: 20px; border: 2px solid #3498db; border-radius: 8px; background-color: #f8f9fa;">
+              <h3 style="color: #3498db; margin-bottom: 12px;">Walk-Forward Analysis</h3>
 
               <div class="form-group vertical" style="align-items: flex-start;">
                 <label style="margin-bottom: 8px;">

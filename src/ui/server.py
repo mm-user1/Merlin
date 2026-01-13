@@ -28,10 +28,12 @@ from core.optuna_engine import (
     run_optimization,
 )
 from core.post_process import (
+    DSRConfig,
     PostProcessConfig,
     calculate_comparison_metrics,
     calculate_ft_dates,
     calculate_is_period_days,
+    run_dsr_analysis,
     run_forward_test,
     _parse_timestamp as _parse_pp_timestamp,
 )
@@ -43,6 +45,7 @@ from core.storage import (
     list_studies,
     load_manual_test_results,
     load_study_from_db,
+    save_dsr_results,
     save_forward_test_results,
     save_manual_test_to_db,
     update_csv_path,
@@ -796,8 +799,8 @@ def run_manual_test_endpoint(study_id: str) -> object:
 
     if data_source not in {"original_csv", "new_csv"}:
         return jsonify({"error": "dataSource must be 'original_csv' or 'new_csv'."}), HTTPStatus.BAD_REQUEST
-    if source_tab not in {"optuna", "forward_test"}:
-        return jsonify({"error": "sourceTab must be 'optuna' or 'forward_test'."}), HTTPStatus.BAD_REQUEST
+    if source_tab not in {"optuna", "forward_test", "dsr"}:
+        return jsonify({"error": "sourceTab must be 'optuna', 'forward_test', or 'dsr'."}), HTTPStatus.BAD_REQUEST
     if not start_date or not end_date:
         return jsonify({"error": "startDate and endDate are required."}), HTTPStatus.BAD_REQUEST
     if not isinstance(trial_numbers, list) or not trial_numbers:
@@ -845,17 +848,24 @@ def run_manual_test_endpoint(study_id: str) -> object:
             number = int(trial.get("trial_number") or 0)
             if number:
                 baseline_rank_map[number] = idx
-    else:
+    elif source_tab == "forward_test":
         for trial in trials:
             number = int(trial.get("trial_number") or 0)
             rank = trial.get("ft_rank")
             if number and rank:
                 baseline_rank_map[number] = int(rank)
-        if not baseline_rank_map:
-            for idx, trial in enumerate(trials, 1):
-                number = int(trial.get("trial_number") or 0)
-                if number:
-                    baseline_rank_map[number] = idx
+    else:
+        for trial in trials:
+            number = int(trial.get("trial_number") or 0)
+            rank = trial.get("dsr_rank")
+            if number and rank:
+                baseline_rank_map[number] = int(rank)
+
+    if not baseline_rank_map:
+        for idx, trial in enumerate(trials, 1):
+            number = int(trial.get("trial_number") or 0)
+            if number:
+                baseline_rank_map[number] = idx
 
     try:
         df = load_data(csv_path)
@@ -950,12 +960,7 @@ def run_manual_test_endpoint(study_id: str) -> object:
             }
         )
 
-    sorted_by_deg = sorted(
-        results_payload,
-        key=lambda item: float(item["comparison"].get("profit_degradation", 0.0)),
-        reverse=True,
-    )
-    for idx, item in enumerate(sorted_by_deg, 1):
+    for idx, item in enumerate(results_payload, 1):
         trial_number = item.get("trial_number")
         baseline_rank = baseline_rank_map.get(trial_number)
         if baseline_rank is not None:
@@ -1593,12 +1598,25 @@ def run_walkforward_optimization() -> object:
             warmup_bars=warmup_bars,
         )
 
+    dsr_config = None
+    if post_process_payload.get("dsrEnabled"):
+        try:
+            dsr_top_k = int(post_process_payload.get("dsrTopK", 20))
+        except (TypeError, ValueError):
+            dsr_top_k = 20
+        dsr_config = DSRConfig(
+            enabled=True,
+            top_k=dsr_top_k,
+            warmup_bars=warmup_bars,
+        )
+
     wf_config = WFConfig(
         is_period_days=is_period_days,
         oos_period_days=oos_period_days,
         warmup_bars=warmup_bars,
         strategy_id=strategy_id,
         post_process=post_process_config,
+        dsr_config=dsr_config,
     )
     engine = WalkForwardEngine(wf_config, base_template, optuna_settings, csv_file_path=data_path)
 
@@ -2346,6 +2364,11 @@ def run_optimization_endpoint() -> object:
         warmup_bars = 1000
 
     ft_enabled = bool(post_process_payload.get("enabled", False))
+    dsr_enabled = bool(post_process_payload.get("dsrEnabled", False))
+    try:
+        dsr_top_k = int(post_process_payload.get("dsrTopK", 20))
+    except (TypeError, ValueError):
+        dsr_top_k = 20
     ft_start = None
     ft_end = None
     is_days = None
@@ -2543,7 +2566,40 @@ def run_optimization_endpoint() -> object:
             config_json["postProcess"] = post_process_payload
             update_study_config_json(study_id, config_json)
 
+    dsr_results: List[Any] = []
+    if dsr_enabled and study_id:
+        dsr_config = DSRConfig(
+            enabled=True,
+            top_k=dsr_top_k,
+            warmup_bars=warmup_bars,
+        )
+        dsr_results, dsr_summary = run_dsr_analysis(
+            optuna_results=results,
+            config=dsr_config,
+            n_trials_total=completed_trials,
+            csv_path=data_path,
+            strategy_id=strategy_id,
+            fixed_params=config_payload.get("fixed_params") or {},
+            warmup_bars=warmup_bars,
+            score_config=getattr(optimization_config, "score_config", None),
+            filter_min_profit=bool(getattr(optimization_config, "filter_min_profit", False)),
+            min_profit_threshold=float(getattr(optimization_config, "min_profit_threshold", 0.0) or 0.0),
+        )
+        save_dsr_results(
+            study_id,
+            dsr_results,
+            dsr_enabled=True,
+            dsr_top_k=dsr_top_k,
+            dsr_n_trials=dsr_summary.get("dsr_n_trials"),
+            dsr_mean_sharpe=dsr_summary.get("dsr_mean_sharpe"),
+            dsr_var_sharpe=dsr_summary.get("dsr_var_sharpe"),
+        )
+
     if ft_enabled and study_id:
+        ft_candidates = results
+        if dsr_results:
+            ft_candidates = [item.original_result for item in dsr_results]
+
         pp_config = PostProcessConfig(
             enabled=True,
             ft_period_days=int(ft_days or 0),
@@ -2554,7 +2610,7 @@ def run_optimization_endpoint() -> object:
         ft_results = run_forward_test(
             csv_path=data_path,
             strategy_id=strategy_id,
-            optuna_results=results,
+            optuna_results=ft_candidates,
             config=pp_config,
             is_period_days=int(is_days or 0),
             ft_period_days=int(ft_days or 0),

@@ -288,6 +288,37 @@ def _calculate_consistency_score_value(monthly_returns: List[float]) -> Optional
     return consistency
 
 
+def calculate_higher_moments_from_monthly_returns(
+    monthly_returns: List[float],
+) -> tuple[Optional[float], Optional[float]]:
+    """
+    Calculate skewness and RAW kurtosis from monthly returns.
+
+    Returns:
+        (skewness, raw_kurtosis) or (None, None) if insufficient data.
+    """
+    if len(monthly_returns) < 3:
+        return None, None
+
+    values = np.array(monthly_returns, dtype=float)
+    if values.size < 3:
+        return None, None
+
+    mean = float(np.mean(values))
+    std = float(np.std(values, ddof=0))
+    if std == 0.0:
+        return None, None
+
+    standardized = (values - mean) / std
+    skewness = float(np.mean(standardized**3))
+    raw_kurtosis = float(np.mean(standardized**4))
+
+    if not math.isfinite(skewness) or not math.isfinite(raw_kurtosis):
+        return None, None
+
+    return skewness, raw_kurtosis
+
+
 def _calculate_sqn_value(trades: List[TradeRecord]) -> Optional[float]:
     """
     Calculate System Quality Number (Van Tharp).

@@ -17,7 +17,7 @@ from . import metrics
 from .backtest_engine import prepare_dataset_with_warmup
 from .optuna_engine import OptunaConfig, OptimizationConfig, SamplerConfig, run_optuna_optimization
 from .storage import save_wfa_study_to_db
-from .post_process import PostProcessConfig, run_forward_test
+from .post_process import DSRConfig, PostProcessConfig, run_dsr_analysis, run_forward_test
 
 logger = logging.getLogger(__name__)
 
@@ -34,6 +34,7 @@ class WFConfig:
     strategy_id: str = ""
     warmup_bars: int = 1000
     post_process: Optional[PostProcessConfig] = None
+    dsr_config: Optional[DSRConfig] = None
 
 
 @dataclass
@@ -348,12 +349,45 @@ class WalkForwardEngine:
             )
             best_result = optimization_results[0] if optimization_results else None
 
+            dsr_results = []
+            dsr_config = self.config.dsr_config
+            if dsr_config and dsr_config.enabled and optimization_results:
+                fixed_params = {
+                    "dateFilter": True,
+                    "start": optimization_start.isoformat(),
+                    "end": optimization_end.isoformat(),
+                }
+                try:
+                    dsr_results, _summary = run_dsr_analysis(
+                        optuna_results=optimization_results,
+                        config=dsr_config,
+                        n_trials_total=len(optimization_results),
+                        csv_path=self.csv_file_path,
+                        strategy_id=self.config.strategy_id,
+                        fixed_params=fixed_params,
+                        warmup_bars=self.config.warmup_bars,
+                        score_config=deepcopy(self.base_config_template.get("score_config", {})),
+                        filter_min_profit=bool(self.base_config_template.get("filter_min_profit")),
+                        min_profit_threshold=float(
+                            self.base_config_template.get("min_profit_threshold") or 0.0
+                        ),
+                        df=df,
+                    )
+                except Exception as exc:
+                    logger.warning("DSR analysis failed for window %s: %s", window.window_id, exc)
+
+                if dsr_results:
+                    best_result = dsr_results[0].original_result
+
             if ft_config and ft_config.enabled and training_end and best_result:
                 worker_count = int(self.base_config_template.get("worker_processes", 1))
+                ft_candidates = optimization_results
+                if dsr_results:
+                    ft_candidates = [item.original_result for item in dsr_results]
                 ft_results = run_forward_test(
                     csv_path=self.csv_file_path,
                     strategy_id=self.config.strategy_id,
-                    optuna_results=optimization_results,
+                    optuna_results=ft_candidates,
                     config=ft_config,
                     is_period_days=max(0, (training_end - window.is_start).days),
                     ft_period_days=int(ft_config.ft_period_days),
