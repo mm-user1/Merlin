@@ -1613,6 +1613,11 @@
       font-size: 14px;
     }
 
+    .param-hash.param-hash-warning {
+      color: #d9534f;
+      font-weight: 600;
+    }
+
     .val-positive {
       color: #27ae60;
       font-weight: 600;

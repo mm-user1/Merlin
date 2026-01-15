@@ -8,7 +8,12 @@
       ftSettings: document.getElementById('ftSettings'),
       dsrEnable: document.getElementById('enableDSR'),
       dsrTopK: document.getElementById('dsrTopK'),
-      dsrSettings: document.getElementById('dsrSettings')
+      dsrSettings: document.getElementById('dsrSettings'),
+      stEnable: document.getElementById('enableStressTest'),
+      stTopK: document.getElementById('stTopK'),
+      stFailureThreshold: document.getElementById('stFailureThreshold'),
+      stSortMetric: document.getElementById('stSortMetric'),
+      stSettings: document.getElementById('stressTestSettings')
     };
   }
 
@@ -30,7 +35,12 @@
       ftSettings,
       dsrEnable,
       dsrTopK,
-      dsrSettings
+      dsrSettings,
+      stEnable,
+      stTopK,
+      stFailureThreshold,
+      stSortMetric,
+      stSettings
     } = getPostProcessElements();
     if (enable) {
       const disabled = !enable.checked;
@@ -44,29 +54,59 @@
       if (dsrTopK) dsrTopK.disabled = dsrDisabled;
       if (dsrSettings) dsrSettings.style.display = dsrDisabled ? 'none' : 'block';
     }
+    if (stEnable) {
+      const stDisabled = !stEnable.checked;
+      if (stTopK) stTopK.disabled = stDisabled;
+      if (stFailureThreshold) stFailureThreshold.disabled = stDisabled;
+      if (stSortMetric) stSortMetric.disabled = stDisabled;
+      if (stSettings) stSettings.style.display = stDisabled ? 'none' : 'block';
+    }
   }
 
   function collectConfig() {
-    const { enable, period, topK, sortMetric, dsrEnable, dsrTopK } = getPostProcessElements();
+    const {
+      enable,
+      period,
+      topK,
+      sortMetric,
+      dsrEnable,
+      dsrTopK,
+      stEnable,
+      stTopK,
+      stFailureThreshold,
+      stSortMetric
+    } = getPostProcessElements();
     const enabled = Boolean(enable && enable.checked);
     const dsrEnabled = Boolean(dsrEnable && dsrEnable.checked);
+    const stEnabled = Boolean(stEnable && stEnable.checked);
+    const failureRaw = Number(stFailureThreshold?.value);
+    const failurePct = Number.isFinite(failureRaw) ? Math.min(100, Math.max(0, failureRaw)) : 70;
     return {
       enabled,
       ftPeriodDays: normalizeInt(period?.value, 30, 1, 3650),
       topK: normalizeInt(topK?.value, 20, 1, 10000),
       sortMetric: sortMetric?.value || 'profit_degradation',
       dsrEnabled,
-      dsrTopK: normalizeInt(dsrTopK?.value, 20, 1, 10000)
+      dsrTopK: normalizeInt(dsrTopK?.value, 20, 1, 10000),
+      stressTest: {
+        enabled: stEnabled,
+        topK: normalizeInt(stTopK?.value, 5, 1, 100),
+        failureThreshold: failurePct / 100,
+        sortMetric: stSortMetric?.value || 'profit_retention'
+      }
     };
   }
 
   function bind() {
-    const { enable, dsrEnable } = getPostProcessElements();
+    const { enable, dsrEnable, stEnable } = getPostProcessElements();
     if (enable) {
       enable.addEventListener('change', syncPostProcessUI);
     }
     if (dsrEnable) {
       dsrEnable.addEventListener('change', syncPostProcessUI);
+    }
+    if (stEnable) {
+      stEnable.addEventListener('change', syncPostProcessUI);
     }
     syncPostProcessUI();
   }

@@ -126,6 +126,18 @@ def _create_schema(conn: sqlite3.Connection) -> None:
             dsr_mean_sharpe REAL,
             dsr_var_sharpe REAL,
 
+            st_enabled INTEGER DEFAULT 0,
+            st_top_k INTEGER,
+            st_failure_threshold REAL,
+            st_sort_metric TEXT,
+            st_avg_profit_retention REAL,
+            st_avg_romad_retention REAL,
+            st_avg_combined_failure_rate REAL,
+            st_total_perturbations INTEGER,
+            st_candidates_skipped_bad_base INTEGER,
+            st_candidates_skipped_no_params INTEGER,
+            st_candidates_insufficient_data INTEGER,
+
             created_at TEXT DEFAULT (datetime('now')),
             completed_at TEXT,
 
@@ -192,6 +204,27 @@ def _create_schema(conn: sqlite3.Connection) -> None:
             dsr_kurtosis REAL,
             dsr_track_length INTEGER,
             dsr_luck_share_pct REAL,
+
+            st_rank INTEGER,
+            st_status TEXT,
+            profit_retention REAL,
+            romad_retention REAL,
+            profit_worst REAL,
+            profit_lower_tail REAL,
+            profit_median REAL,
+            romad_worst REAL,
+            romad_lower_tail REAL,
+            romad_median REAL,
+            profit_failure_rate REAL,
+            romad_failure_rate REAL,
+            combined_failure_rate REAL,
+            profit_failure_count INTEGER,
+            romad_failure_count INTEGER,
+            combined_failure_count INTEGER,
+            total_perturbations INTEGER,
+            st_failure_threshold REAL,
+            param_worst_ratios TEXT,
+            most_sensitive_param TEXT,
 
             created_at TEXT DEFAULT (datetime('now')),
 
@@ -276,6 +309,17 @@ def _ensure_columns(conn: sqlite3.Connection) -> None:
     ensure("studies", "dsr_n_trials", "INTEGER")
     ensure("studies", "dsr_mean_sharpe", "REAL")
     ensure("studies", "dsr_var_sharpe", "REAL")
+    ensure("studies", "st_enabled", "INTEGER DEFAULT 0")
+    ensure("studies", "st_top_k", "INTEGER")
+    ensure("studies", "st_failure_threshold", "REAL")
+    ensure("studies", "st_sort_metric", "TEXT")
+    ensure("studies", "st_avg_profit_retention", "REAL")
+    ensure("studies", "st_avg_romad_retention", "REAL")
+    ensure("studies", "st_avg_combined_failure_rate", "REAL")
+    ensure("studies", "st_total_perturbations", "INTEGER")
+    ensure("studies", "st_candidates_skipped_bad_base", "INTEGER")
+    ensure("studies", "st_candidates_skipped_no_params", "INTEGER")
+    ensure("studies", "st_candidates_insufficient_data", "INTEGER")
 
     ensure("trials", "dsr_probability", "REAL")
     ensure("trials", "dsr_rank", "INTEGER")
@@ -283,6 +327,26 @@ def _ensure_columns(conn: sqlite3.Connection) -> None:
     ensure("trials", "dsr_kurtosis", "REAL")
     ensure("trials", "dsr_track_length", "INTEGER")
     ensure("trials", "dsr_luck_share_pct", "REAL")
+    ensure("trials", "st_rank", "INTEGER")
+    ensure("trials", "st_status", "TEXT")
+    ensure("trials", "profit_retention", "REAL")
+    ensure("trials", "romad_retention", "REAL")
+    ensure("trials", "profit_worst", "REAL")
+    ensure("trials", "profit_lower_tail", "REAL")
+    ensure("trials", "profit_median", "REAL")
+    ensure("trials", "romad_worst", "REAL")
+    ensure("trials", "romad_lower_tail", "REAL")
+    ensure("trials", "romad_median", "REAL")
+    ensure("trials", "profit_failure_rate", "REAL")
+    ensure("trials", "romad_failure_rate", "REAL")
+    ensure("trials", "combined_failure_rate", "REAL")
+    ensure("trials", "profit_failure_count", "INTEGER")
+    ensure("trials", "romad_failure_count", "INTEGER")
+    ensure("trials", "combined_failure_count", "INTEGER")
+    ensure("trials", "total_perturbations", "INTEGER")
+    ensure("trials", "st_failure_threshold", "REAL")
+    ensure("trials", "param_worst_ratios", "TEXT")
+    ensure("trials", "most_sensitive_param", "TEXT")
 
 
 @contextmanager
@@ -890,6 +954,11 @@ def load_study_from_db(study_id: str) -> Optional[Dict]:
                 trial["constraint_values"] = json.loads(trial["constraint_values_json"] or "[]")
                 trial["is_pareto_optimal"] = bool(trial.get("is_pareto_optimal"))
                 trial["constraints_satisfied"] = bool(trial.get("constraints_satisfied"))
+                if trial.get("param_worst_ratios"):
+                    try:
+                        trial["param_worst_ratios"] = json.loads(trial["param_worst_ratios"])
+                    except json.JSONDecodeError:
+                        pass
                 if trial.get("composite_score") is not None:
                     trial["score"] = trial.get("composite_score")
                 trials.append(trial)
@@ -1236,6 +1305,152 @@ def save_dsr_results(
         except Exception as exc:
             conn.execute("ROLLBACK")
             raise RuntimeError(f"Failed to save DSR results: {exc}")
+
+    return True
+
+
+def save_stress_test_results(
+    study_id: str,
+    st_results: List[Any],
+    st_summary: Dict[str, Any],
+    config: Any,
+) -> bool:
+    if not study_id:
+        return False
+
+    with get_db_connection() as conn:
+        try:
+            conn.execute("BEGIN TRANSACTION")
+            conn.execute(
+                """
+                UPDATE studies
+                SET
+                    st_enabled = ?,
+                    st_top_k = ?,
+                    st_failure_threshold = ?,
+                    st_sort_metric = ?,
+                    st_avg_profit_retention = ?,
+                    st_avg_romad_retention = ?,
+                    st_avg_combined_failure_rate = ?,
+                    st_total_perturbations = ?,
+                    st_candidates_skipped_bad_base = ?,
+                    st_candidates_skipped_no_params = ?,
+                    st_candidates_insufficient_data = ?
+                WHERE study_id = ?
+                """,
+                (
+                    1 if getattr(config, "enabled", False) else 0,
+                    getattr(config, "top_k", None),
+                    getattr(config, "failure_threshold", None),
+                    getattr(config, "sort_metric", None),
+                    st_summary.get("avg_profit_retention"),
+                    st_summary.get("avg_romad_retention"),
+                    st_summary.get("avg_combined_failure_rate"),
+                    st_summary.get("total_perturbations_run"),
+                    st_summary.get("candidates_skipped_bad_base", 0),
+                    st_summary.get("candidates_skipped_no_params", 0),
+                    st_summary.get("candidates_insufficient_data", 0),
+                    study_id,
+                ),
+            )
+
+            conn.execute(
+                """
+                UPDATE trials
+                SET
+                    st_rank = NULL,
+                    st_status = NULL,
+                    profit_retention = NULL,
+                    romad_retention = NULL,
+                    profit_worst = NULL,
+                    profit_lower_tail = NULL,
+                    profit_median = NULL,
+                    romad_worst = NULL,
+                    romad_lower_tail = NULL,
+                    romad_median = NULL,
+                    profit_failure_rate = NULL,
+                    romad_failure_rate = NULL,
+                    combined_failure_rate = NULL,
+                    profit_failure_count = NULL,
+                    romad_failure_count = NULL,
+                    combined_failure_count = NULL,
+                    total_perturbations = NULL,
+                    st_failure_threshold = NULL,
+                    param_worst_ratios = NULL,
+                    most_sensitive_param = NULL
+                WHERE study_id = ?
+                """,
+                (study_id,),
+            )
+
+            if st_results:
+                rows = []
+                for result in st_results:
+                    payload = result
+                    if hasattr(result, "__dict__"):
+                        payload = result.__dict__
+                    param_worst = payload.get("param_worst_ratios") or {}
+                    param_worst_json = json.dumps(param_worst) if param_worst else None
+                    rows.append(
+                        (
+                            payload.get("st_rank"),
+                            payload.get("status"),
+                            payload.get("profit_retention"),
+                            payload.get("romad_retention"),
+                            payload.get("profit_worst"),
+                            payload.get("profit_lower_tail"),
+                            payload.get("profit_median"),
+                            payload.get("romad_worst"),
+                            payload.get("romad_lower_tail"),
+                            payload.get("romad_median"),
+                            payload.get("profit_failure_rate"),
+                            payload.get("romad_failure_rate"),
+                            payload.get("combined_failure_rate"),
+                            payload.get("profit_failure_count"),
+                            payload.get("romad_failure_count"),
+                            payload.get("combined_failure_count"),
+                            payload.get("total_perturbations"),
+                            payload.get("failure_threshold"),
+                            param_worst_json,
+                            payload.get("most_sensitive_param"),
+                            study_id,
+                            payload.get("trial_number"),
+                        )
+                    )
+
+                conn.executemany(
+                    """
+                    UPDATE trials
+                    SET
+                        st_rank = ?,
+                        st_status = ?,
+                        profit_retention = ?,
+                        romad_retention = ?,
+                        profit_worst = ?,
+                        profit_lower_tail = ?,
+                        profit_median = ?,
+                        romad_worst = ?,
+                        romad_lower_tail = ?,
+                        romad_median = ?,
+                        profit_failure_rate = ?,
+                        romad_failure_rate = ?,
+                        combined_failure_rate = ?,
+                        profit_failure_count = ?,
+                        romad_failure_count = ?,
+                        combined_failure_count = ?,
+                        total_perturbations = ?,
+                        st_failure_threshold = ?,
+                        param_worst_ratios = ?,
+                        most_sensitive_param = ?
+                    WHERE study_id = ? AND trial_number = ?
+                    """,
+                    rows,
+                )
+
+            conn.execute("COMMIT")
+        except Exception as exc:
+            conn.execute("ROLLBACK")
+            raise RuntimeError(f"Failed to save stress test results: {exc}")
 
     return True
 

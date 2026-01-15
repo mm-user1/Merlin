@@ -30,11 +30,13 @@ from core.optuna_engine import (
 from core.post_process import (
     DSRConfig,
     PostProcessConfig,
+    StressTestConfig,
     calculate_comparison_metrics,
     calculate_ft_dates,
     calculate_is_period_days,
     run_dsr_analysis,
     run_forward_test,
+    run_stress_test,
     _parse_timestamp as _parse_pp_timestamp,
 )
 from core.storage import (
@@ -47,6 +49,7 @@ from core.storage import (
     load_study_from_db,
     save_dsr_results,
     save_forward_test_results,
+    save_stress_test_results,
     save_manual_test_to_db,
     update_csv_path,
     update_study_config_json,
@@ -1610,6 +1613,26 @@ def run_walkforward_optimization() -> object:
             warmup_bars=warmup_bars,
         )
 
+    st_config = None
+    st_payload = post_process_payload.get("stressTest")
+    if isinstance(st_payload, dict) and st_payload.get("enabled"):
+        try:
+            st_top_k = int(st_payload.get("topK", 5))
+        except (TypeError, ValueError):
+            st_top_k = 5
+        try:
+            threshold_raw = float(st_payload.get("failureThreshold", 0.7))
+        except (TypeError, ValueError):
+            threshold_raw = 0.7
+        failure_threshold = threshold_raw / 100.0 if threshold_raw > 1 else threshold_raw
+        st_config = StressTestConfig(
+            enabled=True,
+            top_k=st_top_k,
+            failure_threshold=failure_threshold,
+            sort_metric=str(st_payload.get("sortMetric", "profit_retention")),
+            warmup_bars=warmup_bars,
+        )
+
     wf_config = WFConfig(
         is_period_days=is_period_days,
         oos_period_days=oos_period_days,
@@ -1617,6 +1640,7 @@ def run_walkforward_optimization() -> object:
         strategy_id=strategy_id,
         post_process=post_process_config,
         dsr_config=dsr_config,
+        stress_test_config=st_config,
     )
     engine = WalkForwardEngine(wf_config, base_template, optuna_settings, csv_file_path=data_path)
 
@@ -2365,6 +2389,10 @@ def run_optimization_endpoint() -> object:
 
     ft_enabled = bool(post_process_payload.get("enabled", False))
     dsr_enabled = bool(post_process_payload.get("dsrEnabled", False))
+    st_payload = post_process_payload.get("stressTest")
+    if not isinstance(st_payload, dict):
+        st_payload = {}
+    st_enabled = bool(st_payload.get("enabled", False))
     try:
         dsr_top_k = int(post_process_payload.get("dsrTopK", 20))
     except (TypeError, ValueError):
@@ -2410,6 +2438,10 @@ def run_optimization_endpoint() -> object:
         if not fixed_params_payload.get("start"):
             fixed_params_payload["start"] = user_start.isoformat()
         fixed_params_payload["end"] = is_end.isoformat()
+
+    fixed_params_payload = config_payload.get("fixed_params") or {}
+    is_start_date = fixed_params_payload.get("start")
+    is_end_date = fixed_params_payload.get("end")
 
     try:
         worker_processes_raw = config_payload.get("worker_processes")
@@ -2595,6 +2627,7 @@ def run_optimization_endpoint() -> object:
             dsr_var_sharpe=dsr_summary.get("dsr_var_sharpe"),
         )
 
+    ft_results: List[Any] = []
     if ft_enabled and study_id:
         ft_candidates = results
         if dsr_results:
@@ -2628,6 +2661,58 @@ def run_optimization_endpoint() -> object:
             ft_start_date=ft_start.strftime("%Y-%m-%d") if ft_start else None,
             ft_end_date=ft_end.strftime("%Y-%m-%d") if ft_end else None,
             is_period_days=int(is_days or 0),
+        )
+
+    st_results: List[Any] = []
+    if st_enabled and study_id:
+        try:
+            from strategies import get_strategy_config
+
+            strategy_config_json = get_strategy_config(strategy_id)
+        except Exception as exc:
+            strategy_config_json = {}
+            app.logger.warning("Failed to load strategy config for stress test: %s", exc)
+
+        try:
+            st_top_k = int(st_payload.get("topK", 5))
+        except (TypeError, ValueError):
+            st_top_k = 5
+        try:
+            threshold_raw = float(st_payload.get("failureThreshold", 0.7))
+        except (TypeError, ValueError):
+            threshold_raw = 0.7
+        failure_threshold = threshold_raw / 100.0 if threshold_raw > 1 else threshold_raw
+
+        stress_test_config = StressTestConfig(
+            enabled=True,
+            top_k=st_top_k,
+            failure_threshold=failure_threshold,
+            sort_metric=str(st_payload.get("sortMetric", "profit_retention")),
+            warmup_bars=warmup_bars,
+        )
+
+        st_candidates = results
+        if ft_enabled and ft_results:
+            st_candidates = ft_results
+        elif dsr_results:
+            st_candidates = dsr_results
+
+        st_results, st_summary = run_stress_test(
+            csv_path=data_path,
+            strategy_id=strategy_id,
+            source_results=st_candidates,
+            config=stress_test_config,
+            is_start_date=is_start_date,
+            is_end_date=is_end_date,
+            fixed_params=fixed_params_payload,
+            config_json=strategy_config_json,
+            n_workers=worker_processes,
+        )
+        save_stress_test_results(
+            study_id,
+            st_results,
+            st_summary,
+            stress_test_config,
         )
 
     _set_optimization_state(

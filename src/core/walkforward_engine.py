@@ -17,7 +17,14 @@ from . import metrics
 from .backtest_engine import prepare_dataset_with_warmup
 from .optuna_engine import OptunaConfig, OptimizationConfig, SamplerConfig, run_optuna_optimization
 from .storage import save_wfa_study_to_db
-from .post_process import DSRConfig, PostProcessConfig, run_dsr_analysis, run_forward_test
+from .post_process import (
+    DSRConfig,
+    PostProcessConfig,
+    StressTestConfig,
+    run_dsr_analysis,
+    run_forward_test,
+    run_stress_test,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -35,6 +42,7 @@ class WFConfig:
     warmup_bars: int = 1000
     post_process: Optional[PostProcessConfig] = None
     dsr_config: Optional[DSRConfig] = None
+    stress_test_config: Optional[StressTestConfig] = None
 
 
 @dataclass
@@ -379,6 +387,7 @@ class WalkForwardEngine:
                 if dsr_results:
                     best_result = dsr_results[0].original_result
 
+            ft_results = []
             if ft_config and ft_config.enabled and training_end and best_result:
                 worker_count = int(self.base_config_template.get("worker_processes", 1))
                 ft_candidates = optimization_results
@@ -397,6 +406,57 @@ class WalkForwardEngine:
                 )
                 if ft_results:
                     best_result = ft_results[0]
+
+            st_results = []
+            st_config = self.config.stress_test_config
+            if st_config and st_config.enabled and best_result:
+                worker_count = int(self.base_config_template.get("worker_processes", 1))
+                fixed_params = {
+                    "dateFilter": True,
+                    "start": window.is_start.isoformat(),
+                    "end": window.is_end.isoformat(),
+                }
+                st_candidates: List[Any] = optimization_results
+                if ft_results:
+                    st_candidates = ft_results
+                elif dsr_results:
+                    st_candidates = dsr_results
+
+                try:
+                    from strategies import get_strategy_config
+
+                    strategy_config_json = get_strategy_config(self.config.strategy_id)
+                except Exception as exc:
+                    strategy_config_json = {}
+                    logger.warning("Failed to load strategy config for stress test: %s", exc)
+
+                try:
+                    st_results, _summary = run_stress_test(
+                        csv_path=self.csv_file_path,
+                        strategy_id=self.config.strategy_id,
+                        source_results=st_candidates,
+                        config=st_config,
+                        is_start_date=window.is_start.isoformat(),
+                        is_end_date=window.is_end.isoformat(),
+                        fixed_params=fixed_params,
+                        config_json=strategy_config_json,
+                        n_workers=worker_count,
+                    )
+                except Exception as exc:
+                    logger.warning("Stress test failed for window %s: %s", window.window_id, exc)
+
+                if st_results:
+                    candidate_map = {}
+                    for candidate in st_candidates:
+                        trial_num = getattr(candidate, "trial_number", None)
+                        if trial_num is None:
+                            trial_num = getattr(candidate, "optuna_trial_number", None)
+                        if trial_num is not None:
+                            candidate_map[int(trial_num)] = candidate
+
+                    selected = candidate_map.get(st_results[0].trial_number)
+                    if selected is not None:
+                        best_result = selected
 
             if not best_result:
                 raise ValueError(f"No optimization results for window {window.window_id}.")

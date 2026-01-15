@@ -35,6 +35,19 @@ const ResultsState = {
     periodDays: null,
     sortMetric: 'profit_degradation'
   },
+  stressTest: {
+    enabled: false,
+    topK: null,
+    trials: [],
+    sortMetric: 'profit_retention',
+    failureThreshold: 0.7,
+    avgProfitRetention: null,
+    avgRomadRetention: null,
+    avgCombinedFailureRate: null,
+    candidatesSkippedBadBase: 0,
+    candidatesSkippedNoParams: 0,
+    candidatesInsufficientData: 0
+  },
   manualTests: [],
   activeManualTest: null,
   manualTestResults: [],
@@ -180,6 +193,7 @@ function updateTabsVisibility() {
   const tabs = document.querySelectorAll('.tab-btn');
   const dsrTab = document.querySelector('.tab-btn[data-tab="dsr"]');
   const forwardTab = document.querySelector('.tab-btn[data-tab="forward_test"]');
+  const stressTab = document.querySelector('.tab-btn[data-tab="stress_test"]');
   const manualTab = document.querySelector('.tab-btn[data-tab="manual_tests"]');
   const tabsContainer = document.getElementById('resultsTabs');
   const manualBtn = document.getElementById('manualTestBtn');
@@ -194,13 +208,15 @@ function updateTabsVisibility() {
 
   const hasDsr = ResultsState.dsr.enabled && ResultsState.dsr.trials.length > 0;
   const hasForwardTest = ResultsState.forwardTest.enabled && ResultsState.forwardTest.trials.length > 0;
+  const hasStressTest = ResultsState.stressTest.enabled && ResultsState.stressTest.trials.length > 0;
   const hasManualTests = ResultsState.manualTests.length > 0;
 
   if (dsrTab) dsrTab.style.display = hasDsr ? 'inline-flex' : 'none';
   if (forwardTab) forwardTab.style.display = hasForwardTest ? 'inline-flex' : 'none';
+  if (stressTab) stressTab.style.display = hasStressTest ? 'inline-flex' : 'none';
   if (manualTab) manualTab.style.display = hasManualTests ? 'inline-flex' : 'none';
   if (manualBtn) {
-    manualBtn.style.display = ['optuna', 'dsr', 'forward_test'].includes(ResultsState.activeTab)
+    manualBtn.style.display = ['optuna', 'dsr', 'forward_test', 'stress_test'].includes(ResultsState.activeTab)
       ? 'inline-flex'
       : 'none';
   }
@@ -209,6 +225,9 @@ function updateTabsVisibility() {
     ResultsState.activeTab = 'optuna';
   }
   if (!hasForwardTest && ResultsState.activeTab === 'forward_test') {
+    ResultsState.activeTab = 'optuna';
+  }
+  if (!hasStressTest && ResultsState.activeTab === 'stress_test') {
     ResultsState.activeTab = 'optuna';
   }
   if (!hasManualTests && ResultsState.activeTab === 'manual_tests') {
@@ -374,6 +393,22 @@ async function applyStudyPayload(data) {
     varSharpe: study.dsr_var_sharpe ?? null
   };
 
+  const stTrials = (data.trials || []).filter((trial) => trial.st_rank !== null && trial.st_rank !== undefined);
+  stTrials.sort((a, b) => (a.st_rank || 0) - (b.st_rank || 0));
+  ResultsState.stressTest = {
+    enabled: Boolean(study.st_enabled),
+    topK: study.st_top_k ?? null,
+    trials: stTrials,
+    sortMetric: study.st_sort_metric || 'profit_retention',
+    failureThreshold: study.st_failure_threshold ?? 0.7,
+    avgProfitRetention: study.st_avg_profit_retention ?? null,
+    avgRomadRetention: study.st_avg_romad_retention ?? null,
+    avgCombinedFailureRate: study.st_avg_combined_failure_rate ?? null,
+    candidatesSkippedBadBase: study.st_candidates_skipped_bad_base ?? 0,
+    candidatesSkippedNoParams: study.st_candidates_skipped_no_params ?? 0,
+    candidatesInsufficientData: study.st_candidates_insufficient_data ?? 0
+  };
+
   ResultsState.manualTests = data.manual_tests || [];
   ResultsState.activeManualTest = null;
   ResultsState.manualTestResults = [];
@@ -381,11 +416,15 @@ async function applyStudyPayload(data) {
   if (ResultsState.mode === 'optuna') {
     const hasDsr = ResultsState.dsr.enabled && ResultsState.dsr.trials.length > 0;
     const hasForward = ResultsState.forwardTest.enabled && ResultsState.forwardTest.trials.length > 0;
+    const hasStress = ResultsState.stressTest.enabled && ResultsState.stressTest.trials.length > 0;
     const hasManual = ResultsState.manualTests.length > 0;
     if (ResultsState.activeTab === 'dsr' && !hasDsr) {
       ResultsState.activeTab = 'optuna';
     }
     if (ResultsState.activeTab === 'forward_test' && !hasForward) {
+      ResultsState.activeTab = 'optuna';
+    }
+    if (ResultsState.activeTab === 'stress_test' && !hasStress) {
       ResultsState.activeTab = 'optuna';
     }
     if (ResultsState.activeTab === 'manual_tests' && !hasManual) {
@@ -648,6 +687,9 @@ function getTrialsForActiveTab() {
   }
   if (ResultsState.activeTab === 'dsr') {
     return ResultsState.dsr.trials || [];
+  }
+  if (ResultsState.activeTab === 'stress_test') {
+    return ResultsState.stressTest.trials || [];
   }
   return ResultsState.results || [];
 }
@@ -959,6 +1001,116 @@ function renderDsrTable(results) {
         `Luck: ${luckLabel}`
       ].filter(Boolean).join(' | ');
       setComparisonLine(line);
+
+      const equity = await fetchEquityCurve(trial);
+      if (equity && equity.length) {
+        renderEquityChart(equity);
+      }
+    });
+
+    tbody.appendChild(row);
+  });
+}
+
+function renderStressTestTable(results) {
+  const tbody = document.querySelector('.data-table tbody');
+  if (!tbody) return;
+
+  tbody.innerHTML = '';
+
+  const thead = document.querySelector('.data-table thead tr');
+  const objectives = ResultsState.optuna.objectives || [];
+  const constraints = ResultsState.optuna.constraints || [];
+  const hasConstraints = constraints.some((c) => c && c.enabled);
+  if (thead && window.OptunaResultsUI) {
+    thead.innerHTML = window.OptunaResultsUI.buildTrialTableHeaders(objectives, hasConstraints);
+  }
+
+  const optunaRankMap = {};
+  (ResultsState.results || []).forEach((trial, idx) => {
+    if (trial.trial_number !== undefined) {
+      optunaRankMap[trial.trial_number] = idx + 1;
+    }
+  });
+
+  (results || []).forEach((trial, index) => {
+    const temp = document.createElement('tbody');
+    if (window.OptunaResultsUI) {
+      temp.innerHTML = window.OptunaResultsUI.renderTrialRow(trial, objectives, { hasConstraints }).trim();
+    }
+    const row = temp.firstElementChild || document.createElement('tr');
+    row.className = 'clickable';
+    row.dataset.index = index;
+    const trialNumber = trial.trial_number ?? (index + 1);
+    row.dataset.trialNumber = trialNumber;
+
+    const paramId = trial.param_id
+      || createParamId(trial.params || {}, ResultsState.strategyConfig, ResultsState.fixedParams);
+
+    const stRank = trial.st_rank || index + 1;
+    const rankCell = row.querySelector('.rank');
+    if (rankCell) rankCell.textContent = stRank;
+    const hashCell = row.querySelector('.param-hash');
+    if (hashCell) {
+      hashCell.textContent = paramId;
+      if (trial.st_status && trial.st_status !== 'ok') {
+        hashCell.classList.add('param-hash-warning');
+      }
+    }
+
+    row.addEventListener('click', async () => {
+      selectTableRow(index, trialNumber);
+      showParameterDetails({ ...trial, param_id: paramId });
+
+      const optunaRank = optunaRankMap[trialNumber];
+      const rankDelta = optunaRank ? (optunaRank - stRank) : null;
+
+      if (trial.st_status === 'skipped_bad_base') {
+        const baseProfit = Number((trial.base_net_profit_pct ?? trial.net_profit_pct) || 0);
+        const line = `Status: Bad Base (profit <= 0%) | Base Profit: ${baseProfit.toFixed(1)}%`;
+        setComparisonLine(line);
+      } else if (trial.st_status === 'insufficient_data') {
+        const totalPerturbations = Number(trial.total_perturbations || 0);
+        const combinedFailures = Number(trial.combined_failure_count || 0);
+        const validNeighbors = totalPerturbations - combinedFailures;
+        const line = `Status: Insufficient Data (${validNeighbors} valid neighbors, minimum 4 required) | Profit Ret: N/A | RoMaD Ret: N/A`;
+        setComparisonLine(line);
+      } else if (trial.st_status === 'skipped_no_params') {
+        const line = 'Status: No Testable Parameters (strategy has only categorical params)';
+        setComparisonLine(line);
+      } else {
+        const rankLine = rankDelta !== null ? `Rank: ${formatSigned(rankDelta, 0)}` : null;
+
+        const profitRet = trial.profit_retention;
+        const profitRetLabel = profitRet !== null && profitRet !== undefined
+          ? `${(profitRet * 100).toFixed(1)}%`
+          : 'N/A';
+
+        const romadRet = trial.romad_retention;
+        const romadRetLabel = romadRet !== null && romadRet !== undefined
+          ? `${(romadRet * 100).toFixed(1)}%`
+          : 'N/A';
+
+        const failRate = trial.combined_failure_rate;
+        const failRateLabel = failRate !== null && failRate !== undefined
+          ? `${(failRate * 100).toFixed(1)}%`
+          : 'N/A';
+
+        const romadValid = trial.romad_failure_rate !== null && trial.romad_failure_rate !== undefined;
+        const failRateType = romadValid ? 'Fail' : 'Fail (profit)';
+
+        const sensParam = trial.most_sensitive_param || null;
+        const sensLine = sensParam ? `Sens: ${sensParam}` : null;
+
+        const line = [
+          rankLine,
+          `Profit Ret: ${profitRetLabel}`,
+          `RoMaD Ret: ${romadRetLabel}`,
+          `${failRateType}: ${failRateLabel}`,
+          sensLine
+        ].filter(Boolean).join(' | ');
+        setComparisonLine(line);
+      }
 
       const equity = await fetchEquityCurve(trial);
       if (equity && equity.length) {
@@ -1386,6 +1538,9 @@ function refreshResultsView() {
     if (ResultsState.activeTab === 'forward_test') {
       updateTableHeader('Forward Test', 'Sorted by FT results');
       renderForwardTestTable(ResultsState.forwardTest.trials || []);
+    } else if (ResultsState.activeTab === 'stress_test') {
+      updateTableHeader('Stress Test', 'Sorted by retention');
+      renderStressTestTable(ResultsState.stressTest.trials || []);
     } else if (ResultsState.activeTab === 'dsr') {
       updateTableHeader('DSR', 'Sorted by DSR probability');
       renderDsrTable(ResultsState.dsr.trials || []);

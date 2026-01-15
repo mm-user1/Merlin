@@ -11,6 +11,7 @@ from __future__ import annotations
 import logging
 import multiprocessing as mp
 from dataclasses import dataclass
+from enum import Enum
 import math
 from typing import Any, Dict, List, Optional, Sequence, Tuple
 
@@ -45,6 +46,17 @@ class DSRConfig:
     top_k: int = 20
     warmup_bars: int = 1000
     risk_free_rate: float = 0.02
+
+
+@dataclass
+class StressTestConfig:
+    """Stress Test configuration."""
+
+    enabled: bool = False
+    top_k: int = 5
+    failure_threshold: float = 0.7
+    sort_metric: str = "profit_retention"
+    warmup_bars: int = 1000
 
 
 @dataclass
@@ -102,7 +114,99 @@ class DSRResult:
     dsr_luck_share_pct: Optional[float] = None
 
 
+class StressTestStatus(Enum):
+    """Status of Stress Test for a candidate."""
+
+    OK = "ok"
+    SKIPPED_BAD_BASE = "skipped_bad_base"
+    SKIPPED_NO_PARAMS = "skipped_no_params"
+    INSUFFICIENT_DATA = "insufficient_data"
+
+
+@dataclass
+class RetentionMetrics:
+    """
+    Retention metrics from perturbation results.
+
+    "Retention ratio" terminology (not "stability score" or "confidence"):
+    - ratio = 1.0 means neighbor equals base
+    - ratio < 1.0 means neighbor degraded
+    - ratio > 1.0 means neighbor improved (possible, not clipped)
+    """
+
+    status: StressTestStatus
+
+    profit_retention: Optional[float]
+    profit_lower_tail: Optional[float]
+    profit_median: Optional[float]
+    profit_worst: Optional[float]
+
+    romad_retention: Optional[float]
+    romad_lower_tail: Optional[float]
+    romad_median: Optional[float]
+    romad_worst: Optional[float]
+
+    profit_failure_rate: Optional[float]
+    romad_failure_rate: Optional[float]
+    combined_failure_rate: float
+
+    profit_failure_count: int
+    romad_failure_count: int
+    combined_failure_count: int
+    total_perturbations: int
+    failure_threshold: float
+
+    param_worst_ratios: dict
+
+
+@dataclass
+class StressTestResult:
+    """
+    Result of Stress Test for a single candidate.
+
+    Uses "retention" terminology instead of "stability".
+    Retention values can exceed 1.0 (no clipping).
+    Includes status field for bad base handling.
+    """
+
+    trial_number: int
+    source_rank: int
+    status: str
+
+    base_net_profit_pct: float
+    base_max_drawdown_pct: float
+    base_romad: Optional[float]
+    base_sharpe_ratio: Optional[float]
+
+    profit_retention: Optional[float]
+    romad_retention: Optional[float]
+
+    profit_worst: Optional[float]
+    profit_lower_tail: Optional[float]
+    profit_median: Optional[float]
+
+    romad_worst: Optional[float]
+    romad_lower_tail: Optional[float]
+    romad_median: Optional[float]
+
+    profit_failure_rate: Optional[float]
+    romad_failure_rate: Optional[float]
+    combined_failure_rate: float
+    profit_failure_count: int
+    romad_failure_count: int
+    combined_failure_count: int
+    total_perturbations: int
+    failure_threshold: float
+
+    param_worst_ratios: dict
+    most_sensitive_param: Optional[str]
+
+    st_rank: Optional[int] = None
+    rank_change: Optional[int] = None
+
+
 EULER_GAMMA = 0.5772156649015329
+MIN_NEIGHBORS = 4
 
 
 
@@ -723,3 +827,666 @@ def run_forward_test(
         result.rank_change = result.optuna_rank - idx
 
     return results
+
+
+# ============================================================
+# Stress Test
+# ============================================================
+
+
+def generate_perturbations(base_params: dict, config_json: dict) -> List[dict]:
+    """
+    Generate OAT perturbations for a parameter set.
+
+    Uses ±1 step from config.json optimize.step for each numeric parameter.
+    """
+    if not isinstance(config_json, dict):
+        return []
+    parameters = config_json.get("parameters") or {}
+    if not isinstance(parameters, dict):
+        return []
+
+    perturbations: List[dict] = []
+
+    for param_name, param_config in parameters.items():
+        if not isinstance(param_config, dict):
+            continue
+        param_type = str(param_config.get("type", "")).lower()
+
+        if param_type in {"select", "options", "bool", "boolean"}:
+            continue
+
+        optimize_cfg = param_config.get("optimize", {}) if isinstance(param_config.get("optimize"), dict) else {}
+        if not optimize_cfg.get("enabled", False):
+            continue
+
+        if param_name not in base_params:
+            continue
+
+        base_value = base_params.get(param_name)
+        try:
+            numeric_base = float(base_value)
+        except (TypeError, ValueError):
+            continue
+
+        step = optimize_cfg.get("step", param_config.get("step", 1))
+        try:
+            step_value = float(step)
+        except (TypeError, ValueError):
+            continue
+        if step_value == 0:
+            continue
+
+        min_val = optimize_cfg.get("min", param_config.get("min"))
+        max_val = optimize_cfg.get("max", param_config.get("max"))
+        min_num = None
+        max_num = None
+        try:
+            if min_val is not None:
+                min_num = float(min_val)
+        except (TypeError, ValueError):
+            min_num = None
+        try:
+            if max_val is not None:
+                max_num = float(max_val)
+        except (TypeError, ValueError):
+            max_num = None
+
+        for direction in (-1, 1):
+            perturbed_value = numeric_base + (direction * step_value)
+            if param_type == "int":
+                perturbed_value = int(round(perturbed_value))
+
+            if min_num is not None and perturbed_value < min_num:
+                continue
+            if max_num is not None and perturbed_value > max_num:
+                continue
+
+            perturbed_params = dict(base_params)
+            perturbed_params[param_name] = perturbed_value
+
+            perturbations.append(
+                {
+                    "params": perturbed_params,
+                    "perturbed_param": param_name,
+                    "direction": int(direction),
+                    "base_value": base_value,
+                    "perturbed_value": perturbed_value,
+                }
+            )
+
+    return perturbations
+
+
+def _run_is_backtest(
+    csv_path: str,
+    strategy_id: str,
+    params: Dict[str, Any],
+    is_start_date: Optional[str],
+    is_end_date: Optional[str],
+    warmup_bars: int,
+) -> Optional[Dict[str, Any]]:
+    from .backtest_engine import load_data, prepare_dataset_with_warmup
+    from . import metrics
+    from strategies import get_strategy
+
+    try:
+        df = load_data(csv_path)
+        strategy_class = get_strategy(strategy_id)
+
+        start_ts = _parse_timestamp(is_start_date)
+        end_ts = _parse_timestamp(is_end_date)
+
+        if start_ts is not None or end_ts is not None:
+            df_prepared, trade_start_idx = prepare_dataset_with_warmup(
+                df, start_ts, end_ts, int(warmup_bars)
+            )
+        else:
+            df_prepared = df
+            trade_start_idx = 0
+
+        if df_prepared.empty:
+            raise ValueError("No data available for stress test period.")
+
+        result = strategy_class.run(df_prepared, params, trade_start_idx)
+
+        basic = metrics.calculate_basic(result, 100.0)
+        advanced = metrics.calculate_advanced(result, 100.0)
+
+        return {
+            "net_profit_pct": basic.net_profit_pct,
+            "max_drawdown_pct": basic.max_drawdown_pct,
+            "total_trades": basic.total_trades,
+            "win_rate": basic.win_rate,
+            "sharpe_ratio": advanced.sharpe_ratio,
+            "romad": advanced.romad,
+            "profit_factor": advanced.profit_factor,
+        }
+    except Exception as exc:
+        logger.warning("Stress test backtest failed: %s", exc)
+        return None
+
+
+def _perturbation_worker(
+    csv_path: str,
+    strategy_id: str,
+    params: Dict[str, Any],
+    start_date: Optional[str],
+    end_date: Optional[str],
+    fixed_params: Dict[str, Any],
+    warmup_bars: int,
+    perturbed_param: str,
+    direction: int,
+    base_value: Any,
+    perturbed_value: Any,
+) -> Optional[Dict[str, Any]]:
+    try:
+        full_params = dict(fixed_params or {})
+        full_params.update(params or {})
+        metrics_payload = _run_is_backtest(
+            csv_path=csv_path,
+            strategy_id=strategy_id,
+            params=full_params,
+            is_start_date=start_date,
+            is_end_date=end_date,
+            warmup_bars=warmup_bars,
+        )
+        if metrics_payload is None:
+            return None
+
+        metrics_payload.update(
+            {
+                "perturbed_param": perturbed_param,
+                "direction": direction,
+                "base_value": base_value,
+                "perturbed_value": perturbed_value,
+            }
+        )
+        return metrics_payload
+    except Exception as exc:
+        logger.warning("Perturbation worker failed: %s", exc)
+        return None
+
+
+def run_perturbations_parallel(
+    csv_path: str,
+    strategy_id: str,
+    perturbations: List[dict],
+    is_start_date: Optional[str],
+    is_end_date: Optional[str],
+    fixed_params: dict,
+    warmup_bars: int,
+    n_workers: int,
+) -> List[dict]:
+    if not perturbations:
+        return []
+
+    max_workers = max(1, min(int(n_workers or 1), len(perturbations)))
+    ctx = mp.get_context("spawn")
+    worker_args = [
+        (
+            csv_path,
+            strategy_id,
+            p.get("params", {}),
+            is_start_date,
+            is_end_date,
+            fixed_params,
+            warmup_bars,
+            p.get("perturbed_param"),
+            p.get("direction"),
+            p.get("base_value"),
+            p.get("perturbed_value"),
+        )
+        for p in perturbations
+    ]
+
+    results: List[dict] = []
+    with ctx.Pool(processes=max_workers) as pool:
+        for payload in pool.starmap(_perturbation_worker, worker_args):
+            if payload:
+                results.append(payload)
+
+    return results
+
+
+def calculate_retention_metrics(
+    base_metrics: dict,
+    perturbation_results: List[dict],
+    failure_threshold: float = 0.7,
+    total_perturbations_generated: int = 0,
+) -> RetentionMetrics:
+    n = len(perturbation_results)
+    n_generated = total_perturbations_generated if total_perturbations_generated > 0 else n
+
+    if n == 0:
+        return RetentionMetrics(
+            status=StressTestStatus.INSUFFICIENT_DATA,
+            profit_retention=None,
+            profit_lower_tail=None,
+            profit_median=None,
+            profit_worst=None,
+            romad_retention=None,
+            romad_lower_tail=None,
+            romad_median=None,
+            romad_worst=None,
+            profit_failure_rate=1.0,
+            romad_failure_rate=None,
+            combined_failure_rate=1.0,
+            profit_failure_count=n_generated,
+            romad_failure_count=0,
+            combined_failure_count=n_generated,
+            total_perturbations=n_generated,
+            failure_threshold=failure_threshold,
+            param_worst_ratios={},
+        )
+
+    base_profit = base_metrics.get("net_profit_pct", 0)
+    base_romad = base_metrics.get("romad")
+
+    if base_profit <= 0:
+        return RetentionMetrics(
+            status=StressTestStatus.SKIPPED_BAD_BASE,
+            profit_retention=None,
+            profit_lower_tail=None,
+            profit_median=None,
+            profit_worst=None,
+            romad_retention=None,
+            romad_lower_tail=None,
+            romad_median=None,
+            romad_worst=None,
+            profit_failure_rate=None,
+            romad_failure_rate=None,
+            combined_failure_rate=1.0,
+            profit_failure_count=n_generated,
+            romad_failure_count=0,
+            combined_failure_count=n_generated,
+            total_perturbations=n_generated,
+            failure_threshold=failure_threshold,
+            param_worst_ratios={},
+        )
+
+    romad_valid = base_romad is not None and math.isfinite(base_romad) and base_romad > 0
+
+    profit_ratios: List[float] = []
+    romad_ratios: List[float] = []
+    param_profit_ratios: Dict[str, List[float]] = {}
+
+    for result in perturbation_results:
+        neighbor_profit = result.get("net_profit_pct")
+        if neighbor_profit is None:
+            continue
+        profit_ratio = float(neighbor_profit) / float(base_profit)
+        profit_ratios.append(profit_ratio)
+
+        param_name = result.get("perturbed_param", "unknown")
+        param_profit_ratios.setdefault(param_name, []).append(profit_ratio)
+
+        if romad_valid:
+            neighbor_romad = result.get("romad")
+            if neighbor_romad is not None and math.isfinite(neighbor_romad):
+                romad_ratio = float(neighbor_romad) / float(base_romad)
+            else:
+                romad_ratio = 0.0
+            romad_ratios.append(romad_ratio)
+
+    n_valid = len(profit_ratios)
+    status = StressTestStatus.OK if n_valid >= MIN_NEIGHBORS else StressTestStatus.INSUFFICIENT_DATA
+
+    if n_valid == 0:
+        return RetentionMetrics(
+            status=StressTestStatus.INSUFFICIENT_DATA,
+            profit_retention=None,
+            profit_lower_tail=None,
+            profit_median=None,
+            profit_worst=None,
+            romad_retention=None,
+            romad_lower_tail=None,
+            romad_median=None,
+            romad_worst=None,
+            profit_failure_rate=1.0,
+            romad_failure_rate=None,
+            combined_failure_rate=1.0,
+            profit_failure_count=n_generated,
+            romad_failure_count=0,
+            combined_failure_count=n_generated,
+            total_perturbations=n_generated,
+            failure_threshold=failure_threshold,
+            param_worst_ratios={},
+        )
+
+    profit_ratios_arr = np.array(profit_ratios)
+    profit_lower_tail = float(np.quantile(profit_ratios_arr, 0.05, method="linear"))
+    profit_median = float(np.quantile(profit_ratios_arr, 0.50, method="linear"))
+    profit_worst = float(np.min(profit_ratios_arr))
+    profit_retention = 0.5 * profit_lower_tail + 0.5 * profit_median
+
+    if romad_valid and romad_ratios:
+        romad_ratios_arr = np.array(romad_ratios)
+        romad_lower_tail = float(np.quantile(romad_ratios_arr, 0.05, method="linear"))
+        romad_median = float(np.quantile(romad_ratios_arr, 0.50, method="linear"))
+        romad_worst = float(np.min(romad_ratios_arr))
+        romad_retention = 0.5 * romad_lower_tail + 0.5 * romad_median
+    else:
+        romad_lower_tail = None
+        romad_median = None
+        romad_worst = None
+        romad_retention = None
+
+    profit_failures = int(np.sum(profit_ratios_arr < failure_threshold))
+    profit_failure_rate = profit_failures / n_valid
+
+    if romad_valid and romad_ratios:
+        romad_ratios_arr = np.array(romad_ratios)
+        romad_failures = int(np.sum(romad_ratios_arr < failure_threshold))
+        romad_failure_rate = romad_failures / len(romad_ratios_arr)
+
+        combined_failures = 0
+        for profit_ratio, romad_ratio in zip(profit_ratios_arr, romad_ratios_arr):
+            if profit_ratio < failure_threshold or romad_ratio < failure_threshold:
+                combined_failures += 1
+        combined_failure_rate = combined_failures / n_valid
+    else:
+        romad_failures = 0
+        romad_failure_rate = None
+        combined_failures = profit_failures
+        combined_failure_rate = profit_failure_rate
+
+    param_worst_ratios = {
+        param: float(min(ratios))
+        for param, ratios in param_profit_ratios.items()
+        if ratios
+    }
+
+    return RetentionMetrics(
+        status=status,
+        profit_retention=round(profit_retention, 4),
+        profit_lower_tail=round(profit_lower_tail, 4),
+        profit_median=round(profit_median, 4),
+        profit_worst=round(profit_worst, 4),
+        romad_retention=round(romad_retention, 4) if romad_retention is not None else None,
+        romad_lower_tail=round(romad_lower_tail, 4) if romad_lower_tail is not None else None,
+        romad_median=round(romad_median, 4) if romad_median is not None else None,
+        romad_worst=round(romad_worst, 4) if romad_worst is not None else None,
+        profit_failure_rate=round(profit_failure_rate, 4),
+        romad_failure_rate=round(romad_failure_rate, 4) if romad_failure_rate is not None else None,
+        combined_failure_rate=round(combined_failure_rate, 4),
+        profit_failure_count=profit_failures,
+        romad_failure_count=romad_failures,
+        combined_failure_count=combined_failures,
+        total_perturbations=n_generated,
+        failure_threshold=failure_threshold,
+        param_worst_ratios=param_worst_ratios,
+    )
+
+
+def _extract_candidate_params(candidate: Any) -> Dict[str, Any]:
+    if candidate is None:
+        return {}
+    if isinstance(candidate, dict):
+        params = candidate.get("params") or {}
+        if isinstance(params, dict):
+            return dict(params)
+        return {}
+    if hasattr(candidate, "params"):
+        params = getattr(candidate, "params") or {}
+        if isinstance(params, dict):
+            return dict(params)
+    if hasattr(candidate, "original_result"):
+        original = getattr(candidate, "original_result")
+        if hasattr(original, "params"):
+            params = getattr(original, "params") or {}
+            if isinstance(params, dict):
+                return dict(params)
+    return {}
+
+
+def _get_trial_number(candidate: Any, fallback: int) -> int:
+    for attr in ("trial_number", "optuna_trial_number"):
+        if hasattr(candidate, attr):
+            value = getattr(candidate, attr)
+            if value is not None:
+                try:
+                    return int(value)
+                except (TypeError, ValueError):
+                    pass
+    if isinstance(candidate, dict):
+        for key in ("trial_number", "optuna_trial_number"):
+            value = candidate.get(key)
+            if value is not None:
+                try:
+                    return int(value)
+                except (TypeError, ValueError):
+                    pass
+    return fallback
+
+
+def _merge_stress_params(
+    candidate_params: Dict[str, Any],
+    fixed_params: Optional[Dict[str, Any]],
+    is_start_date: Optional[str],
+    is_end_date: Optional[str],
+) -> Dict[str, Any]:
+    merged = dict(fixed_params or {})
+    merged.update(candidate_params or {})
+    if is_start_date:
+        merged["start"] = is_start_date
+        merged["dateFilter"] = True
+    if is_end_date:
+        merged["end"] = is_end_date
+        merged["dateFilter"] = True
+    return merged
+
+
+def run_stress_test(
+    csv_path: str,
+    strategy_id: str,
+    source_results: List[Any],
+    config: StressTestConfig,
+    is_start_date: Optional[str],
+    is_end_date: Optional[str],
+    fixed_params: dict,
+    config_json: dict,
+    n_workers: int = 6,
+) -> Tuple[List[StressTestResult], dict]:
+    if not config.enabled:
+        return [], {}
+
+    candidates = list(source_results or [])
+    if not candidates:
+        return [], {}
+
+    top_k = min(int(config.top_k or 1), len(candidates))
+    candidates = candidates[:top_k]
+
+    results: List[StressTestResult] = []
+
+    for source_rank, candidate in enumerate(candidates, 1):
+        candidate_params = _extract_candidate_params(candidate)
+        params = _merge_stress_params(candidate_params, fixed_params, is_start_date, is_end_date)
+
+        base_metrics = _run_is_backtest(
+            csv_path=csv_path,
+            strategy_id=strategy_id,
+            params=params,
+            is_start_date=is_start_date,
+            is_end_date=is_end_date,
+            warmup_bars=int(config.warmup_bars),
+        )
+
+        trial_number = _get_trial_number(candidate, source_rank)
+
+        if base_metrics is None or base_metrics.get("net_profit_pct", 0) <= 0:
+            results.append(
+                StressTestResult(
+                    trial_number=trial_number,
+                    source_rank=source_rank,
+                    status=StressTestStatus.SKIPPED_BAD_BASE.value,
+                    base_net_profit_pct=(base_metrics or {}).get("net_profit_pct", 0.0),
+                    base_max_drawdown_pct=(base_metrics or {}).get("max_drawdown_pct", 0.0),
+                    base_romad=(base_metrics or {}).get("romad"),
+                    base_sharpe_ratio=(base_metrics or {}).get("sharpe_ratio"),
+                    profit_retention=None,
+                    romad_retention=None,
+                    profit_worst=None,
+                    profit_lower_tail=None,
+                    profit_median=None,
+                    romad_worst=None,
+                    romad_lower_tail=None,
+                    romad_median=None,
+                    profit_failure_rate=None,
+                    romad_failure_rate=None,
+                    combined_failure_rate=1.0,
+                    profit_failure_count=0,
+                    romad_failure_count=0,
+                    combined_failure_count=0,
+                    total_perturbations=0,
+                    failure_threshold=config.failure_threshold,
+                    param_worst_ratios={},
+                    most_sensitive_param=None,
+                )
+            )
+            continue
+
+        perturbations = generate_perturbations(params, config_json)
+        if not perturbations:
+            results.append(
+                StressTestResult(
+                    trial_number=trial_number,
+                    source_rank=source_rank,
+                    status=StressTestStatus.SKIPPED_NO_PARAMS.value,
+                    base_net_profit_pct=base_metrics["net_profit_pct"],
+                    base_max_drawdown_pct=base_metrics["max_drawdown_pct"],
+                    base_romad=base_metrics.get("romad"),
+                    base_sharpe_ratio=base_metrics.get("sharpe_ratio"),
+                    profit_retention=None,
+                    romad_retention=None,
+                    profit_worst=None,
+                    profit_lower_tail=None,
+                    profit_median=None,
+                    romad_worst=None,
+                    romad_lower_tail=None,
+                    romad_median=None,
+                    profit_failure_rate=None,
+                    romad_failure_rate=None,
+                    combined_failure_rate=1.0,
+                    profit_failure_count=0,
+                    romad_failure_count=0,
+                    combined_failure_count=0,
+                    total_perturbations=0,
+                    failure_threshold=config.failure_threshold,
+                    param_worst_ratios={},
+                    most_sensitive_param=None,
+                )
+            )
+            continue
+
+        perturbation_results = run_perturbations_parallel(
+            csv_path=csv_path,
+            strategy_id=strategy_id,
+            perturbations=perturbations,
+            is_start_date=is_start_date,
+            is_end_date=is_end_date,
+            fixed_params=fixed_params,
+            warmup_bars=int(config.warmup_bars),
+            n_workers=int(n_workers or 1),
+        )
+
+        metrics = calculate_retention_metrics(
+            base_metrics=base_metrics,
+            perturbation_results=perturbation_results,
+            failure_threshold=config.failure_threshold,
+            total_perturbations_generated=len(perturbations),
+        )
+
+        most_sensitive = None
+        if metrics.param_worst_ratios:
+            most_sensitive = min(metrics.param_worst_ratios, key=metrics.param_worst_ratios.get)
+
+        results.append(
+            StressTestResult(
+                trial_number=trial_number,
+                source_rank=source_rank,
+                status=metrics.status.value,
+                base_net_profit_pct=base_metrics["net_profit_pct"],
+                base_max_drawdown_pct=base_metrics["max_drawdown_pct"],
+                base_romad=base_metrics.get("romad"),
+                base_sharpe_ratio=base_metrics.get("sharpe_ratio"),
+                profit_retention=metrics.profit_retention,
+                romad_retention=metrics.romad_retention,
+                profit_worst=metrics.profit_worst,
+                profit_lower_tail=metrics.profit_lower_tail,
+                profit_median=metrics.profit_median,
+                romad_worst=metrics.romad_worst,
+                romad_lower_tail=metrics.romad_lower_tail,
+                romad_median=metrics.romad_median,
+                profit_failure_rate=metrics.profit_failure_rate,
+                romad_failure_rate=metrics.romad_failure_rate,
+                combined_failure_rate=metrics.combined_failure_rate,
+                profit_failure_count=metrics.profit_failure_count,
+                romad_failure_count=metrics.romad_failure_count,
+                combined_failure_count=metrics.combined_failure_count,
+                total_perturbations=metrics.total_perturbations,
+                failure_threshold=metrics.failure_threshold,
+                param_worst_ratios=metrics.param_worst_ratios,
+                most_sensitive_param=most_sensitive,
+            )
+        )
+
+    sort_metric = (config.sort_metric or "profit_retention").strip().lower()
+    if sort_metric == "romad_retention":
+        results.sort(
+            key=lambda r: (r.romad_retention is not None, r.romad_retention or 0),
+            reverse=True,
+        )
+    else:
+        results.sort(
+            key=lambda r: (r.profit_retention is not None, r.profit_retention or 0),
+            reverse=True,
+        )
+
+    for idx, result in enumerate(results, 1):
+        result.st_rank = idx
+        result.rank_change = result.source_rank - idx
+
+    valid_results = [r for r in results if r.profit_retention is not None]
+    profit_retention_vals = [r.profit_retention for r in valid_results if r.profit_retention is not None]
+    avg_profit_retention = (
+        sum(profit_retention_vals) / len(profit_retention_vals)
+        if profit_retention_vals
+        else None
+    )
+
+    romad_retention_vals = [r.romad_retention for r in valid_results if r.romad_retention is not None]
+    avg_romad_retention = (
+        sum(romad_retention_vals) / len(romad_retention_vals)
+        if romad_retention_vals
+        else None
+    )
+
+    combined_rates = [r.combined_failure_rate for r in valid_results if r.combined_failure_rate is not None]
+    avg_combined_failure_rate = (
+        sum(combined_rates) / len(combined_rates)
+        if combined_rates
+        else None
+    )
+
+    summary = {
+        "avg_profit_retention": round(avg_profit_retention, 4) if avg_profit_retention is not None else None,
+        "avg_romad_retention": round(avg_romad_retention, 4) if avg_romad_retention is not None else None,
+        "avg_combined_failure_rate": round(avg_combined_failure_rate, 4)
+        if avg_combined_failure_rate is not None
+        else None,
+        "total_perturbations_run": sum(r.total_perturbations for r in results),
+        "candidates_skipped_bad_base": sum(
+            1 for r in results if r.status == StressTestStatus.SKIPPED_BAD_BASE.value
+        ),
+        "candidates_skipped_no_params": sum(
+            1 for r in results if r.status == StressTestStatus.SKIPPED_NO_PARAMS.value
+        ),
+        "candidates_insufficient_data": sum(
+            1 for r in results if r.status == StressTestStatus.INSUFFICIENT_DATA.value
+        ),
+        "failure_threshold": config.failure_threshold,
+    }
+
+    return results, summary
