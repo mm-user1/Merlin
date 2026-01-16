@@ -33,7 +33,8 @@ const ResultsState = {
     startDate: '',
     endDate: '',
     periodDays: null,
-    sortMetric: 'profit_degradation'
+    sortMetric: 'profit_degradation',
+    source: 'optuna'
   },
   stressTest: {
     enabled: false,
@@ -46,7 +47,8 @@ const ResultsState = {
     avgCombinedFailureRate: null,
     candidatesSkippedBadBase: 0,
     candidatesSkippedNoParams: 0,
-    candidatesInsufficientData: 0
+    candidatesInsufficientData: 0,
+    source: 'optuna'
   },
   manualTests: [],
   activeManualTest: null,
@@ -138,6 +140,30 @@ function applyState(state) {
       };
     }
   }
+}
+
+function inferPostProcessSource(trials, key) {
+  const values = new Set();
+  (trials || []).forEach((trial) => {
+    const value = trial ? trial[key] : null;
+    if (value) values.add(value);
+  });
+  if (values.size === 1) {
+    return Array.from(values)[0];
+  }
+  return null;
+}
+
+function buildRankMapFromKey(trials, rankKey) {
+  const map = {};
+  (trials || []).forEach((trial) => {
+    if (!trial) return;
+    const rank = trial[rankKey];
+    if (rank !== null && rank !== undefined) {
+      map[trial.trial_number] = rank;
+    }
+  });
+  return map;
 }
 
 function getQueryStudyId() {
@@ -392,6 +418,9 @@ async function applyStudyPayload(data) {
     meanSharpe: study.dsr_mean_sharpe ?? null,
     varSharpe: study.dsr_var_sharpe ?? null
   };
+  ResultsState.forwardTest.source = study.ft_source
+    || inferPostProcessSource(data.trials || [], 'ft_source')
+    || 'optuna';
 
   const stTrials = (data.trials || []).filter((trial) => trial.st_rank !== null && trial.st_rank !== undefined);
   stTrials.sort((a, b) => (a.st_rank || 0) - (b.st_rank || 0));
@@ -406,7 +435,10 @@ async function applyStudyPayload(data) {
     avgCombinedFailureRate: study.st_avg_combined_failure_rate ?? null,
     candidatesSkippedBadBase: study.st_candidates_skipped_bad_base ?? 0,
     candidatesSkippedNoParams: study.st_candidates_skipped_no_params ?? 0,
-    candidatesInsufficientData: study.st_candidates_insufficient_data ?? 0
+    candidatesInsufficientData: study.st_candidates_insufficient_data ?? 0,
+    source: study.st_source
+      || inferPostProcessSource(data.trials || [], 'st_source')
+      || 'optuna'
   };
 
   ResultsState.manualTests = data.manual_tests || [];
@@ -864,12 +896,17 @@ function renderForwardTestTable(results) {
     thead.innerHTML = window.OptunaResultsUI.buildTrialTableHeaders(objectives, hasConstraints);
   }
 
-  const optunaRankMap = {};
-  (ResultsState.results || []).forEach((trial, idx) => {
-    if (trial.trial_number !== undefined) {
-      optunaRankMap[trial.trial_number] = idx + 1;
-    }
-  });
+  const ftSource = ResultsState.forwardTest?.source || 'optuna';
+  let sourceRankMap = {};
+  if (ftSource === 'dsr') {
+    sourceRankMap = buildRankMapFromKey(ResultsState.results || [], 'dsr_rank');
+  } else {
+    (ResultsState.results || []).forEach((trial, idx) => {
+      if (trial.trial_number !== undefined) {
+        sourceRankMap[trial.trial_number] = idx + 1;
+      }
+    });
+  }
 
   (results || []).forEach((trial, index) => {
     const mapped = {
@@ -913,12 +950,13 @@ function renderForwardTestTable(results) {
       const comparison = window.PostProcessUI
         ? window.PostProcessUI.buildComparisonMetrics(trial)
         : null;
-      const optunaRank = optunaRankMap[trialNumber];
-      const rankChange = optunaRank && trial.ft_rank ? optunaRank - trial.ft_rank : null;
+      const sourceRank = sourceRankMap[trialNumber];
+      const rankChange = sourceRank != null && trial.ft_rank ? sourceRank - trial.ft_rank : null;
+      const rankSourceLabel = ftSource === 'dsr' ? 'DSR' : 'Optuna';
 
       if (comparison) {
         const line = [
-          rankChange !== null ? `Rank: ${formatSigned(rankChange, 0)}` : null,
+          rankChange !== null ? `Rank: ${formatSigned(rankChange, 0)} (vs ${rankSourceLabel})` : null,
           `Profit Deg: ${formatSigned(comparison.profit_degradation || 0, 2)}`,
           `Max DD: ${formatSigned(comparison.max_dd_change || 0, 2, '%')}`,
           `ROMAD: ${formatSigned(comparison.romad_change || 0, 2)}`,
@@ -1026,12 +1064,19 @@ function renderStressTestTable(results) {
     thead.innerHTML = window.OptunaResultsUI.buildTrialTableHeaders(objectives, hasConstraints);
   }
 
-  const optunaRankMap = {};
-  (ResultsState.results || []).forEach((trial, idx) => {
-    if (trial.trial_number !== undefined) {
-      optunaRankMap[trial.trial_number] = idx + 1;
-    }
-  });
+  const stSource = ResultsState.stressTest?.source || 'optuna';
+  let sourceRankMap = {};
+  if (stSource === 'ft') {
+    sourceRankMap = buildRankMapFromKey(ResultsState.results || [], 'ft_rank');
+  } else if (stSource === 'dsr') {
+    sourceRankMap = buildRankMapFromKey(ResultsState.results || [], 'dsr_rank');
+  } else {
+    (ResultsState.results || []).forEach((trial, idx) => {
+      if (trial.trial_number !== undefined) {
+        sourceRankMap[trial.trial_number] = idx + 1;
+      }
+    });
+  }
 
   (results || []).forEach((trial, index) => {
     const temp = document.createElement('tbody');
@@ -1062,8 +1107,9 @@ function renderStressTestTable(results) {
       selectTableRow(index, trialNumber);
       showParameterDetails({ ...trial, param_id: paramId });
 
-      const optunaRank = optunaRankMap[trialNumber];
-      const rankDelta = optunaRank ? (optunaRank - stRank) : null;
+      const sourceRank = sourceRankMap[trialNumber];
+      const rankDelta = sourceRank != null ? (sourceRank - stRank) : null;
+      const rankSourceLabel = stSource === 'ft' ? 'FT' : (stSource === 'dsr' ? 'DSR' : 'Optuna');
 
       if (trial.st_status === 'skipped_bad_base') {
         const baseProfit = Number((trial.base_net_profit_pct ?? trial.net_profit_pct) || 0);
@@ -1079,7 +1125,7 @@ function renderStressTestTable(results) {
         const line = 'Status: No Testable Parameters (strategy has only categorical params)';
         setComparisonLine(line);
       } else {
-        const rankLine = rankDelta !== null ? `Rank: ${formatSigned(rankDelta, 0)}` : null;
+        const rankLine = rankDelta !== null ? `Rank: ${formatSigned(rankDelta, 0)} (vs ${rankSourceLabel})` : null;
 
         const profitRet = trial.profit_retention;
         const profitRetLabel = profitRet !== null && profitRet !== undefined

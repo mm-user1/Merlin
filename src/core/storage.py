@@ -38,8 +38,22 @@ DB_PATH = STORAGE_DIR / "studies.db"
 def init_database() -> None:
     """Initialize database schema and ensure storage directories exist."""
     global DB_INITIALIZED
-    if DB_INITIALIZED:
-        return
+    if DB_INITIALIZED and not DB_PATH.exists():
+        DB_INITIALIZED = False
+    if DB_INITIALIZED and DB_PATH.exists():
+        with sqlite3.connect(
+            str(DB_PATH),
+            check_same_thread=False,
+            timeout=30.0,
+            isolation_level="DEFERRED",
+        ) as conn:
+            _configure_connection(conn)
+            cursor = conn.execute(
+                "SELECT name FROM sqlite_master WHERE type='table' AND name='studies'"
+            )
+            if cursor.fetchone():
+                return
+        DB_INITIALIZED = False
     with DB_INIT_LOCK:
         if DB_INITIALIZED:
             return
@@ -197,6 +211,7 @@ def _create_schema(conn: sqlite3.Connection) -> None:
             ft_consistency_score REAL,
             profit_degradation REAL,
             ft_rank INTEGER,
+            ft_source TEXT,
 
             dsr_probability REAL,
             dsr_rank INTEGER,
@@ -225,6 +240,7 @@ def _create_schema(conn: sqlite3.Connection) -> None:
             st_failure_threshold REAL,
             param_worst_ratios TEXT,
             most_sensitive_param TEXT,
+            st_source TEXT,
 
             created_at TEXT DEFAULT (datetime('now')),
 
@@ -1127,6 +1143,7 @@ def save_forward_test_results(
     ft_start_date: Optional[str],
     ft_end_date: Optional[str],
     is_period_days: Optional[int],
+    ft_source: Optional[str] = None,
 ) -> bool:
     if not study_id:
         return False
@@ -1180,6 +1197,7 @@ def save_forward_test_results(
                             payload.get("ft_consistency_score"),
                             payload.get("profit_degradation"),
                             payload.get("ft_rank"),
+                            ft_source,
                             study_id,
                             payload.get("trial_number"),
                         )
@@ -1201,7 +1219,8 @@ def save_forward_test_results(
                         ft_sqn = ?,
                         ft_consistency_score = ?,
                         profit_degradation = ?,
-                        ft_rank = ?
+                        ft_rank = ?,
+                        ft_source = ?
                     WHERE study_id = ? AND trial_number = ?
                     """,
                     rows,
@@ -1314,6 +1333,8 @@ def save_stress_test_results(
     st_results: List[Any],
     st_summary: Dict[str, Any],
     config: Any,
+    *,
+    st_source: Optional[str] = None,
 ) -> bool:
     if not study_id:
         return False
@@ -1377,7 +1398,8 @@ def save_stress_test_results(
                     total_perturbations = NULL,
                     st_failure_threshold = NULL,
                     param_worst_ratios = NULL,
-                    most_sensitive_param = NULL
+                    most_sensitive_param = NULL,
+                    st_source = NULL
                 WHERE study_id = ?
                 """,
                 (study_id,),
@@ -1413,6 +1435,7 @@ def save_stress_test_results(
                             payload.get("failure_threshold"),
                             param_worst_json,
                             payload.get("most_sensitive_param"),
+                            st_source,
                             study_id,
                             payload.get("trial_number"),
                         )
@@ -1441,7 +1464,8 @@ def save_stress_test_results(
                         total_perturbations = ?,
                         st_failure_threshold = ?,
                         param_worst_ratios = ?,
-                        most_sensitive_param = ?
+                        most_sensitive_param = ?,
+                        st_source = ?
                     WHERE study_id = ? AND trial_number = ?
                     """,
                     rows,

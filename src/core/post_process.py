@@ -64,7 +64,7 @@ class FTResult:
     """Forward test result for a single trial."""
 
     trial_number: int
-    optuna_rank: int
+    source_rank: int
     params: dict
 
     is_net_profit_pct: float
@@ -315,7 +315,7 @@ def _ft_worker_entry(
 
         return {
             "trial_number": trial_number,
-            "optuna_rank": task_dict["optuna_rank"],
+            "source_rank": task_dict["source_rank"],
             "params": params,
             "is_metrics": is_metrics,
             "ft_metrics": ft_metrics,
@@ -749,7 +749,7 @@ def run_forward_test(
         tasks.append(
             {
                 "trial_number": int(trial_number),
-                "optuna_rank": idx,
+                "source_rank": idx,
                 "params": dict(getattr(result, "params", {}) or {}),
                 "is_metrics": _build_is_metrics(result),
             }
@@ -782,7 +782,7 @@ def run_forward_test(
             results.append(
                 FTResult(
                     trial_number=int(payload["trial_number"]),
-                    optuna_rank=int(payload["optuna_rank"]),
+                    source_rank=int(payload["source_rank"]),
                     params=payload["params"],
                     is_net_profit_pct=is_metrics.get("net_profit_pct", 0.0),
                     is_max_drawdown_pct=is_metrics.get("max_drawdown_pct", 0.0),
@@ -824,7 +824,7 @@ def run_forward_test(
 
     for idx, result in enumerate(results, 1):
         result.ft_rank = idx
-        result.rank_change = result.optuna_rank - idx
+        result.rank_change = result.source_rank - idx
 
     return results
 

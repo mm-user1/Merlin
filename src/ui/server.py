@@ -2632,6 +2632,7 @@ def run_optimization_endpoint() -> object:
         ft_candidates = results
         if dsr_results:
             ft_candidates = [item.original_result for item in dsr_results]
+        ft_source = "dsr" if dsr_results else "optuna"
 
         pp_config = PostProcessConfig(
             enabled=True,
@@ -2661,6 +2662,7 @@ def run_optimization_endpoint() -> object:
             ft_start_date=ft_start.strftime("%Y-%m-%d") if ft_start else None,
             ft_end_date=ft_end.strftime("%Y-%m-%d") if ft_end else None,
             is_period_days=int(is_days or 0),
+            ft_source=ft_source,
         )
 
     st_results: List[Any] = []
@@ -2692,10 +2694,13 @@ def run_optimization_endpoint() -> object:
         )
 
         st_candidates = results
+        st_source = "optuna"
         if ft_enabled and ft_results:
             st_candidates = ft_results
+            st_source = "ft"
         elif dsr_results:
             st_candidates = dsr_results
+            st_source = "dsr"
 
         st_results, st_summary = run_stress_test(
             csv_path=data_path,
@@ -2713,6 +2718,7 @@ def run_optimization_endpoint() -> object:
             st_results,
             st_summary,
             stress_test_config,
+            st_source=st_source,
         )
 
     _set_optimization_state(
