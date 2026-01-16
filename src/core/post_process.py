@@ -255,7 +255,7 @@ def _ft_worker_entry(
 
     Follows optuna_engine pattern: load data and strategy inside worker.
     """
-    from .backtest_engine import load_data
+    from .backtest_engine import align_date_bounds, load_data
     from . import metrics
     from strategies import get_strategy
 
@@ -266,8 +266,7 @@ def _ft_worker_entry(
         df = load_data(csv_path)
         strategy_class = get_strategy(strategy_id)
 
-        ft_start = _parse_timestamp(ft_start_date)
-        ft_end = _parse_timestamp(ft_end_date)
+        ft_start, ft_end = align_date_bounds(df.index, ft_start_date, ft_end_date)
 
         if ft_start is None or ft_end is None:
             raise ValueError(f"Invalid FT dates: start={ft_start_date}, end={ft_end_date}")
@@ -615,15 +614,17 @@ def run_dsr_analysis(
         df = load_data(csv_path)
 
     from strategies import get_strategy
-    from .backtest_engine import prepare_dataset_with_warmup
+    from .backtest_engine import align_date_bounds, prepare_dataset_with_warmup
     from . import metrics
 
     strategy_class = get_strategy(strategy_id)
 
     fixed = dict(fixed_params or {})
     date_filter = bool(fixed.get("dateFilter"))
-    start = _parse_timestamp(fixed.get("start")) if date_filter else None
-    end = _parse_timestamp(fixed.get("end")) if date_filter else None
+    if date_filter:
+        start, end = align_date_bounds(df.index, fixed.get("start"), fixed.get("end"))
+    else:
+        start, end = None, None
 
     if date_filter:
         if start is None:
@@ -926,7 +927,7 @@ def _run_is_backtest(
     is_end_date: Optional[str],
     warmup_bars: int,
 ) -> Optional[Dict[str, Any]]:
-    from .backtest_engine import load_data, prepare_dataset_with_warmup
+    from .backtest_engine import align_date_bounds, load_data, prepare_dataset_with_warmup
     from . import metrics
     from strategies import get_strategy
 
@@ -934,8 +935,7 @@ def _run_is_backtest(
         df = load_data(csv_path)
         strategy_class = get_strategy(strategy_id)
 
-        start_ts = _parse_timestamp(is_start_date)
-        end_ts = _parse_timestamp(is_end_date)
+        start_ts, end_ts = align_date_bounds(df.index, is_start_date, is_end_date)
 
         if start_ts is not None or end_ts is not None:
             df_prepared, trade_start_idx = prepare_dataset_with_warmup(

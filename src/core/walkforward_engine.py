@@ -311,8 +311,11 @@ class WalkForwardEngine:
         end_date = fixed_params.get("end")
 
         if use_date_filter and start_date is not None and end_date is not None:
-            trading_start = pd.Timestamp(start_date) if not isinstance(start_date, pd.Timestamp) else start_date
-            trading_end = pd.Timestamp(end_date) if not isinstance(end_date, pd.Timestamp) else end_date
+            from .backtest_engine import align_date_bounds
+
+            trading_start, trading_end = align_date_bounds(df.index, start_date, end_date)
+            if trading_start is None or trading_end is None:
+                raise ValueError("Invalid date filter range for walk-forward.")
         else:
             trading_start = df.index[0]
             trading_end = df.index[-1]

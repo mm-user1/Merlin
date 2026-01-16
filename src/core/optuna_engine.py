@@ -1242,7 +1242,7 @@ class OptunaOptimizer:
         """Load strategy class and data, apply optional date filtering."""
 
         from strategies import get_strategy
-        from .backtest_engine import prepare_dataset_with_warmup
+        from .backtest_engine import align_date_bounds, prepare_dataset_with_warmup
 
         try:
             strategy_class = get_strategy(self.base_config.strategy_id)
@@ -1252,8 +1252,9 @@ class OptunaOptimizer:
         df = load_data(self.base_config.csv_file)
 
         use_date_filter = bool(self.base_config.fixed_params.get("dateFilter", False))
-        start_ts = _parse_timestamp(self.base_config.fixed_params.get("start"))
-        end_ts = _parse_timestamp(self.base_config.fixed_params.get("end"))
+        start_raw = self.base_config.fixed_params.get("start")
+        end_raw = self.base_config.fixed_params.get("end")
+        start_ts, end_ts = align_date_bounds(df.index, start_raw, end_raw)
 
         trade_start_idx = 0
         if use_date_filter and (start_ts is not None or end_ts is not None):

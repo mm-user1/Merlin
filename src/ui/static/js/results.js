@@ -1818,17 +1818,33 @@ function bindEventHandlers() {
         return;
       }
       let endpoint = null;
-      if (ResultsState.mode === 'optuna') {
-        if (!ResultsState.selectedRowId) {
-          alert('Select a trial in the table.');
-          return;
-        }
-        endpoint = `/api/studies/${encodeURIComponent(ResultsState.studyId)}/trials/${ResultsState.selectedRowId}/trades`;
-      } else if (ResultsState.mode === 'wfa') {
+      if (ResultsState.mode === 'wfa') {
         endpoint = `/api/studies/${encodeURIComponent(ResultsState.studyId)}/wfa/trades`;
       } else {
-        alert('Trade export is available for Optuna or WFA studies.');
-        return;
+        const activeTab = ResultsState.activeTab || 'optuna';
+        if (activeTab === 'forward_test') {
+          if (!ResultsState.selectedRowId) {
+            alert('Select a trial in the table.');
+            return;
+          }
+          endpoint = `/api/studies/${encodeURIComponent(ResultsState.studyId)}/trials/${ResultsState.selectedRowId}/ft-trades`;
+        } else if (activeTab === 'manual_tests') {
+          if (!ResultsState.activeManualTest || !ResultsState.activeManualTest.id) {
+            alert('Select a manual test first.');
+            return;
+          }
+          if (!ResultsState.selectedRowId) {
+            alert('Select a trial in the table.');
+            return;
+          }
+          endpoint = `/api/studies/${encodeURIComponent(ResultsState.studyId)}/tests/${ResultsState.activeManualTest.id}/trials/${ResultsState.selectedRowId}/mt-trades`;
+        } else {
+          if (!ResultsState.selectedRowId) {
+            alert('Select a trial in the table.');
+            return;
+          }
+          endpoint = `/api/studies/${encodeURIComponent(ResultsState.studyId)}/trials/${ResultsState.selectedRowId}/trades`;
+        }
       }
       try {
         const response = await fetch(endpoint, {

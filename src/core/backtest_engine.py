@@ -1,6 +1,7 @@
 from dataclasses import dataclass
 from pathlib import Path
-from typing import IO, Any, Dict, List, Optional, Union
+import re
+from typing import IO, Any, Dict, List, Optional, Tuple, Union
 
 import pandas as pd
 from indicators.volatility import atr
@@ -192,6 +193,57 @@ def prepare_dataset_with_warmup(
     trade_start_idx = start_idx - warmup_start_idx
 
     return trimmed_df, trade_start_idx
+
+
+def _parse_timestamp_utc(value: Any) -> Optional[pd.Timestamp]:
+    if value in (None, ""):
+        return None
+    try:
+        ts = pd.Timestamp(value)
+    except (ValueError, TypeError):
+        return None
+    if ts.tzinfo is None:
+        ts = ts.tz_localize("UTC")
+    else:
+        ts = ts.tz_convert("UTC")
+    return ts
+
+
+def _is_date_only(value: Any) -> bool:
+    return isinstance(value, str) and bool(re.match(r"^\d{4}-\d{2}-\d{2}$", value.strip()))
+
+
+def _align_date_only(ts: Optional[pd.Timestamp], index: pd.Index, *, side: str) -> Optional[pd.Timestamp]:
+    if ts is None or index.empty:
+        return ts
+    if side == "start":
+        idx = index.searchsorted(ts, side="left")
+        if idx >= len(index):
+            return ts
+        return index[idx]
+    if side == "end":
+        day_end = ts + pd.Timedelta(days=1) - pd.Timedelta(microseconds=1)
+        idx = index.searchsorted(day_end, side="right") - 1
+        if idx < 0:
+            return ts
+        return index[idx]
+    return ts
+
+
+def align_date_bounds(
+    index: pd.Index,
+    start_raw: Any,
+    end_raw: Any,
+) -> Tuple[Optional[pd.Timestamp], Optional[pd.Timestamp]]:
+    start = _parse_timestamp_utc(start_raw)
+    end = _parse_timestamp_utc(end_raw)
+
+    if _is_date_only(start_raw):
+        start = _align_date_only(start, index, side="start")
+    if _is_date_only(end_raw):
+        end = _align_date_only(end, index, side="end")
+
+    return start, end
 
 
 def build_forced_close_trade(

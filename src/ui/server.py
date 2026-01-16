@@ -17,7 +17,7 @@ from flask import Flask, jsonify, render_template, request, send_file
 
 sys.path.insert(0, str(Path(__file__).parent.parent))
 
-from core.backtest_engine import load_data, prepare_dataset_with_warmup
+from core.backtest_engine import align_date_bounds, load_data, prepare_dataset_with_warmup
 from core.export import export_trades_csv
 from core.optuna_engine import (
     CONSTRAINT_OPERATORS,
@@ -93,6 +93,85 @@ def _persist_csv_upload(file_storage) -> str:
         content = content.encode("utf-8")
     temp_path.write_bytes(content)
     return str(temp_path)
+
+
+def _run_trade_export(
+    *,
+    strategy_id: str,
+    csv_path: str,
+    params: Dict[str, Any],
+    warmup_bars: int,
+) -> Tuple[Optional[List[Any]], Optional[str]]:
+    from strategies import get_strategy
+
+    try:
+        strategy_class = get_strategy(strategy_id)
+    except ValueError as exc:
+        return None, str(exc)
+
+    try:
+        df = load_data(csv_path)
+    except Exception as exc:
+        return None, str(exc)
+
+    trade_start_idx = 0
+    payload = dict(params or {})
+    if payload.get("dateFilter"):
+        start_raw = payload.get("start")
+        end_raw = payload.get("end")
+        start, end = align_date_bounds(df.index, start_raw, end_raw)
+        if start_raw not in (None, "") and start is None:
+            return None, "Invalid start date."
+        if end_raw not in (None, "") and end is None:
+            return None, "Invalid end date."
+        payload["start"] = start
+        payload["end"] = end
+        try:
+            df, trade_start_idx = prepare_dataset_with_warmup(
+                df, start, end, int(warmup_bars)
+            )
+        except Exception:
+            return None, "Failed to prepare dataset with warmup."
+
+    try:
+        result = strategy_class.run(df, payload, trade_start_idx)
+    except Exception as exc:
+        return None, str(exc)
+
+    return result.trades, None
+
+
+def _send_trades_csv(
+    *,
+    trades: List[Any],
+    csv_path: str,
+    study: Dict[str, Any],
+    filename: str,
+) -> object:
+    from core.export import _extract_symbol_from_csv_filename
+
+    csv_name = ""
+    if csv_path:
+        path_obj = Path(csv_path)
+        name = path_obj.name
+        parent = path_obj.parent.name
+        if parent == "merlin_uploads" or name.startswith("upload_"):
+            csv_name = study.get("csv_file_name") or name
+        else:
+            csv_name = name
+    else:
+        csv_name = study.get("csv_file_name") or ""
+    symbol = _extract_symbol_from_csv_filename(csv_name)
+    csv_content = export_trades_csv(trades, symbol=symbol)
+    buffer = io.BytesIO(csv_content.encode("utf-8"))
+    buffer.seek(0)
+
+    return send_file(
+        buffer,
+        mimetype="text/csv",
+        as_attachment=True,
+        download_name=filename,
+    )
 
 
 def _create_param_id_for_strategy(strategy_id: str, params: Dict[str, Any]) -> str:
@@ -875,6 +954,12 @@ def run_manual_test_endpoint(study_id: str) -> object:
     except Exception as exc:
         return jsonify({"error": str(exc)}), HTTPStatus.BAD_REQUEST
 
+    aligned_start, aligned_end = align_date_bounds(df.index, start_date, end_date)
+    if aligned_start is None or aligned_end is None:
+        return jsonify({"error": "Invalid startDate/endDate."}), HTTPStatus.BAD_REQUEST
+    start_ts = aligned_start
+    end_ts = aligned_end
+
     from strategies import get_strategy
     from core import metrics
 
@@ -1060,53 +1145,139 @@ def download_trial_trades(study_id: str, trial_number: int) -> object:
     fixed_params = config.get("fixed_params") or {}
 
     params = {**fixed_params, **(trial.get("params") or {})}
+    warmup_bars = study.get("warmup_bars") or config.get("warmup_bars") or 1000
 
-    start = params.get("start")
-    end = params.get("end")
-    if isinstance(start, str):
-        start = pd.Timestamp(start, tz="UTC")
-    if isinstance(end, str):
-        end = pd.Timestamp(end, tz="UTC")
+    trades, error = _run_trade_export(
+        strategy_id=study.get("strategy_id"),
+        csv_path=csv_path,
+        params=params,
+        warmup_bars=warmup_bars,
+    )
+    if error:
+        return jsonify({"error": error}), HTTPStatus.BAD_REQUEST
+
+    filename = f"{study.get('study_name', 'study')}_trial_{trial_number}_trades.csv"
+    return _send_trades_csv(
+        trades=trades or [],
+        csv_path=csv_path,
+        study=study,
+        filename=filename,
+    )
+
+
+@app.post("/api/studies/<string:study_id>/trials/<int:trial_number>/ft-trades")
+def download_forward_test_trades(study_id: str, trial_number: int) -> object:
+    study_data = load_study_from_db(study_id)
+    if not study_data:
+        return jsonify({"error": "Study not found."}), HTTPStatus.NOT_FOUND
+
+    study = study_data["study"]
+    if study.get("optimization_mode") != "optuna":
+        return jsonify({"error": "Trade export is only supported for Optuna studies."}), HTTPStatus.BAD_REQUEST
+    if not study.get("ft_enabled"):
+        return jsonify({"error": "Forward test is not enabled for this study."}), HTTPStatus.BAD_REQUEST
+
+    csv_path = study.get("csv_file_path")
+    if not csv_path or not Path(csv_path).exists():
+        return jsonify({"error": "CSV file is missing for this study."}), HTTPStatus.BAD_REQUEST
+
+    trial = get_study_trial(study_id, trial_number)
+    if not trial:
+        return jsonify({"error": "Trial not found."}), HTTPStatus.NOT_FOUND
+
+    ft_start = study.get("ft_start_date")
+    ft_end = study.get("ft_end_date")
+    if not ft_start or not ft_end:
+        return jsonify({"error": "Forward test date range is missing."}), HTTPStatus.BAD_REQUEST
+
+    config = study.get("config_json") or {}
+    fixed_params = config.get("fixed_params") or {}
+    params = {**fixed_params, **(trial.get("params") or {})}
+    params["dateFilter"] = True
+    params["start"] = ft_start
+    params["end"] = ft_end
 
     warmup_bars = study.get("warmup_bars") or config.get("warmup_bars") or 1000
 
-    from strategies import get_strategy
+    trades, error = _run_trade_export(
+        strategy_id=study.get("strategy_id"),
+        csv_path=csv_path,
+        params=params,
+        warmup_bars=warmup_bars,
+    )
+    if error:
+        return jsonify({"error": error}), HTTPStatus.BAD_REQUEST
 
-    try:
-        strategy_class = get_strategy(study.get("strategy_id"))
-    except ValueError as exc:
-        return jsonify({"error": str(exc)}), HTTPStatus.BAD_REQUEST
+    filename = f"{study.get('study_name', 'study')}_trial_{trial_number}_ft_trades.csv"
+    return _send_trades_csv(
+        trades=trades or [],
+        csv_path=csv_path,
+        study=study,
+        filename=filename,
+    )
 
-    try:
-        df = load_data(csv_path)
-    except Exception as exc:
-        return jsonify({"error": str(exc)}), HTTPStatus.BAD_REQUEST
 
-    trade_start_idx = 0
-    if params.get("dateFilter"):
+@app.post("/api/studies/<string:study_id>/tests/<int:test_id>/trials/<int:trial_number>/mt-trades")
+def download_manual_test_trades(study_id: str, test_id: int, trial_number: int) -> object:
+    study_data = load_study_from_db(study_id)
+    if not study_data:
+        return jsonify({"error": "Study not found."}), HTTPStatus.NOT_FOUND
+
+    study = study_data["study"]
+    if study.get("optimization_mode") != "optuna":
+        return jsonify({"error": "Manual trade export is only supported for Optuna studies."}), HTTPStatus.BAD_REQUEST
+
+    test = load_manual_test_results(study_id, test_id)
+    if not test:
+        return jsonify({"error": "Manual test not found."}), HTTPStatus.NOT_FOUND
+
+    csv_path = test.get("csv_path")
+    if not csv_path and test.get("data_source") == "original_csv":
+        csv_path = study.get("csv_file_path")
+    if not csv_path or not Path(csv_path).exists():
+        return jsonify({"error": "CSV file is missing for this manual test."}), HTTPStatus.BAD_REQUEST
+
+    trial = get_study_trial(study_id, trial_number)
+    if not trial:
+        return jsonify({"error": "Trial not found."}), HTTPStatus.NOT_FOUND
+    trials_tested_csv = test.get("trials_tested_csv") or ""
+    if trials_tested_csv:
         try:
-            df, trade_start_idx = prepare_dataset_with_warmup(df, start, end, int(warmup_bars))
-        except Exception:
-            return jsonify({"error": "Failed to prepare dataset with warmup."}), HTTPStatus.BAD_REQUEST
+            tested = {int(item.strip()) for item in trials_tested_csv.split(",") if item.strip()}
+        except ValueError:
+            tested = set()
+        if tested and int(trial_number) not in tested:
+            return jsonify({"error": "Trial not included in this manual test."}), HTTPStatus.BAD_REQUEST
 
-    try:
-        result = strategy_class.run(df, params, trade_start_idx)
-    except Exception as exc:
-        return jsonify({"error": str(exc)}), HTTPStatus.BAD_REQUEST
+    start_date = test.get("start_date")
+    end_date = test.get("end_date")
+    if not start_date or not end_date:
+        return jsonify({"error": "Manual test date range is missing."}), HTTPStatus.BAD_REQUEST
 
-    from core.export import _extract_symbol_from_csv_filename
+    config = study.get("config_json") or {}
+    fixed_params = config.get("fixed_params") or {}
+    params = {**fixed_params, **(trial.get("params") or {})}
+    params["dateFilter"] = True
+    params["start"] = start_date
+    params["end"] = end_date
 
-    symbol = _extract_symbol_from_csv_filename(study.get("csv_file_name") or "")
-    csv_content = export_trades_csv(result.trades, symbol=symbol)
-    buffer = io.BytesIO(csv_content.encode("utf-8"))
-    buffer.seek(0)
+    warmup_bars = study.get("warmup_bars") or config.get("warmup_bars") or 1000
 
-    filename = f"{study.get('study_name', 'study')}_trial_{trial_number}_trades.csv"
-    return send_file(
-        buffer,
-        mimetype="text/csv",
-        as_attachment=True,
-        download_name=filename,
+    trades, error = _run_trade_export(
+        strategy_id=study.get("strategy_id"),
+        csv_path=csv_path,
+        params=params,
+        warmup_bars=warmup_bars,
+    )
+    if error:
+        return jsonify({"error": error}), HTTPStatus.BAD_REQUEST
+
+    filename = f"{study.get('study_name', 'study')}_test_{test_id}_trial_{trial_number}_mt_trades.csv"
+    return _send_trades_csv(
+        trades=trades or [],
+        csv_path=csv_path,
+        study=study,
+        filename=filename,
     )
 
 
@@ -1480,23 +1651,9 @@ def run_walkforward_optimization() -> object:
     if use_date_filter and start_date is not None and end_date is not None:
         try:
             # Ensure dates are pandas Timestamps with UTC timezone
-            if not isinstance(start_date, pd.Timestamp):
-                start_ts = pd.Timestamp(start_date)
-                if start_ts.tzinfo is None:
-                    start_ts = start_ts.tz_localize('UTC')
-                else:
-                    start_ts = start_ts.tz_convert('UTC')
-            else:
-                start_ts = start_date if start_date.tzinfo else start_date.tz_localize('UTC')
-
-            if not isinstance(end_date, pd.Timestamp):
-                end_ts = pd.Timestamp(end_date)
-                if end_ts.tzinfo is None:
-                    end_ts = end_ts.tz_localize('UTC')
-                else:
-                    end_ts = end_ts.tz_convert('UTC')
-            else:
-                end_ts = end_date if end_date.tzinfo else end_date.tz_localize('UTC')
+            start_ts, end_ts = align_date_bounds(df.index, start_date, end_date)
+            if start_ts is None or end_ts is None:
+                return jsonify({"error": "Invalid date filter range."}), HTTPStatus.BAD_REQUEST
 
             # IMPORTANT: Add warmup period before start_ts for Walk-Forward Analysis
             # The first WFA window will start from start_ts, so it needs historical data.
@@ -1795,15 +1952,15 @@ def run_backtest() -> object:
     # Prepare dataset with warmup
     trade_start_idx = 0
     use_date_filter = payload.get("dateFilter", False)
-    start = payload.get("start")
-    end = payload.get("end")
+    start_raw = payload.get("start")
+    end_raw = payload.get("end")
 
-    if use_date_filter and (start is not None or end is not None):
-        # Parse dates
-        if isinstance(start, str):
-            start = pd.Timestamp(start, tz="UTC")
-        if isinstance(end, str):
-            end = pd.Timestamp(end, tz="UTC")
+    if use_date_filter and (start_raw is not None or end_raw is not None):
+        start, end = align_date_bounds(df.index, start_raw, end_raw)
+        if start_raw not in (None, "") and start is None:
+            return ("Invalid start date.", HTTPStatus.BAD_REQUEST)
+        if end_raw not in (None, "") and end is None:
+            return ("Invalid end date.", HTTPStatus.BAD_REQUEST)
 
         # Apply warmup
         try:

@@ -52,7 +52,7 @@
     if (dsrEnable) {
       const dsrDisabled = !dsrEnable.checked;
       if (dsrTopK) dsrTopK.disabled = dsrDisabled;
-      if (dsrSettings) dsrSettings.style.display = dsrDisabled ? 'none' : 'block';
+      if (dsrSettings) dsrSettings.style.display = dsrDisabled ? 'none' : 'flex';
     }
     if (stEnable) {
       const stDisabled = !stEnable.checked;
