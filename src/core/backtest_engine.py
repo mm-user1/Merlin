@@ -195,7 +195,7 @@ def prepare_dataset_with_warmup(
     return trimmed_df, trade_start_idx
 
 
-def _parse_timestamp_utc(value: Any) -> Optional[pd.Timestamp]:
+def parse_timestamp_utc(value: Any) -> Optional[pd.Timestamp]:
     if value in (None, ""):
         return None
     try:
@@ -235,8 +235,8 @@ def align_date_bounds(
     start_raw: Any,
     end_raw: Any,
 ) -> Tuple[Optional[pd.Timestamp], Optional[pd.Timestamp]]:
-    start = _parse_timestamp_utc(start_raw)
-    end = _parse_timestamp_utc(end_raw)
+    start = parse_timestamp_utc(start_raw)
+    end = parse_timestamp_utc(end_raw)
 
     if _is_date_only(start_raw):
         start = _align_date_only(start, index, side="start")

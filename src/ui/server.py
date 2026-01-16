@@ -17,7 +17,12 @@ from flask import Flask, jsonify, render_template, request, send_file
 
 sys.path.insert(0, str(Path(__file__).parent.parent))
 
-from core.backtest_engine import align_date_bounds, load_data, prepare_dataset_with_warmup
+from core.backtest_engine import (
+    align_date_bounds,
+    load_data,
+    parse_timestamp_utc,
+    prepare_dataset_with_warmup,
+)
 from core.export import export_trades_csv
 from core.optuna_engine import (
     CONSTRAINT_OPERATORS,
@@ -37,7 +42,6 @@ from core.post_process import (
     run_dsr_analysis,
     run_forward_test,
     run_stress_test,
-    _parse_timestamp as _parse_pp_timestamp,
 )
 from core.storage import (
     delete_manual_test,
@@ -905,8 +909,8 @@ def run_manual_test_endpoint(study_id: str) -> object:
     if not csv_path or not Path(csv_path).exists():
         return jsonify({"error": "CSV file not found."}), HTTPStatus.BAD_REQUEST
 
-    start_ts = _parse_pp_timestamp(start_date)
-    end_ts = _parse_pp_timestamp(end_date)
+    start_ts = parse_timestamp_utc(start_date)
+    end_ts = parse_timestamp_utc(end_date)
     if start_ts is None or end_ts is None:
         return jsonify({"error": "Invalid startDate/endDate."}), HTTPStatus.BAD_REQUEST
 
@@ -1315,45 +1319,11 @@ def download_wfa_trades(study_id: str) -> object:
     except Exception as exc:
         return jsonify({"error": str(exc)}), HTTPStatus.BAD_REQUEST
 
-    def _normalize_ts(value: Any) -> Optional[pd.Timestamp]:
-        if value is None or value == "":
-            return None
-        if isinstance(value, pd.Timestamp):
-            ts = value
-        else:
-            ts = pd.Timestamp(value)
-        if ts.tzinfo is None:
-            return ts.tz_localize("UTC")
-        return ts.tz_convert("UTC")
-
-    def _align_window_ts(value: Any, *, side: str) -> Optional[pd.Timestamp]:
-        """Align date-only window boundaries to actual bar timestamps in the dataset."""
-        ts = _normalize_ts(value)
-        if ts is None or df.empty:
-            return ts
-        is_date_only = False
-        if isinstance(value, str):
-            stripped = value.strip()
-            is_date_only = bool(re.match(r"^\d{4}-\d{2}-\d{2}$", stripped))
-        if not is_date_only:
-            return ts
-        if side == "start":
-            idx = df.index.searchsorted(ts, side="left")
-            if idx >= len(df.index):
-                return None
-            return df.index[idx]
-        if side == "end":
-            day_end = ts + pd.Timedelta(days=1) - pd.Timedelta(microseconds=1)
-            idx = df.index.searchsorted(day_end, side="right") - 1
-            if idx < 0:
-                return None
-            return df.index[idx]
-        return ts
-
     all_trades = []
     for window in windows:
-        start = _align_window_ts(window.get("oos_start_date") or window.get("oos_start"), side="start")
-        end = _align_window_ts(window.get("oos_end_date") or window.get("oos_end"), side="end")
+        start_raw = window.get("oos_start_date") or window.get("oos_start")
+        end_raw = window.get("oos_end_date") or window.get("oos_end")
+        start, end = align_date_bounds(df.index, start_raw, end_raw)
         if start is None or end is None:
             continue
 
@@ -2565,8 +2535,8 @@ def run_optimization_endpoint() -> object:
 
         original_user_start = fixed_params_payload.get("start")
         original_user_end = fixed_params_payload.get("end")
-        user_start = _parse_pp_timestamp(original_user_start)
-        user_end = _parse_pp_timestamp(original_user_end)
+        user_start = parse_timestamp_utc(original_user_start)
+        user_end = parse_timestamp_utc(original_user_end)
 
         if user_start is None or user_end is None:
             try:

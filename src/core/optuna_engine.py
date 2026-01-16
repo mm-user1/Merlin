@@ -271,20 +271,6 @@ def _generate_numeric_sequence(
     return values
 
 
-def _parse_timestamp(value: Any) -> Optional[pd.Timestamp]:
-    if value in (None, ""):
-        return None
-    try:
-        ts = pd.Timestamp(value)
-    except (ValueError, TypeError):  # pragma: no cover - defensive
-        return None
-    if ts.tzinfo is None:
-        ts = ts.tz_localize("UTC")
-    else:
-        ts = ts.tz_convert("UTC")
-    return ts
-
-
 def _is_nan(value: Any) -> bool:
     return isinstance(value, float) and math.isnan(value)
 

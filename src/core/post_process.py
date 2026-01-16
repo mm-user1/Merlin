@@ -215,26 +215,6 @@ MIN_NEIGHBORS = 4
 # ============================================================
 
 
-def _parse_timestamp(value: Any) -> Optional[pd.Timestamp]:
-    """
-    Parse timestamp to tz-aware UTC.
-
-    Uses same pattern as optuna_engine._parse_timestamp() to ensure
-    consistency with Merlin's tz-aware DataFrame index.
-    """
-    if value in (None, ""):
-        return None
-    try:
-        ts = pd.Timestamp(value)
-    except (ValueError, TypeError):
-        return None
-    if ts.tzinfo is None:
-        ts = ts.tz_localize("UTC")
-    else:
-        ts = ts.tz_convert("UTC")
-    return ts
-
-
 # ============================================================
 # Worker Function (module-level for multiprocessing)
 # ============================================================
@@ -499,8 +479,10 @@ def calculate_is_period_days(config_json: Dict[str, Any]) -> Optional[int]:
     if not isinstance(config_json, dict):
         return None
     fixed = config_json.get("fixed_params") or {}
-    start = _parse_timestamp(fixed.get("start"))
-    end = _parse_timestamp(fixed.get("end"))
+    from .backtest_engine import parse_timestamp_utc
+
+    start = parse_timestamp_utc(fixed.get("start"))
+    end = parse_timestamp_utc(fixed.get("end"))
     if start is None or end is None:
         return None
     return max(0, (end - start).days)
