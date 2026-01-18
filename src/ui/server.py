@@ -2632,9 +2632,11 @@ def run_optimization_endpoint() -> object:
     results: List[OptimizationResult] = []
     optimization_metadata: Optional[Dict[str, Any]] = None
     study_id: Optional[str] = None
+    all_results: List[OptimizationResult] = []
     try:
         start_time = time.time()
         results, study_id = run_optimization(optimization_config)
+        all_results = list(getattr(optimization_config, "optuna_all_results", []))
         end_time = time.time()
 
         optimization_time_seconds = max(0.0, end_time - start_time)
@@ -2734,6 +2736,7 @@ def run_optimization_endpoint() -> object:
         )
         dsr_results, dsr_summary = run_dsr_analysis(
             optuna_results=results,
+            all_results=all_results or results,
             config=dsr_config,
             n_trials_total=completed_trials,
             csv_path=data_path,

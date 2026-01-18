@@ -3,7 +3,7 @@ Walk-Forward Analysis Engine - Rolling WFA (Phase 2)
 """
 
 from dataclasses import dataclass
-from typing import List, Dict, Any, Optional
+from typing import Any, Dict, List, Optional, Tuple
 from copy import deepcopy
 import hashlib
 import io
@@ -355,7 +355,7 @@ class WalkForwardEngine:
                         window.window_id,
                     )
 
-            optimization_results = self._run_optuna_on_window(
+            optimization_results, optimization_all_results = self._run_optuna_on_window(
                 df, optimization_start, optimization_end
             )
             best_result = optimization_results[0] if optimization_results else None
@@ -371,8 +371,9 @@ class WalkForwardEngine:
                 try:
                     dsr_results, _summary = run_dsr_analysis(
                         optuna_results=optimization_results,
+                        all_results=optimization_all_results or optimization_results,
                         config=dsr_config,
-                        n_trials_total=len(optimization_results),
+                        n_trials_total=len(optimization_all_results or optimization_results),
                         csv_path=self.csv_file_path,
                         strategy_id=self.config.strategy_id,
                         fixed_params=fixed_params,
@@ -654,7 +655,9 @@ class WalkForwardEngine:
             window_ids=stitched_window_ids,
         )
 
-    def _run_optuna_on_window(self, df: pd.DataFrame, start_time: pd.Timestamp, end_time: pd.Timestamp):
+    def _run_optuna_on_window(
+        self, df: pd.DataFrame, start_time: pd.Timestamp, end_time: pd.Timestamp
+    ) -> Tuple[List[Any], List[Any]]:
         """Run Optuna optimization for a single WFA window."""
         csv_buffer = self._dataframe_to_csv_buffer(df)
 
@@ -724,7 +727,8 @@ class WalkForwardEngine:
         )
 
         results, _study_id = run_optuna_optimization(base_config, optuna_cfg)
-        return results
+        all_results = list(getattr(base_config, "optuna_all_results", []))
+        return results, all_results
 
     def _dataframe_to_csv_buffer(self, df_window: pd.DataFrame) -> io.StringIO:
         buffer = io.StringIO()

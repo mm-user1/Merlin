@@ -531,6 +531,7 @@ def _filter_dsr_candidates(
 def run_dsr_analysis(
     *,
     optuna_results: Sequence[Any],
+    all_results: Optional[Sequence[Any]] = None,
     config: DSRConfig,
     n_trials_total: Optional[int],
     csv_path: Optional[str],
@@ -549,8 +550,9 @@ def run_dsr_analysis(
     if not results or not config.enabled:
         return [], {}
 
+    sharpe_source = list(all_results) if all_results is not None else results
     sharpe_values = []
-    for item in results:
+    for item in sharpe_source:
         value = getattr(item, "sharpe_ratio", None)
         if value is None:
             continue

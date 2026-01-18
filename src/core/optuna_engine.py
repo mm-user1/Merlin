@@ -1804,6 +1804,7 @@ class OptunaOptimizer:
         )
 
         score_config = self.base_config.score_config or DEFAULT_SCORE_CONFIG
+        self.all_trial_results = list(self.trial_results)
         self.trial_results = calculate_score(self.trial_results, score_config)
 
         if self.study:
@@ -1859,6 +1860,7 @@ def run_optuna_optimization(
 
     optimizer = OptunaOptimizer(base_config, optuna_config)
     results = optimizer.optimize()
+    setattr(base_config, "optuna_all_results", getattr(optimizer, "all_trial_results", list(results)))
 
     study_id: Optional[str] = None
     if getattr(base_config, "optimization_mode", "optuna") == "optuna":
