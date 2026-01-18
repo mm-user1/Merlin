@@ -1420,8 +1420,17 @@
 
     .chart-body {
       padding: 16px;
-      height: 432px;
+      height: 456px;
+      display: flex;
+      flex-direction: column;
+      gap: 6px;
       position: relative;
+    }
+
+    .chart-canvas {
+      position: relative;
+      flex: 1;
+      min-height: 0;
     }
 
     .chart-svg {
@@ -1444,6 +1453,30 @@
       gap: 12px;
       flex-wrap: wrap;
     }
+
+    .chart-axis {
+      position: relative;
+      height: 24px;
+      font-size: 12px;
+      color: #777777;
+      user-select: none;
+    }
+
+    .chart-axis-label {
+      position: absolute;
+      bottom: 0;
+      transform: translateX(-50%);
+      white-space: nowrap;
+    }
+
+    .chart-axis-label.start {
+      transform: translateX(0);
+    }
+
+    .chart-axis-label.end {
+      transform: translateX(-100%);
+    }
+
 
     .summary-row {
       display: grid;
@@ -1657,35 +1690,57 @@
       padding: 16px;
     }
 
-    .param-details-table {
-      width: 100%;
-      border-collapse: collapse;
-      font-size: 14px;
+    .param-details-grid {
+      display: grid;
+      grid-template-columns: repeat(2, minmax(0, 1fr));
+      gap: 12px;
     }
 
-    .param-details-table td {
-      padding: 10px 12px;
-      border-bottom: 1px solid #e8e8e8;
+    .param-group-card {
+      border: 1px solid #e8e8e8;
+      border-radius: 4px;
+      overflow: hidden;
+      background: #ffffff;
     }
 
-    .param-details-table td:first-child {
-      font-weight: 500;
-      color: #2a2a2a;
-      width: 40%;
-    }
-
-    .param-details-table td:last-child {
+    .param-group-title {
+      background: #f2f2f2;
+      padding: 8px 10px;
+      font-size: 13px;
       font-weight: 600;
       color: #2a2a2a;
-      text-align: right;
     }
 
-    .param-details-table tr:nth-child(even) {
+    .param-item {
+      display: flex;
+      justify-content: space-between;
+      gap: 12px;
+      padding: 8px 10px;
+      border-top: 1px solid #eeeeee;
+      font-size: 14px;
+      color: #2a2a2a;
+    }
+
+    .param-item:nth-child(even) {
       background: #fafafa;
     }
 
-    .param-details-table tr:nth-child(odd) {
-      background: #ffffff;
+    .param-item-name,
+    .param-item-value {
+      cursor: pointer;
+    }
+
+    .param-item-name:hover,
+    .param-item-value:hover {
+      text-decoration: underline;
+    }
+
+    .param-item.param-fixed {
+      color: #9a9a9a;
+    }
+
+    .param-item.copied {
+      background: #e8f4ff;
     }
 
     .window-indicator {

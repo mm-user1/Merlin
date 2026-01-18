@@ -5,6 +5,7 @@ import json
 import re
 import sqlite3
 import threading
+import time
 import uuid
 from datetime import datetime
 from contextlib import contextmanager
@@ -151,6 +152,7 @@ def _create_schema(conn: sqlite3.Connection) -> None:
             st_candidates_skipped_bad_base INTEGER,
             st_candidates_skipped_no_params INTEGER,
             st_candidates_insufficient_data INTEGER,
+            optimization_time_seconds INTEGER,
 
             created_at TEXT DEFAULT (datetime('now')),
             completed_at TEXT,
@@ -336,6 +338,7 @@ def _ensure_columns(conn: sqlite3.Connection) -> None:
     ensure("studies", "st_candidates_skipped_bad_base", "INTEGER")
     ensure("studies", "st_candidates_skipped_no_params", "INTEGER")
     ensure("studies", "st_candidates_insufficient_data", "INTEGER")
+    ensure("studies", "optimization_time_seconds", "INTEGER")
 
     ensure("trials", "dsr_probability", "REAL")
     ensure("trials", "dsr_rank", "INTEGER")
@@ -571,6 +574,15 @@ def save_optuna_study_to_db(
         1 for r in filtered_results if getattr(r, "is_pareto_optimal", False)
     ) if len(objectives) > 1 else None
 
+    summary = getattr(config, "optuna_summary", None) or {}
+    optimization_time_seconds = summary.get("optimization_time_seconds")
+    if optimization_time_seconds is None and start_time:
+        optimization_time_seconds = max(0, time.time() - float(start_time))
+    try:
+        optimization_time_seconds = int(round(float(optimization_time_seconds))) if optimization_time_seconds is not None else None
+    except (TypeError, ValueError):
+        optimization_time_seconds = None
+
     config_payload = _safe_dict(config)
     if optuna_config is not None:
         config_payload["optuna_config"] = _safe_dict(optuna_config)
@@ -602,10 +614,11 @@ def save_optuna_study_to_db(
                     dataset_start_date, dataset_end_date, warmup_bars,
                     ft_enabled, ft_period_days, ft_top_k, ft_sort_metric,
                     ft_start_date, ft_end_date, is_period_days,
+                    optimization_time_seconds,
                     completed_at,
                     filter_min_profit, min_profit_threshold,
                     sanitize_enabled, sanitize_trades_threshold
-                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """,
                 (
                     study_id,
@@ -647,6 +660,7 @@ def save_optuna_study_to_db(
                     _format_date(ft_start_date),
                     _format_date(ft_end_date),
                     is_period_days,
+                    optimization_time_seconds,
                     datetime.utcnow().isoformat() + "Z",
                     1 if getattr(config, "filter_min_profit", False) else 0,
                     getattr(config, "min_profit_threshold", None)

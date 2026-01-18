@@ -119,6 +119,10 @@
               <span class="key">Workers</span>
               <span class="val" id="optuna-workers">-</span>
             </div>
+            <div class="setting-item">
+              <span class="key">Optimization Time</span>
+              <span class="val" id="optuna-time">-</span>
+            </div>
           </div>
         </div>
       </div>
@@ -180,12 +184,15 @@
           <h3>Equity Curve</h3>
         </div>
         <div class="chart-body">
-          <svg class="chart-svg" viewBox="0 0 800 260" preserveAspectRatio="none">
-            <text x="400" y="130" text-anchor="middle" fill="#999" font-size="14">
-              No data to display
-            </text>
-          </svg>
-          <div class="comparison-line" id="comparisonLine" style="display: none;"></div>
+          <div class="chart-canvas">
+            <svg class="chart-svg" viewBox="0 0 800 260" preserveAspectRatio="none">
+              <text x="400" y="130" text-anchor="middle" fill="#999" font-size="14">
+                No data to display
+              </text>
+            </svg>
+            <div class="comparison-line" id="comparisonLine" style="display: none;"></div>
+          </div>
+          <div class="chart-axis" id="equityAxis"></div>
         </div>
       </div>
 
@@ -241,7 +248,7 @@
             Parameter Details
           </div>
           <div class="param-details-body">
-            <table class="param-details-table" id="paramDetailsContent"></table>
+            <div class="param-details-grid" id="paramDetailsContent"></div>
           </div>
         </div>
       </div>

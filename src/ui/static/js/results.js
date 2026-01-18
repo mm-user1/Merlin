@@ -6,6 +6,7 @@ const ResultsState = {
   mode: 'optuna',
   studyId: '',
   studyName: '',
+  studyCreatedAt: '',
   strategy: {},
   strategyId: '',
   dataset: {},
@@ -182,17 +183,24 @@ function setQueryStudyId(studyId) {
 function updateResultsHeader() {
   const header = document.querySelector('.results-header h2');
   if (!header) return;
+  const runDateLabel = formatDateLabel(ResultsState.studyCreatedAt);
   if (ResultsState.studyName) {
-    header.textContent = ResultsState.studyName;
+    header.textContent = runDateLabel
+      ? `${ResultsState.studyName} · ${runDateLabel}`
+      : ResultsState.studyName;
   } else {
-    header.textContent = 'Optimization Results';
+    header.textContent = runDateLabel
+      ? `Optimization Results · ${runDateLabel}`
+      : 'Optimization Results';
   }
 }
 
-function updateTableHeader(title, subtitle) {
+function updateTableHeader(title, subtitle, periodLabel) {
   const titleEl = document.getElementById('resultsTableTitle');
   const subtitleEl = document.getElementById('resultsTableSubtitle');
-  if (titleEl) titleEl.textContent = title || '';
+  const safeTitle = title || '';
+  const safePeriod = periodLabel ? ` · ${periodLabel}` : '';
+  if (titleEl) titleEl.textContent = `${safeTitle}${safePeriod}`.trim();
   if (subtitleEl) subtitleEl.textContent = subtitle || '';
 }
 
@@ -213,6 +221,47 @@ function formatSigned(value, digits = 2, suffix = '') {
   if (!Number.isFinite(num)) return 'N/A';
   const sign = num > 0 ? '+' : '';
   return `${sign}${num.toFixed(digits)}${suffix}`;
+}
+
+function formatDateLabel(value) {
+  if (!value) return '';
+  const text = String(value).trim();
+  if (!text) return '';
+  const match = text.match(/(\d{4})[.\-/](\d{2})[.\-/](\d{2})/);
+  if (!match) return '';
+  return `${match[1]}.${match[2]}.${match[3]}`;
+}
+
+function formatDuration(seconds) {
+  const totalSeconds = Number(seconds);
+  if (!Number.isFinite(totalSeconds) || totalSeconds < 0) return '';
+  const rounded = Math.round(totalSeconds);
+  const hours = Math.floor(rounded / 3600);
+  const minutes = Math.floor((rounded % 3600) / 60);
+  const secs = rounded % 60;
+  if (hours > 0) return `${hours}h ${minutes}m ${secs}s`;
+  if (minutes > 0) return `${minutes}m ${secs}s`;
+  return `${secs}s`;
+}
+
+function buildPeriodLabel(startDate, endDate) {
+  const startLabel = formatDateLabel(startDate);
+  const endLabel = formatDateLabel(endDate);
+  if (startLabel && endLabel) {
+    return `${startLabel}-${endLabel}`;
+  }
+  return 'Period: N/A';
+}
+
+function getActivePeriodLabel() {
+  if (ResultsState.activeTab === 'forward_test') {
+    return buildPeriodLabel(ResultsState.forwardTest.startDate, ResultsState.forwardTest.endDate);
+  }
+  if (ResultsState.activeTab === 'manual_tests') {
+    const config = ResultsState.activeManualTest?.config || {};
+    return buildPeriodLabel(config.start_date, config.end_date);
+  }
+  return buildPeriodLabel(ResultsState.start, ResultsState.end);
 }
 
 function updateTabsVisibility() {
@@ -381,6 +430,7 @@ async function applyStudyPayload(data) {
   const study = data.study || {};
   ResultsState.studyId = study.study_id || ResultsState.studyId;
   ResultsState.studyName = study.study_name || ResultsState.studyName;
+  ResultsState.studyCreatedAt = study.completed_at || study.created_at || ResultsState.studyCreatedAt;
   ResultsState.mode = study.optimization_mode || ResultsState.mode;
   ResultsState.status = study.status || (study.completed_at ? 'completed' : ResultsState.status);
   ResultsState.strategyId = study.strategy_id || ResultsState.strategyId;
@@ -525,7 +575,8 @@ async function applyStudyPayload(data) {
     pruner: optunaConfig.pruner || ResultsState.optuna.pruner,
     workers: config.worker_processes || ResultsState.optuna.workers,
     sanitizeEnabled,
-    sanitizeTradesThreshold: sanitizeThreshold
+    sanitizeTradesThreshold: sanitizeThreshold,
+    optimizationTimeSeconds: study.optimization_time_seconds ?? ResultsState.optuna.optimizationTimeSeconds
   };
 
   updateResultsHeader();
@@ -866,16 +917,16 @@ function renderOptunaTable(results) {
 
       row.addEventListener('click', async () => {
         selectTableRow(index, trialNumber);
-        showParameterDetails({ ...result, param_id: paramId });
+        await showParameterDetails({ ...result, param_id: paramId });
         setComparisonLine('');
         if (result.equity_curve && result.equity_curve.length) {
-          renderEquityChart(result.equity_curve);
+          renderEquityChart(result.equity_curve, null, result.timestamps);
           return;
         }
-        const equity = await fetchEquityCurve(result);
-      if (equity && equity.length) {
-        renderEquityChart(equity);
-      }
+        const payload = await fetchEquityCurve(result);
+        if (payload && payload.equity && payload.equity.length) {
+          renderEquityChart(payload.equity, null, payload.timestamps);
+        }
     });
 
     tbody.appendChild(row);
@@ -945,7 +996,7 @@ function renderForwardTestTable(results) {
 
     row.addEventListener('click', async () => {
       selectTableRow(index, trialNumber);
-      showParameterDetails({ ...trial, param_id: paramId });
+      await showParameterDetails({ ...trial, param_id: paramId });
 
       const comparison = window.PostProcessUI
         ? window.PostProcessUI.buildComparisonMetrics(trial)
@@ -970,8 +1021,8 @@ function renderForwardTestTable(results) {
         start: ResultsState.forwardTest.startDate,
         end: ResultsState.forwardTest.endDate
       });
-      if (equity && equity.length) {
-        renderEquityChart(equity);
+      if (equity && equity.equity && equity.equity.length) {
+        renderEquityChart(equity.equity, null, equity.timestamps);
       }
     });
 
@@ -1021,7 +1072,7 @@ function renderDsrTable(results) {
 
     row.addEventListener('click', async () => {
       selectTableRow(index, trialNumber);
-      showParameterDetails({ ...trial, param_id: paramId });
+      await showParameterDetails({ ...trial, param_id: paramId });
 
       const dsrRank = trial.dsr_rank || index + 1;
       const optunaRank = optunaRankMap[trialNumber];
@@ -1041,8 +1092,8 @@ function renderDsrTable(results) {
       setComparisonLine(line);
 
       const equity = await fetchEquityCurve(trial);
-      if (equity && equity.length) {
-        renderEquityChart(equity);
+      if (equity && equity.equity && equity.equity.length) {
+        renderEquityChart(equity.equity, null, equity.timestamps);
       }
     });
 
@@ -1105,7 +1156,7 @@ function renderStressTestTable(results) {
 
     row.addEventListener('click', async () => {
       selectTableRow(index, trialNumber);
-      showParameterDetails({ ...trial, param_id: paramId });
+      await showParameterDetails({ ...trial, param_id: paramId });
 
       const sourceRank = sourceRankMap[trialNumber];
       const rankDelta = sourceRank != null ? (sourceRank - stRank) : null;
@@ -1159,8 +1210,8 @@ function renderStressTestTable(results) {
       }
 
       const equity = await fetchEquityCurve(trial);
-      if (equity && equity.length) {
-        renderEquityChart(equity);
+      if (equity && equity.equity && equity.equity.length) {
+        renderEquityChart(equity.equity, null, equity.timestamps);
       }
     });
 
@@ -1224,7 +1275,7 @@ function renderManualTestTable(results) {
 
     row.addEventListener('click', async () => {
       selectTableRow(index, trialNumber);
-      showParameterDetails({ ...baseTrial, param_id: paramId });
+      await showParameterDetails({ ...baseTrial, param_id: paramId });
 
       const comparison = entry.comparison || {};
       const line = [
@@ -1245,8 +1296,8 @@ function renderManualTestTable(results) {
           start: config.start_date,
           end: config.end_date
         });
-        if (equity && equity.length) {
-          renderEquityChart(equity);
+        if (equity && equity.equity && equity.equity.length) {
+          renderEquityChart(equity.equity, null, equity.timestamps);
         }
       }
     });
@@ -1294,10 +1345,10 @@ function renderWFATable(windows) {
       <td class="val-negative">-${Math.abs(Number(window.oos_max_drawdown_pct || 0)).toFixed(2)}%</td>
     `;
 
-      row.addEventListener('click', () => {
+      row.addEventListener('click', async () => {
         const windowNumber = window.window_number || window.window_id || index + 1;
         selectTableRow(index, windowNumber);
-        showParameterDetails(window);
+        await showParameterDetails(window);
         setComparisonLine('');
       });
 
@@ -1316,12 +1367,20 @@ function selectTableRow(index, rowId) {
   ResultsState.selectedRowId = rowId;
 }
 
-function showParameterDetails(result) {
+async function showParameterDetails(result) {
   const section = document.getElementById('paramDetailsSection');
   const title = document.getElementById('paramDetailsTitle');
   const content = document.getElementById('paramDetailsContent');
 
   if (!section || !content) return;
+
+  if ((!ResultsState.strategyConfig || !ResultsState.strategyConfig.parameters) && ResultsState.strategyId) {
+    try {
+      ResultsState.strategyConfig = await fetchStrategyConfig(ResultsState.strategyId);
+    } catch (error) {
+      console.warn('Failed to load strategy config for parameter ordering', error);
+    }
+  }
 
   const label = result.param_id
     || createParamId(result.params || result.best_params || {}, ResultsState.strategyConfig, ResultsState.fixedParams);
@@ -1332,21 +1391,133 @@ function showParameterDetails(result) {
   const params = result.params || result.best_params || {};
   content.innerHTML = '';
 
-  Object.entries(params).forEach(([key, value]) => {
+  const orderedKeys = getParamDisplayOrder(params, ResultsState.strategyConfig);
+  const paramDefs = ResultsState.strategyConfig?.parameters || {};
+  const groupOrder = ResultsState.strategyConfig?.group_order || [];
+  const groups = {};
+
+  orderedKeys.forEach((key) => {
     if (['dateFilter', 'start', 'end'].includes(key)) return;
-    const row = document.createElement('tr');
-    row.innerHTML = `
-      <td>${formatParamName(key)}</td>
-      <td>${formatParamValue(value)}</td>
-    `;
-    content.appendChild(row);
+    const def = paramDefs[key];
+    const group = (def && def.group) || 'Other';
+    if (!groups[group]) {
+      groups[group] = [];
+    }
+    groups[group].push({ key, value: params[key], def });
+  });
+
+  const orderedGroups = [];
+  groupOrder.forEach((group) => {
+    if (groups[group] && groups[group].length) {
+      orderedGroups.push(group);
+    }
+  });
+  Object.keys(groups).forEach((group) => {
+    if (!orderedGroups.includes(group)) {
+      orderedGroups.push(group);
+    }
+  });
+
+  orderedGroups.forEach((group) => {
+    const items = groups[group] || [];
+    if (!items.length) return;
+    const card = document.createElement('div');
+    card.className = 'param-group-card';
+
+    const header = document.createElement('div');
+    header.className = 'param-group-title';
+    header.textContent = group;
+    card.appendChild(header);
+
+    items.forEach(({ key, value, def }) => {
+      const formattedValue = formatParamValue(value);
+      const labelText = (def && def.label) ? def.label : formatParamName(key);
+      const optimized = def && def.optimize && def.optimize.enabled === true;
+      const item = document.createElement('div');
+      item.className = `param-item${optimized ? '' : ' param-fixed'}`;
+
+      const nameEl = document.createElement('span');
+      nameEl.className = 'param-item-name';
+      nameEl.textContent = labelText;
+
+      const valueEl = document.createElement('span');
+      valueEl.className = 'param-item-value';
+      valueEl.textContent = formattedValue;
+
+      const copyHandler = () => {
+        copyParamValue(formattedValue);
+        highlightParamItem(item);
+      };
+      nameEl.addEventListener('click', copyHandler);
+      valueEl.addEventListener('click', copyHandler);
+
+      item.appendChild(nameEl);
+      item.appendChild(valueEl);
+      card.appendChild(item);
+    });
+
+    content.appendChild(card);
   });
 
   section.classList.add('show');
 }
 
-function renderEquityChart(equityData, windowBoundaries = null) {
+function getParamDisplayOrder(params, strategyConfig) {
+  const configParams = strategyConfig?.parameters || {};
+  const configKeys = strategyConfig?.parameter_order || Object.keys(configParams);
+  const paramsKeys = Object.keys(params || {});
+  const ordered = [];
+  const seen = new Set();
+
+  configKeys.forEach((key) => {
+    if (Object.prototype.hasOwnProperty.call(params, key)) {
+      ordered.push(key);
+      seen.add(key);
+    }
+  });
+
+  paramsKeys.forEach((key) => {
+    if (!seen.has(key)) {
+      ordered.push(key);
+    }
+  });
+
+  return ordered;
+}
+
+function copyParamValue(value) {
+  const text = value === undefined || value === null ? '' : String(value);
+  if (!text) return;
+  if (navigator.clipboard && navigator.clipboard.writeText) {
+    navigator.clipboard.writeText(text).catch(() => {});
+    return;
+  }
+  const temp = document.createElement('textarea');
+  temp.value = text;
+  temp.setAttribute('readonly', '');
+  temp.style.position = 'absolute';
+  temp.style.left = '-9999px';
+  document.body.appendChild(temp);
+  temp.select();
+  try {
+    document.execCommand('copy');
+  } catch (error) {
+    // ignore
+  }
+  document.body.removeChild(temp);
+}
+
+function highlightParamItem(item) {
+  if (!item) return;
+  item.classList.add('copied');
+  window.setTimeout(() => {
+    item.classList.remove('copied');
+  }, 800);
+}
+
+function renderEquityChart(equityData, windowBoundaries = null, timestamps = null) {
   const svg = document.querySelector('.chart-svg');
+  const axis = document.getElementById('equityAxis');
   if (!svg || !equityData || equityData.length === 0) return;
 
   const width = 800;
@@ -1359,6 +1530,9 @@ function renderEquityChart(equityData, windowBoundaries = null) {
   const valueRange = maxValue - minValue || 1;
 
   svg.innerHTML = '';
+  if (axis) {
+    axis.innerHTML = '';
+  }
 
   const bg = document.createElementNS('http://www.w3.org/2000/svg', 'rect');
   bg.setAttribute('width', '100%');
@@ -1403,6 +1577,49 @@ function renderEquityChart(equityData, windowBoundaries = null) {
       text.textContent = `W${index + 1}`;
       svg.appendChild(text);
     });
+  }
+
+  if (Array.isArray(timestamps) && timestamps.length === equityData.length && axis) {
+    const startDate = new Date(timestamps[0]);
+    const endDate = new Date(timestamps[timestamps.length - 1]);
+    if (!Number.isNaN(startDate.getTime()) && !Number.isNaN(endDate.getTime())) {
+      const tickCount = Math.min(5, equityData.length);
+      if (tickCount >= 2) {
+        for (let i = 0; i < tickCount; i += 1) {
+          const ratio = tickCount === 1 ? 0 : i / (tickCount - 1);
+          const index = Math.round(ratio * (equityData.length - 1));
+          const tickDate = new Date(timestamps[index]);
+          if (Number.isNaN(tickDate.getTime())) continue;
+          const xPct = (index / (equityData.length - 1)) * 100;
+          const x = (index / (equityData.length - 1)) * width;
+
+          const grid = document.createElementNS('http://www.w3.org/2000/svg', 'line');
+          grid.setAttribute('x1', x);
+          grid.setAttribute('y1', 0);
+          grid.setAttribute('x2', x);
+          grid.setAttribute('y2', height);
+          grid.setAttribute('stroke', '#e3e3e3');
+          grid.setAttribute('stroke-width', '1');
+          svg.appendChild(grid);
+
+          const m = String(tickDate.getUTCMonth() + 1).padStart(2, '0');
+          const d = String(tickDate.getUTCDate()).padStart(2, '0');
+          const label = `${m}.${d}`;
+
+          const text = document.createElement('div');
+          let labelClass = 'chart-axis-label';
+          if (i === 0) {
+            labelClass += ' start';
+          } else if (i === tickCount - 1) {
+            labelClass += ' end';
+          }
+          text.className = labelClass;
+          text.style.left = `${xPct}%`;
+          text.textContent = label;
+          axis.appendChild(text);
+        }
+      }
+    }
   }
 
   const points = equityData.map((value, index) => {
@@ -1494,6 +1711,9 @@ function updateSidebarSettings() {
   }
   setText('optuna-sanitize', sanitizeLabel);
   setText('optuna-workers', ResultsState.optuna.workers ?? '-');
+  const optimizationTime = ResultsState.optuna.optimizationTimeSeconds;
+  const timeLabel = ResultsState.mode === 'wfa' ? '-' : (formatDuration(optimizationTime) || '-');
+  setText('optuna-time', timeLabel);
 
   if (ResultsState.mode === 'wfa') {
     setElementVisible('wfa-progress-section', true);
@@ -1555,7 +1775,10 @@ async function fetchEquityCurve(result, options = null) {
     return null;
   }
   const data = await response.json();
-  return data && data.metrics ? (data.metrics.equity_curve || data.metrics.balance_curve || []) : [];
+  if (!data || !data.metrics) return null;
+  const equity = data.metrics.equity_curve || data.metrics.balance_curve || [];
+  const timestamps = data.metrics.timestamps || [];
+  return { equity, timestamps };
 }
 
 function refreshResultsView() {
@@ -1581,20 +1804,21 @@ function refreshResultsView() {
     setComparisonLine('');
     const summaryRow = document.querySelector('.summary-row');
     if (summaryRow) summaryRow.style.display = 'none';
+    const periodLabel = getActivePeriodLabel();
     if (ResultsState.activeTab === 'forward_test') {
-      updateTableHeader('Forward Test', 'Sorted by FT results');
+      updateTableHeader('Forward Test', 'Sorted by FT results', periodLabel);
       renderForwardTestTable(ResultsState.forwardTest.trials || []);
     } else if (ResultsState.activeTab === 'stress_test') {
-      updateTableHeader('Stress Test', 'Sorted by retention');
+      updateTableHeader('Stress Test', 'Sorted by retention', periodLabel);
       renderStressTestTable(ResultsState.stressTest.trials || []);
     } else if (ResultsState.activeTab === 'dsr') {
-      updateTableHeader('DSR', 'Sorted by DSR probability');
+      updateTableHeader('DSR', 'Sorted by DSR probability', periodLabel);
       renderDsrTable(ResultsState.dsr.trials || []);
     } else if (ResultsState.activeTab === 'manual_tests') {
-      updateTableHeader('Test Results', 'Manual test results');
+      updateTableHeader('Test Results', 'Manual test results', periodLabel);
       renderManualTestTable(ResultsState.manualTestResults || []);
     } else {
-      updateTableHeader('Top Parameter Sets', 'Sorted by objectives');
+      updateTableHeader('Top Parameter Sets', 'Sorted by objectives', periodLabel);
       renderOptunaTable(ResultsState.results || []);
     }
     renderManualTestControls();

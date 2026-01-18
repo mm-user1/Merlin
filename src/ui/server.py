@@ -2919,7 +2919,21 @@ def get_strategy_config_single(strategy_id: str):
         from strategies import get_strategy_config
 
         config = get_strategy_config(strategy_id)
-        return jsonify(config), HTTPStatus.OK
+        parameters = config.get("parameters", {}) if isinstance(config, dict) else {}
+        parameter_order = list(parameters.keys()) if isinstance(parameters, dict) else []
+        group_order = []
+        if isinstance(parameters, dict):
+            for key in parameter_order:
+                definition = parameters.get(key, {})
+                group = definition.get("group") if isinstance(definition, dict) else None
+                group = group or "Other"
+                if group not in group_order:
+                    group_order.append(group)
+
+        payload = dict(config or {})
+        payload["parameter_order"] = parameter_order
+        payload["group_order"] = group_order
+        return jsonify(payload), HTTPStatus.OK
 
     except FileNotFoundError:
         return (
