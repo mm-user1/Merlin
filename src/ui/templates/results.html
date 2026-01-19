@@ -116,6 +116,10 @@
               <span class="val" id="optuna-sanitize">-</span>
             </div>
             <div class="setting-item">
+              <span class="key">Filter</span>
+              <span class="val" id="optuna-filter">-</span>
+            </div>
+            <div class="setting-item">
               <span class="key">Workers</span>
               <span class="val" id="optuna-workers">-</span>
             </div>
@@ -199,7 +203,7 @@
       <div class="summary-row" style="display: none;"></div>
 
       <div class="results-tabs" id="resultsTabs">
-        <button class="tab-btn active" data-tab="optuna">Top Parameter Sets</button>
+        <button class="tab-btn active" data-tab="optuna">Optuna IS</button>
         <button class="tab-btn" data-tab="dsr" style="display: none;">DSR</button>
         <button class="tab-btn" data-tab="forward_test" style="display: none;">Forward Test</button>
         <button class="tab-btn" data-tab="stress_test" style="display: none;">Stress Test</button>
@@ -209,7 +213,7 @@
       <div class="table-card">
       <div class="table-card-header">
         <div class="table-header-left">
-          <h3 id="resultsTableTitle">Top Parameter Sets</h3>
+          <h3 id="resultsTableTitle">Optuna IS</h3>
           <span id="resultsTableSubtitle" style="font-size: 12px; color: #777;">Sorted by objectives</span>
         </div>
         <div class="test-results-controls" id="testResultsControls" style="display: none;">
@@ -239,6 +243,9 @@
             </thead>
             <tbody></tbody>
           </table>
+        </div>
+        <div class="table-expand">
+          <button class="table-expand-toggle" id="tableExpandToggle" type="button" aria-label="Expand table"></button>
         </div>
       </div>
 

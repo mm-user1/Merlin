@@ -223,6 +223,19 @@ function formatSigned(value, digits = 2, suffix = '') {
   return `${sign}${num.toFixed(digits)}${suffix}`;
 }
 
+function formatRankCell(rank, delta) {
+  const baseRank = Number(rank);
+  if (!Number.isFinite(baseRank)) return '';
+  const change = Number(delta);
+  if (!Number.isFinite(change) || change === 0) {
+    return `<span class="rank-base">${baseRank}</span>`;
+  }
+  const direction = change > 0 ? 'up' : 'down';
+  const magnitude = Math.abs(Math.round(change));
+  const deltaLabel = change > 0 ? `+${magnitude}` : `-${magnitude}`;
+  return `<span class="rank-base">${baseRank}</span><span class="rank-delta ${direction}">${deltaLabel}</span>`;
+}
+
 function formatDateLabel(value) {
   if (!value) return '';
   const text = String(value).trim();
@@ -313,6 +326,33 @@ function updateTabsVisibility() {
     const tabId = tab.dataset.tab;
     tab.classList.toggle('active', tabId === ResultsState.activeTab);
   });
+}
+
+function setTableExpanded(expanded) {
+  const scroll = document.querySelector('.table-scroll');
+  const toggle = document.getElementById('tableExpandToggle');
+  if (!scroll || !toggle) return;
+  scroll.classList.toggle('expanded', expanded);
+  toggle.dataset.expanded = expanded ? '1' : '0';
+  toggle.classList.toggle('expanded', expanded);
+}
+
+function setTableExpandVisibility() {
+  const wrapper = document.querySelector('.table-expand');
+  if (!wrapper) return;
+  const show = ResultsState.mode !== 'wfa';
+  wrapper.style.display = show ? 'flex' : 'none';
+  if (!show) setTableExpanded(false);
+}
+
+function bindTableExpandToggle() {
+  const toggle = document.getElementById('tableExpandToggle');
+  if (!toggle) return;
+  toggle.addEventListener('click', () => {
+    const expanded = toggle.dataset.expanded === '1';
+    setTableExpanded(!expanded);
+  });
+  setTableExpanded(false);
 }
 
 async function activateTab(tabId) {
@@ -560,6 +600,23 @@ async function applyStudyPayload(data) {
   const sanitizeThreshold = sanitizeThresholdRaw === undefined || sanitizeThresholdRaw === null
     ? ResultsState.optuna.sanitizeTradesThreshold
     : sanitizeThresholdRaw;
+  const filterMinProfitRaw = study.filter_min_profit ?? optunaConfig.filter_min_profit;
+  const filterMinProfit = filterMinProfitRaw === undefined || filterMinProfitRaw === null
+    ? ResultsState.optuna.filterMinProfit
+    : Boolean(filterMinProfitRaw);
+  const minProfitThresholdRaw = study.min_profit_threshold ?? optunaConfig.min_profit_threshold;
+  const minProfitThreshold = minProfitThresholdRaw === undefined || minProfitThresholdRaw === null
+    ? ResultsState.optuna.minProfitThreshold
+    : minProfitThresholdRaw;
+  const scoreConfig = study.score_config_json || optunaConfig.score_config || {};
+  const scoreFilterRaw = scoreConfig ? scoreConfig.filter_enabled : null;
+  const scoreFilterEnabled = scoreFilterRaw === undefined || scoreFilterRaw === null
+    ? ResultsState.optuna.scoreFilterEnabled
+    : Boolean(scoreFilterRaw);
+  const scoreThresholdRaw = scoreConfig ? scoreConfig.min_score_threshold : null;
+  const scoreThreshold = scoreThresholdRaw === undefined || scoreThresholdRaw === null
+    ? ResultsState.optuna.scoreThreshold
+    : scoreThresholdRaw;
   ResultsState.optuna = {
     objectives,
     primaryObjective: study.primary_objective || optunaConfig.primary_objective || null,
@@ -576,6 +633,10 @@ async function applyStudyPayload(data) {
     workers: config.worker_processes || ResultsState.optuna.workers,
     sanitizeEnabled,
     sanitizeTradesThreshold: sanitizeThreshold,
+    filterMinProfit,
+    minProfitThreshold,
+    scoreFilterEnabled,
+    scoreThreshold,
     optimizationTimeSeconds: study.optimization_time_seconds ?? ResultsState.optuna.optimizationTimeSeconds
   };
 
@@ -990,7 +1051,10 @@ function renderForwardTestTable(results) {
       || createParamId(trial.params || {}, ResultsState.strategyConfig, ResultsState.fixedParams);
 
     const rankCell = row.querySelector('.rank');
-    if (rankCell) rankCell.textContent = trial.ft_rank || index + 1;
+    const displayedRank = trial.ft_rank || index + 1;
+    const sourceRank = sourceRankMap[trialNumber];
+    const rankChange = sourceRank != null ? sourceRank - displayedRank : null;
+    if (rankCell) rankCell.innerHTML = formatRankCell(displayedRank, rankChange);
     const hashCell = row.querySelector('.param-hash');
     if (hashCell) hashCell.textContent = paramId;
 
@@ -1001,8 +1065,6 @@ function renderForwardTestTable(results) {
       const comparison = window.PostProcessUI
         ? window.PostProcessUI.buildComparisonMetrics(trial)
         : null;
-      const sourceRank = sourceRankMap[trialNumber];
-      const rankChange = sourceRank != null && trial.ft_rank ? sourceRank - trial.ft_rank : null;
       const rankSourceLabel = ftSource === 'dsr' ? 'DSR' : 'Optuna';
 
       if (comparison) {
@@ -1066,7 +1128,10 @@ function renderDsrTable(results) {
       || createParamId(trial.params || {}, ResultsState.strategyConfig, ResultsState.fixedParams);
 
     const rankCell = row.querySelector('.rank');
-    if (rankCell) rankCell.textContent = trial.dsr_rank || index + 1;
+    const dsrRank = trial.dsr_rank || index + 1;
+    const optunaRank = optunaRankMap[trialNumber];
+    const rankDelta = optunaRank != null ? (optunaRank - dsrRank) : null;
+    if (rankCell) rankCell.innerHTML = formatRankCell(dsrRank, rankDelta);
     const hashCell = row.querySelector('.param-hash');
     if (hashCell) hashCell.textContent = paramId;
 
@@ -1074,9 +1139,6 @@ function renderDsrTable(results) {
       selectTableRow(index, trialNumber);
       await showParameterDetails({ ...trial, param_id: paramId });
 
-      const dsrRank = trial.dsr_rank || index + 1;
-      const optunaRank = optunaRankMap[trialNumber];
-      const rankDelta = optunaRank ? (optunaRank - dsrRank) : null;
       const rankLine = rankDelta !== null ? `Rank: ${formatSigned(rankDelta, 0)}` : null;
 
       const dsrValue = Number(trial.dsr_probability);
@@ -1145,7 +1207,9 @@ function renderStressTestTable(results) {
 
     const stRank = trial.st_rank || index + 1;
     const rankCell = row.querySelector('.rank');
-    if (rankCell) rankCell.textContent = stRank;
+    const sourceRank = sourceRankMap[trialNumber];
+    const rankDelta = sourceRank != null ? (sourceRank - stRank) : null;
+    if (rankCell) rankCell.innerHTML = formatRankCell(stRank, rankDelta);
     const hashCell = row.querySelector('.param-hash');
     if (hashCell) {
       hashCell.textContent = paramId;
@@ -1158,8 +1222,6 @@ function renderStressTestTable(results) {
       selectTableRow(index, trialNumber);
       await showParameterDetails({ ...trial, param_id: paramId });
 
-      const sourceRank = sourceRankMap[trialNumber];
-      const rankDelta = sourceRank != null ? (sourceRank - stRank) : null;
       const rankSourceLabel = stSource === 'ft' ? 'FT' : (stSource === 'dsr' ? 'DSR' : 'Optuna');
 
       if (trial.st_status === 'skipped_bad_base') {
@@ -1710,6 +1772,25 @@ function updateSidebarSettings() {
     sanitizeLabel = 'Off';
   }
   setText('optuna-sanitize', sanitizeLabel);
+  const filterMinProfit = ResultsState.optuna.filterMinProfit;
+  const minProfitThresholdRaw = ResultsState.optuna.minProfitThreshold;
+  const minProfitThreshold = Number.isFinite(Number(minProfitThresholdRaw))
+    ? Math.max(0, Math.round(Number(minProfitThresholdRaw)))
+    : null;
+  const scoreFilterEnabled = ResultsState.optuna.scoreFilterEnabled;
+  const scoreThresholdRaw = ResultsState.optuna.scoreThreshold;
+  const scoreThreshold = Number.isFinite(Number(scoreThresholdRaw))
+    ? Math.max(0, Math.round(Number(scoreThresholdRaw)))
+    : null;
+  const filterParts = [];
+  if (filterMinProfit) {
+    filterParts.push(`Net Profit = ${minProfitThreshold !== null ? minProfitThreshold : 0}`);
+  }
+  if (scoreFilterEnabled) {
+    filterParts.push(`Score = ${scoreThreshold !== null ? scoreThreshold : 0}`);
+  }
+  const filterLabel = filterParts.length ? filterParts.join(', ') : 'Off';
+  setText('optuna-filter', filterLabel);
   setText('optuna-workers', ResultsState.optuna.workers ?? '-');
   const optimizationTime = ResultsState.optuna.optimizationTimeSeconds;
   const timeLabel = ResultsState.mode === 'wfa' ? '-' : (formatDuration(optimizationTime) || '-');
@@ -1786,6 +1867,7 @@ function refreshResultsView() {
   updateSidebarSettings();
   updateResultsHeader();
   updateTabsVisibility();
+  setTableExpandVisibility();
 
   const progressLabel = document.getElementById('progressLabel');
   const progressPercent = document.getElementById('progressPercent');
@@ -1818,7 +1900,7 @@ function refreshResultsView() {
       updateTableHeader('Test Results', 'Manual test results', periodLabel);
       renderManualTestTable(ResultsState.manualTestResults || []);
     } else {
-      updateTableHeader('Top Parameter Sets', 'Sorted by objectives', periodLabel);
+      updateTableHeader('Optuna IS', 'Sorted by objectives', periodLabel);
       renderOptunaTable(ResultsState.results || []);
     }
     renderManualTestControls();
@@ -2219,6 +2301,7 @@ function initResultsPage() {
   bindMissingCsvDialog();
   bindTabs();
   bindManualDataSourceToggle();
+  bindTableExpandToggle();
 
   const stored = readStoredState();
   if (stored) {

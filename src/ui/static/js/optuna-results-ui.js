@@ -35,9 +35,9 @@
     const columns = [];
     columns.push('<th>#</th>');
     columns.push('<th>Param ID</th>');
-    columns.push('<th>Pareto</th>');
+    columns.push('<th>P</th>');
     if (hasConstraints) {
-      columns.push('<th>Constraints</th>');
+      columns.push('<th>C</th>');
     }
 
     const objectiveList = Array.isArray(objectives) ? objectives : [];
@@ -80,14 +80,14 @@
       : true;
 
     const paretoBadge = isPareto
-      ? '<span class="badge badge-pareto">Pareto</span>'
+      ? '<span class="dot dot-pareto"></span>'
       : '';
 
     let constraintBadge = '';
     if (hasConstraints) {
       constraintBadge = feasible
-        ? '<span class="badge badge-feasible">OK</span>'
-        : '<span class="badge badge-infeasible">Fail</span>';
+        ? '<span class="dot dot-ok"></span>'
+        : '<span class="dot dot-fail"></span>';
     }
 
     const objectiveValues = Array.isArray(trial.objective_values) ? trial.objective_values : [];

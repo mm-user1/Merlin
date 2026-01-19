@@ -397,6 +397,30 @@
       border: 1px solid #f1aeb5;
     }
 
+    .dot {
+      display: inline-block;
+      width: 10px;
+      height: 10px;
+      border-radius: 50%;
+      border: 1px solid transparent;
+      vertical-align: middle;
+    }
+
+    .dot-pareto {
+      background: #4a90e2;
+      border-color: #2f6fb2;
+    }
+
+    .dot-ok {
+      background: #27ae60;
+      border-color: #1e8a4c;
+    }
+
+    .dot-fail {
+      background: #e74c3c;
+      border-color: #c0392b;
+    }
+
     .date-input {
       width: 150px;
     }
@@ -1128,7 +1152,8 @@
 
     .setting-item {
       display: flex;
-      justify-content: space-between;
+      align-items: flex-start;
+      gap: 10px;
       padding: 6px 0;
       border-bottom: 1px solid #e8e8e8;
     }
@@ -1140,11 +1165,16 @@
     .setting-item .key {
       color: #2a2a2a;
       font-weight: 600;
+      white-space: nowrap;
     }
 
     .setting-item .val {
+      flex: 1;
+      text-align: right;
       font-weight: 400;
       color: #2a2a2a;
+      min-width: 0;
+      word-break: break-word;
     }
 
     .loadsave-buttons {
@@ -1597,6 +1627,53 @@
       overflow-x: auto;
     }
 
+    .table-scroll.expanded {
+      max-height: 520px;
+    }
+
+    .table-expand {
+      display: flex;
+      justify-content: center;
+      padding: 3px 0 5px;
+      background: #ffffff;
+      border-top: 1px solid #e8e8e8;
+    }
+
+    .table-expand-toggle {
+      width: 34px;
+      height: 14px;
+      border-radius: 3px;
+      border: 1px solid #bbbbbb;
+      background: #f0f0f0;
+      color: transparent;
+      font-size: 0;
+      cursor: pointer;
+      padding: 0;
+      position: relative;
+    }
+
+    .table-expand-toggle:hover {
+      background: #e0e0e0;
+      color: #2a2a2a;
+    }
+
+    .table-expand-toggle::before {
+      content: '';
+      position: absolute;
+      left: 50%;
+      top: 50%;
+      transform: translate(-50%, -35%);
+      width: 0;
+      height: 0;
+      border-left: 4px solid transparent;
+      border-right: 4px solid transparent;
+      border-top: 6px solid #555555;
+    }
+
+    .table-expand-toggle.expanded::before {
+      transform: translate(-50%, -65%) rotate(180deg);
+    }
+
     .data-table {
       width: 100%;
       border-collapse: collapse;
@@ -1639,7 +1716,35 @@
     .rank {
       font-weight: 600;
       color: #3498db;
-      text-align: center;
+      text-align: left;
+      white-space: nowrap;
+      font-variant-numeric: tabular-nums;
+    }
+
+    .data-table th:first-child {
+      text-align: left;
+    }
+
+    .rank-base {
+      display: inline-block;
+      min-width: 18px;
+      text-align: right;
+    }
+
+    .rank-delta {
+      display: inline-flex;
+      align-items: center;
+      margin-left: 8px;
+      font-size: 12px;
+      font-weight: 700;
+    }
+
+    .rank-delta.up {
+      color: #27ae60;
+    }
+
+    .rank-delta.down {
+      color: #e74c3c;
     }
 
     .param-hash {
