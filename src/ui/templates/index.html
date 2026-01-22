@@ -593,6 +593,14 @@
                       </div>
                       <div class="constraint-row">
                         <label class="constraint-label">
+                          <input type="checkbox" class="constraint-checkbox" data-constraint-metric="max_consecutive_losses" />
+                          Max Consecutive Losses
+                        </label>
+                        <span class="constraint-operator">&le;</span>
+                        <input type="number" class="constraint-input" data-constraint-threshold="max_consecutive_losses" value="5" min="0" step="1" />
+                      </div>
+                      <div class="constraint-row">
+                        <label class="constraint-label">
                           <input type="checkbox" class="constraint-checkbox" data-constraint-metric="sqn" />
                           SQN
                         </label>

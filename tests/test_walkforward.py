@@ -250,7 +250,8 @@ def test_walkforward_integration_with_sample_data(monkeypatch):
             self.params = params
 
     def fake_optuna(self, df_slice, start_time, end_time):  # noqa: ARG001
-        return [FakeResult(default_params)]
+        fake_results = [FakeResult(default_params)]
+        return fake_results, list(fake_results)
 
     monkeypatch.setattr(WalkForwardEngine, "_run_optuna_on_window", fake_optuna)
 

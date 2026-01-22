@@ -71,6 +71,7 @@ class FTResult:
     is_max_drawdown_pct: float
     is_total_trades: int
     is_win_rate: float
+    is_max_consecutive_losses: int
     is_sharpe_ratio: Optional[float]
     is_romad: Optional[float]
     is_profit_factor: Optional[float]
@@ -79,6 +80,7 @@ class FTResult:
     ft_max_drawdown_pct: float
     ft_total_trades: int
     ft_win_rate: float
+    ft_max_consecutive_losses: int
     ft_sharpe_ratio: Optional[float]
     ft_sortino_ratio: Optional[float]
     ft_romad: Optional[float]
@@ -278,6 +280,7 @@ def _ft_worker_entry(
             "max_drawdown_pct": basic.max_drawdown_pct,
             "total_trades": basic.total_trades,
             "win_rate": basic.win_rate,
+            "max_consecutive_losses": basic.max_consecutive_losses,
             "sharpe_ratio": advanced.sharpe_ratio,
             "sortino_ratio": advanced.sortino_ratio,
             "romad": advanced.romad,
@@ -494,6 +497,7 @@ def _build_is_metrics(result: Any) -> Dict[str, Any]:
         "max_drawdown_pct": getattr(result, "max_drawdown_pct", 0.0),
         "total_trades": getattr(result, "total_trades", 0),
         "win_rate": getattr(result, "win_rate", 0.0),
+        "max_consecutive_losses": getattr(result, "max_consecutive_losses", 0),
         "sharpe_ratio": getattr(result, "sharpe_ratio", None),
         "romad": getattr(result, "romad", None),
         "profit_factor": getattr(result, "profit_factor", None),
@@ -773,6 +777,7 @@ def run_forward_test(
                     is_max_drawdown_pct=is_metrics.get("max_drawdown_pct", 0.0),
                     is_total_trades=is_metrics.get("total_trades", 0),
                     is_win_rate=is_metrics.get("win_rate", 0.0),
+                    is_max_consecutive_losses=is_metrics.get("max_consecutive_losses", 0),
                     is_sharpe_ratio=is_metrics.get("sharpe_ratio"),
                     is_romad=is_metrics.get("romad"),
                     is_profit_factor=is_metrics.get("profit_factor"),
@@ -780,6 +785,7 @@ def run_forward_test(
                     ft_max_drawdown_pct=ft_metrics.get("max_drawdown_pct", 0.0),
                     ft_total_trades=ft_metrics.get("total_trades", 0),
                     ft_win_rate=ft_metrics.get("win_rate", 0.0),
+                    ft_max_consecutive_losses=ft_metrics.get("max_consecutive_losses", 0),
                     ft_sharpe_ratio=ft_metrics.get("sharpe_ratio"),
                     ft_sortino_ratio=ft_metrics.get("sortino_ratio"),
                     ft_romad=ft_metrics.get("romad"),

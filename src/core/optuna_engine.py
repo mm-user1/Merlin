@@ -86,6 +86,7 @@ class OptimizationResult:
     avg_loss: float = 0.0
     gross_profit: float = 0.0
     gross_loss: float = 0.0
+    max_consecutive_losses: int = 0
     romad: Optional[float] = None
     sharpe_ratio: Optional[float] = None
     sortino_ratio: Optional[float] = None
@@ -219,6 +220,7 @@ CONSTRAINT_OPERATORS: Dict[str, str] = {
     "romad": "gte",
     "profit_factor": "gte",
     "win_rate": "gte",
+    "max_consecutive_losses": "lte",
     "sqn": "gte",
     "ulcer_index": "lte",
     "consistency_score": "gte",
@@ -629,6 +631,7 @@ def _run_single_combination(
             avg_loss=0.0,
             gross_profit=0.0,
             gross_loss=0.0,
+            max_consecutive_losses=0,
             sharpe_ratio=None,
             sortino_ratio=None,
             profit_factor=None,
@@ -654,6 +657,7 @@ def _run_single_combination(
             avg_loss=basic_metrics.avg_loss,
             gross_profit=basic_metrics.gross_profit,
             gross_loss=basic_metrics.gross_loss,
+            max_consecutive_losses=basic_metrics.max_consecutive_losses,
             romad=advanced_metrics.romad,
             sharpe_ratio=advanced_metrics.sharpe_ratio,
             sortino_ratio=advanced_metrics.sortino_ratio,
@@ -710,6 +714,7 @@ def _result_from_trial(trial: optuna.trial.FrozenTrial) -> OptimizationResult:
         avg_loss=float(all_metrics.get("avg_loss", 0.0) or 0.0),
         gross_profit=float(all_metrics.get("gross_profit", 0.0) or 0.0),
         gross_loss=float(all_metrics.get("gross_loss", 0.0) or 0.0),
+        max_consecutive_losses=int(all_metrics.get("max_consecutive_losses", 0) or 0),
         romad=all_metrics.get("romad"),
         sharpe_ratio=all_metrics.get("sharpe_ratio"),
         sortino_ratio=all_metrics.get("sortino_ratio"),
@@ -1333,6 +1338,7 @@ class OptunaOptimizer:
             "max_drawdown_pct": result.max_drawdown_pct,
             "total_trades": result.total_trades,
             "win_rate": result.win_rate,
+            "max_consecutive_losses": result.max_consecutive_losses,
             "avg_win": result.avg_win,
             "avg_loss": result.avg_loss,
             "gross_profit": result.gross_profit,

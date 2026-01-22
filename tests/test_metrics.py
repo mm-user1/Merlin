@@ -215,6 +215,65 @@ class TestMetricsEdgeCases:
         assert basic.win_rate == 0.0
         assert advanced.profit_factor == 0.0
 
+    def test_max_consecutive_losses_includes_breakeven(self):
+        trades = [
+            TradeRecord(
+                direction="Long",
+                entry_time=pd.Timestamp("2025-01-01", tz="UTC"),
+                exit_time=pd.Timestamp("2025-01-02", tz="UTC"),
+                entry_price=100.0,
+                exit_price=95.0,
+                size=1.0,
+                net_pnl=-5.0,
+            ),
+            TradeRecord(
+                direction="Long",
+                entry_time=pd.Timestamp("2025-01-03", tz="UTC"),
+                exit_time=pd.Timestamp("2025-01-04", tz="UTC"),
+                entry_price=95.0,
+                exit_price=95.0,
+                size=1.0,
+                net_pnl=0.0,
+            ),
+            TradeRecord(
+                direction="Long",
+                entry_time=pd.Timestamp("2025-01-05", tz="UTC"),
+                exit_time=pd.Timestamp("2025-01-06", tz="UTC"),
+                entry_price=95.0,
+                exit_price=90.0,
+                size=1.0,
+                net_pnl=-5.0,
+            ),
+            TradeRecord(
+                direction="Long",
+                entry_time=pd.Timestamp("2025-01-07", tz="UTC"),
+                exit_time=pd.Timestamp("2025-01-08", tz="UTC"),
+                entry_price=90.0,
+                exit_price=100.0,
+                size=1.0,
+                net_pnl=10.0,
+            ),
+            TradeRecord(
+                direction="Long",
+                entry_time=pd.Timestamp("2025-01-09", tz="UTC"),
+                exit_time=pd.Timestamp("2025-01-10", tz="UTC"),
+                entry_price=100.0,
+                exit_price=98.0,
+                size=1.0,
+                net_pnl=-2.0,
+            ),
+        ]
+
+        result = StrategyResult(
+            trades=trades,
+            equity_curve=[100.0, 95.0, 95.0, 90.0, 100.0, 98.0],
+            balance_curve=[100.0, 95.0, 95.0, 90.0, 100.0, 98.0],
+            timestamps=[pd.Timestamp("2025-01-01", tz="UTC")] * 6,
+        )
+
+        basic = calculate_basic(result, initial_balance=100.0)
+        assert basic.max_consecutive_losses == 3
+
     def test_calculate_sqn_sufficient_trades(self):
         trades = [
             TradeRecord(net_pnl=100 + i) for i in range(30)

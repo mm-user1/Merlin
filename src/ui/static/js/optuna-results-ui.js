@@ -7,6 +7,7 @@
     romad: 'RoMaD',
     profit_factor: 'Profit Factor',
     win_rate: 'Win Rate %',
+    max_consecutive_losses: 'Max CL',
     sqn: 'SQN',
     ulcer_index: 'Ulcer Index',
     consistency_score: 'Consistency %',
@@ -43,8 +44,10 @@
     const objectiveList = Array.isArray(objectives) ? objectives : [];
     const objectiveSet = new Set(objectiveList);
     const rawMetricColumns = new Set([
+      'win_rate',
       'net_profit_pct',
       'max_drawdown_pct',
+      'max_consecutive_losses',
       'romad',
       'sharpe_ratio',
       'profit_factor',
@@ -57,9 +60,11 @@
       columns.push(`<th>${formatObjectiveLabel(objective)}</th>`);
     });
 
+    columns.push('<th>WR %</th>');
     columns.push('<th>Net Profit %</th>');
     columns.push('<th>Max DD %</th>');
     columns.push('<th>Trades</th>');
+    columns.push('<th>Max CL</th>');
     columns.push('<th>Score</th>');
     columns.push('<th>RoMaD</th>');
     columns.push('<th>Sharpe</th>');
@@ -92,8 +97,10 @@
 
     const objectiveValues = Array.isArray(trial.objective_values) ? trial.objective_values : [];
     const rawMetricColumns = new Set([
+      'win_rate',
       'net_profit_pct',
       'max_drawdown_pct',
+      'max_consecutive_losses',
       'romad',
       'sharpe_ratio',
       'profit_factor',
@@ -111,10 +118,14 @@
         return `<td>${formatted}${isPercent && formatted !== 'N/A' ? '%' : ''}</td>`;
       });
 
+    const winRate = trial.win_rate;
+    const winRateFormatted = formatNumber(winRate, 2);
+    const winRateCell = `<td>${winRateFormatted}${winRateFormatted !== 'N/A' ? '%' : ''}</td>`;
     const netProfit = Number(trial.net_profit_pct || 0);
     const netProfitCell = `<td class="${netProfit >= 0 ? 'val-positive' : 'val-negative'}">${netProfit >= 0 ? '+' : ''}${formatNumber(netProfit, 2)}%</td>`;
     const maxDd = Math.abs(Number(trial.max_drawdown_pct || 0));
     const maxDdCell = `<td class="val-negative">-${formatNumber(maxDd, 2)}%</td>`;
+    const maxClCell = `<td>${trial.max_consecutive_losses ?? '-'}</td>`;
 
     const scoreValue = trial.score !== undefined && trial.score !== null
       ? Number(trial.score)
@@ -133,9 +144,11 @@
         <td>${paretoBadge}</td>
         ${hasConstraints ? `<td>${constraintBadge}</td>` : ''}
         ${objectiveCells.join('')}
+        ${winRateCell}
         ${netProfitCell}
         ${maxDdCell}
         <td>${trial.total_trades ?? '-'}</td>
+        ${maxClCell}
         <td>${scoreValue !== null ? formatNumber(scoreValue, 1) : 'N/A'}</td>
         <td>${formatNumber(romad, 3)}</td>
         <td>${formatNumber(sharpe, 3)}</td>

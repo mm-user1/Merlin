@@ -186,6 +186,7 @@ def _create_schema(conn: sqlite3.Connection) -> None:
             max_drawdown_pct REAL,
             total_trades INTEGER,
             win_rate REAL,
+            max_consecutive_losses INTEGER,
             avg_win REAL,
             avg_loss REAL,
             gross_profit REAL,
@@ -204,6 +205,7 @@ def _create_schema(conn: sqlite3.Connection) -> None:
             ft_max_drawdown_pct REAL,
             ft_total_trades INTEGER,
             ft_win_rate REAL,
+            ft_max_consecutive_losses INTEGER,
             ft_sharpe_ratio REAL,
             ft_sortino_ratio REAL,
             ft_romad REAL,
@@ -340,6 +342,8 @@ def _ensure_columns(conn: sqlite3.Connection) -> None:
     ensure("studies", "st_candidates_insufficient_data", "INTEGER")
     ensure("studies", "optimization_time_seconds", "INTEGER")
 
+    ensure("trials", "max_consecutive_losses", "INTEGER")
+    ensure("trials", "ft_max_consecutive_losses", "INTEGER")
     ensure("trials", "dsr_probability", "REAL")
     ensure("trials", "dsr_rank", "INTEGER")
     ensure("trials", "dsr_skewness", "REAL")
@@ -702,6 +706,7 @@ def save_optuna_study_to_db(
                         result.max_drawdown_pct,
                         result.total_trades,
                         result.win_rate,
+                        result.max_consecutive_losses,
                         result.avg_win,
                         result.avg_loss,
                         result.gross_profit,
@@ -737,14 +742,14 @@ def save_optuna_study_to_db(
                         study_id, trial_number,
                         params_json, objective_values_json, is_pareto_optimal, dominance_rank,
                         constraints_satisfied, constraint_values_json,
-                        net_profit_pct, max_drawdown_pct, total_trades, win_rate, avg_win, avg_loss,
+                        net_profit_pct, max_drawdown_pct, total_trades, win_rate, max_consecutive_losses, avg_win, avg_loss,
                         gross_profit, gross_loss,
                         romad, sharpe_ratio, sortino_ratio, profit_factor, ulcer_index, sqn,
                         consistency_score, composite_score,
                         ft_net_profit_pct, ft_max_drawdown_pct, ft_total_trades, ft_win_rate,
                         ft_sharpe_ratio, ft_sortino_ratio, ft_romad, ft_profit_factor,
                         ft_ulcer_index, ft_sqn, ft_consistency_score, profit_degradation, ft_rank
-                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                     """,
                     trial_rows,
                 )
@@ -1202,6 +1207,7 @@ def save_forward_test_results(
                             payload.get("ft_max_drawdown_pct"),
                             payload.get("ft_total_trades"),
                             payload.get("ft_win_rate"),
+                            payload.get("ft_max_consecutive_losses"),
                             payload.get("ft_sharpe_ratio"),
                             payload.get("ft_sortino_ratio"),
                             payload.get("ft_romad"),
@@ -1225,6 +1231,7 @@ def save_forward_test_results(
                         ft_max_drawdown_pct = ?,
                         ft_total_trades = ?,
                         ft_win_rate = ?,
+                        ft_max_consecutive_losses = ?,
                         ft_sharpe_ratio = ?,
                         ft_sortino_ratio = ?,
                         ft_romad = ?,

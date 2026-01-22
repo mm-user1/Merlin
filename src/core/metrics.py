@@ -63,6 +63,7 @@ class BasicMetrics:
     avg_win: float
     avg_loss: float
     avg_trade: float
+    max_consecutive_losses: int
 
     def to_dict(self) -> Dict[str, Any]:
         """Convert to dictionary for serialization."""
@@ -80,6 +81,7 @@ class BasicMetrics:
             "avg_win": self.avg_win,
             "avg_loss": self.avg_loss,
             "avg_trade": self.avg_trade,
+            "max_consecutive_losses": self.max_consecutive_losses,
         }
 
 
@@ -403,6 +405,16 @@ def calculate_basic(result: StrategyResult, initial_balance: Optional[float] = N
     avg_loss = (gross_loss / losing_trades) if losing_trades > 0 else 0.0
     avg_trade = (net_profit / total_trades) if total_trades > 0 else 0.0
 
+    max_consecutive_losses = 0
+    consecutive_losses = 0
+    for trade in trades:
+        if trade.net_pnl <= 0:
+            consecutive_losses += 1
+            if consecutive_losses > max_consecutive_losses:
+                max_consecutive_losses = consecutive_losses
+        else:
+            consecutive_losses = 0
+
     return BasicMetrics(
         net_profit=net_profit,
         net_profit_pct=net_profit_pct,
@@ -417,6 +429,7 @@ def calculate_basic(result: StrategyResult, initial_balance: Optional[float] = N
         avg_win=avg_win,
         avg_loss=avg_loss,
         avg_trade=avg_trade,
+        max_consecutive_losses=max_consecutive_losses,
     )
 
 
