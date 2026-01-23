@@ -5,7 +5,6 @@ Implements TradingView-compatible RSI and Stochastic RSI using
 Wilder's smoothing for reliability with the migrated architecture.
 """
 
-import numpy as np
 import pandas as pd
 
 

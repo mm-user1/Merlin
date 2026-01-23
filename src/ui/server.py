@@ -1,4 +1,3 @@
-import hashlib
 import io
 import json
 import math
@@ -176,36 +175,6 @@ def _send_trades_csv(
         as_attachment=True,
         download_name=filename,
     )
-
-
-def _create_param_id_for_strategy(strategy_id: str, params: Dict[str, Any]) -> str:
-    param_str = json.dumps(params, sort_keys=True)
-    param_hash = hashlib.md5(param_str.encode()).hexdigest()[:8]
-
-    try:
-        from strategies import get_strategy_config
-
-        config = get_strategy_config(strategy_id)
-        parameters = config.get("parameters", {}) if isinstance(config, dict) else {}
-
-        optimizable: List[str] = []
-        for param_name, param_spec in parameters.items():
-            if not isinstance(param_spec, dict):
-                continue
-            optimize_cfg = param_spec.get("optimize", {})
-            if isinstance(optimize_cfg, dict) and optimize_cfg.get("enabled", False):
-                optimizable.append(param_name)
-            if len(optimizable) == 2:
-                break
-
-        label_parts = [str(params.get(param_name, "?")) for param_name in optimizable]
-        if label_parts:
-            label = " ".join(label_parts)
-            return f"{label}_{param_hash}"
-    except Exception:
-        pass
-
-    return param_hash
 
 
 def _get_parameter_types(strategy_id: str) -> Dict[str, str]:
@@ -2324,119 +2293,6 @@ def _build_optimization_config(
             setattr(config, key, value)
 
     return config
-
-
-_DATE_PREFIX_RE = re.compile(r"\b\d{4}[.\-/]\d{2}[.\-/]\d{2}\b")
-_DATE_VALUE_RE = re.compile(r"(\d{4})[.\-/]?(\d{2})[.\-/]?(\d{2})")
-
-
-def _extract_file_prefix(csv_filename: str) -> str:
-    """
-    Extract file prefix (exchange, ticker, timeframe) from CSV filename.
-
-    Examples:
-        "OKX_LINKUSDT.P, 15 2025.02.01-2025.09.09.csv" -> "OKX_LINKUSDT.P, 15"
-        "BINANCE_BTCUSDT, 1h.csv" -> "BINANCE_BTCUSDT, 1h"
-
-    Returns original filename stem if pattern not found.
-    """
-    name = Path(csv_filename).stem
-
-    # Remove date pattern if exists (YYYY.MM.DD-YYYY.MM.DD)
-    match = _DATE_PREFIX_RE.search(name)
-    if match:
-        prefix = name[:match.start()].rstrip()
-        return prefix if prefix else name
-
-    return name
-
-
-def _format_date_component(value: object) -> str:
-    if value in (None, ""):
-        return "0000.00.00"
-    value_str = str(value).strip()
-    if not value_str:
-        return "0000.00.00"
-    match = _DATE_VALUE_RE.search(value_str)
-    if match:
-        year, month, day = match.groups()
-        return f"{year}.{month}.{day}"
-    normalized = value_str.rstrip("Zz")
-    normalized = normalized.replace(" ", "T", 1)
-    try:
-        parsed = datetime.fromisoformat(normalized)
-    except ValueError:
-        return "0000.00.00"
-    return parsed.strftime("%Y.%m.%d")
-
-
-def _unique_preserve_order(items):
-    seen = set()
-    result = []
-    for item in items:
-        if item not in seen:
-            seen.add(item)
-            result.append(item)
-    return result
-
-
-def _get_frontend_param_order(strategy_id: str) -> List[str]:
-    """Return parameter order from strategy config for consistent CSV output."""
-
-    try:
-        from strategies import get_strategy_config
-
-        config = get_strategy_config(strategy_id)
-        parameters = config.get("parameters", {}) if isinstance(config, dict) else {}
-        if isinstance(parameters, dict):
-            return list(parameters.keys())
-    except Exception:  # pragma: no cover - defensive
-        return []
-    return []
-
-
-def generate_output_filename(csv_filename: str, config: OptimizationConfig, mode: str = None) -> str:
-    """
-    Generate standardized output filename.
-
-    Format: EXCHANGE_TICKER TF START-END_MODE.csv
-    Example: "OKX_LINKUSDT.P, 15 2025.05.01-2025.09.01_Optuna.csv"
-
-    Args:
-        csv_filename: Input CSV filename
-        config: Optimization configuration
-        mode: Output mode ("Optuna" or "Optuna+WFA")
-
-    Returns:
-        Formatted filename string
-    """
-    # Extract prefix (exchange, ticker, timeframe)
-    prefix = _extract_file_prefix(csv_filename or "")
-    if not prefix:
-        prefix = "optimization"
-
-    # Format dates
-    start_formatted = _format_date_component(config.fixed_params.get("start"))
-    end_formatted = _format_date_component(config.fixed_params.get("end"))
-
-    # Handle dateFilter=false: extract dates from input filename
-    if not config.fixed_params.get("dateFilter"):
-        original_name = Path(csv_filename or "").stem
-        match = _DATE_PREFIX_RE.search(original_name)
-        if match:
-            # Found dates in filename, use them
-            date_str = match.group()
-            parts = date_str.split("-")
-            if len(parts) == 2:
-                start_formatted = parts[0]
-                end_formatted = parts[1]
-
-    # Determine mode
-    if mode is None:
-        mode = "Optuna"
-
-    # Build filename
-    return f"{prefix} {start_formatted}-{end_formatted}_{mode}.csv"
 
 
 @app.post("/api/optimize")

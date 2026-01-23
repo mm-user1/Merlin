@@ -44,7 +44,6 @@ from .metrics import (
     WFAMetrics,
     calculate_basic,
     calculate_advanced,
-    calculate_for_wfa,
     enrich_strategy_result,
 )
 
@@ -76,6 +75,5 @@ __all__ = [
     "WFAMetrics",
     "calculate_basic",
     "calculate_advanced",
-    "calculate_for_wfa",
     "enrich_strategy_result",
 ]

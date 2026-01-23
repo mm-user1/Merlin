@@ -9,9 +9,8 @@ import multiprocessing as mp
 import tempfile
 import time
 from dataclasses import asdict, dataclass, field, fields
-from decimal import Decimal
 from pathlib import Path
-from typing import Any, Dict, Iterable, List, Optional, Tuple, Union
+from typing import Any, Dict, List, Optional, Tuple, Union
 
 import optuna
 from optuna.pruners import MedianPruner, PercentilePruner, PatientPruner
@@ -230,47 +229,6 @@ CONSTRAINT_OPERATORS: Dict[str, str] = {
 # ============================================================================
 # Utilities
 # ============================================================================
-
-
-def _generate_numeric_sequence(
-    start: float, stop: float, step: float, is_int: bool
-) -> List[Union[int, float]]:
-    if step == 0:
-        raise ValueError("Step must be non-zero for optimization ranges.")
-    delta = abs(step)
-    step_value = delta if start <= stop else -delta
-    decimals = max(0, -Decimal(str(step)).normalize().as_tuple().exponent)
-    epsilon = delta * 1e-9
-
-    values: List[Union[int, float]] = []
-    index = 0
-
-    while True:
-        raw_value = start + index * step_value
-        if step_value > 0:
-            if raw_value > stop + epsilon:
-                break
-        else:
-            if raw_value < stop - epsilon:
-                break
-
-        if is_int:
-            values.append(int(round(raw_value)))
-        else:
-            rounded_value = round(raw_value, decimals)
-            if rounded_value == 0:
-                rounded_value = 0.0
-            values.append(float(rounded_value))
-
-        index += 1
-
-    if not values:
-        if is_int:
-            values.append(int(round(start)))
-        else:
-            rounded_start = round(start, decimals)
-            values.append(float(0.0 if rounded_start == 0 else rounded_start))
-    return values
 
 
 def _is_nan(value: Any) -> bool:

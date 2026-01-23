@@ -1119,22 +1119,6 @@ def update_csv_path(study_id: str, new_path: str) -> bool:
         return cursor.rowcount > 0
 
 
-def update_study_status(study_id: str, status: str, error_message: Optional[str] = None) -> bool:
-    if not status:
-        return False
-    with get_db_connection() as conn:
-        cursor = conn.execute(
-            """
-            UPDATE studies
-            SET completed_at = ?
-            WHERE study_id = ?
-            """,
-            (datetime.utcnow().isoformat() + "Z", study_id),
-        )
-        conn.commit()
-        return cursor.rowcount > 0
-
-
 def update_study_config_json(study_id: str, config_json: Dict[str, Any]) -> bool:
     if not isinstance(config_json, dict):
         return False
