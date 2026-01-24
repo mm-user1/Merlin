@@ -1167,6 +1167,58 @@ def download_forward_test_trades(study_id: str, trial_number: int) -> object:
     )
 
 
+@app.post("/api/studies/<string:study_id>/trials/<int:trial_number>/oos-trades")
+def download_oos_test_trades(study_id: str, trial_number: int) -> object:
+    study_data = load_study_from_db(study_id)
+    if not study_data:
+        return jsonify({"error": "Study not found."}), HTTPStatus.NOT_FOUND
+
+    study = study_data["study"]
+    if study.get("optimization_mode") != "optuna":
+        return jsonify({"error": "Trade export is only supported for Optuna studies."}), HTTPStatus.BAD_REQUEST
+    if not study.get("oos_test_enabled"):
+        return jsonify({"error": "OOS Test is not enabled for this study."}), HTTPStatus.BAD_REQUEST
+
+    csv_path = study.get("csv_file_path")
+    if not csv_path or not Path(csv_path).exists():
+        return jsonify({"error": "CSV file is missing for this study."}), HTTPStatus.BAD_REQUEST
+
+    trial = get_study_trial(study_id, trial_number)
+    if not trial:
+        return jsonify({"error": "Trial not found."}), HTTPStatus.NOT_FOUND
+
+    oos_start = study.get("oos_test_start_date")
+    oos_end = study.get("oos_test_end_date")
+    if not oos_start or not oos_end:
+        return jsonify({"error": "OOS Test date range is missing."}), HTTPStatus.BAD_REQUEST
+
+    config = study.get("config_json") or {}
+    fixed_params = config.get("fixed_params") or {}
+    params = {**fixed_params, **(trial.get("params") or {})}
+    params["dateFilter"] = True
+    params["start"] = oos_start
+    params["end"] = oos_end
+
+    warmup_bars = study.get("warmup_bars") or config.get("warmup_bars") or 1000
+
+    trades, error = _run_trade_export(
+        strategy_id=study.get("strategy_id"),
+        csv_path=csv_path,
+        params=params,
+        warmup_bars=warmup_bars,
+    )
+    if error:
+        return jsonify({"error": error}), HTTPStatus.BAD_REQUEST
+
+    filename = f"{study.get('study_name', 'study')}_trial_{trial_number}_oos_trades.csv"
+    return _send_trades_csv(
+        trades=trades or [],
+        csv_path=csv_path,
+        study=study,
+        filename=filename,
+    )
+
+
 @app.post("/api/studies/<string:study_id>/tests/<int:test_id>/trials/<int:trial_number>/mt-trades")
 def download_manual_test_trades(study_id: str, test_id: int, trial_number: int) -> object:
     study_data = load_study_from_db(study_id)

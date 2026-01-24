@@ -86,6 +86,35 @@ const OBJECTIVE_LABELS = {
   composite_score: 'Composite Score'
 };
 
+const SORT_METRIC_LABELS = {
+  profit_degradation: 'Profit Degradation',
+  ft_romad: 'FT RoMaD',
+  profit_retention: 'Profit Retention',
+  romad_retention: 'RoMaD Retention'
+};
+
+const SOURCE_LABELS = {
+  optuna: 'Optuna IS',
+  dsr: 'DSR',
+  forward_test: 'Forward Test',
+  stress_test: 'Stress Test',
+  oos_test: 'OOS Test',
+  manual_tests: 'Manual Test'
+};
+
+const TOKEN_LABELS = {
+  ft: 'FT',
+  st: 'ST',
+  is: 'IS',
+  oos: 'OOS',
+  dsr: 'DSR',
+  romad: 'RoMaD',
+  pf: 'PF',
+  sqn: 'SQN',
+  dd: 'DD',
+  pnl: 'PnL'
+};
+
 const CONSTRAINT_OPERATORS = {
   total_trades: '>=',
   net_profit_pct: '>=',
@@ -852,18 +881,8 @@ function renderManualTestControls() {
   });
 
   if (baseline) {
-    const source = ResultsState.activeManualTest?.source_tab;
-    if (source === 'forward_test') {
-      baseline.textContent = 'Compared against: Forward Test Results';
-    } else if (source === 'dsr') {
-      baseline.textContent = 'Compared against: DSR Results';
-    } else if (source === 'stress_test') {
-      baseline.textContent = 'Compared against: Stress Test Results';
-    } else if (source === 'optuna') {
-      baseline.textContent = 'Compared against: Optuna Results';
-    } else {
-      baseline.textContent = '';
-    }
+    baseline.textContent = '';
+    baseline.style.display = 'none';
   }
 }
 
@@ -924,6 +943,36 @@ function formatObjectiveLabel(name) {
   return OBJECTIVE_LABELS[name] || name;
 }
 
+function formatTitleToken(token) {
+  const safe = String(token || '').trim();
+  if (!safe) return '';
+  const lower = safe.toLowerCase();
+  if (TOKEN_LABELS[lower]) return TOKEN_LABELS[lower];
+  return lower.charAt(0).toUpperCase() + lower.slice(1);
+}
+
+function formatTitleFromKey(key) {
+  const safe = String(key || '').trim();
+  if (!safe) return '';
+  return safe
+    .split(/[_\s-]+/)
+    .filter(Boolean)
+    .map(formatTitleToken)
+    .join(' ');
+}
+
+function formatSortMetricLabel(metric) {
+  const safe = String(metric || '').trim().toLowerCase();
+  if (!safe) return '';
+  return SORT_METRIC_LABELS[safe] || formatTitleFromKey(safe);
+}
+
+function formatSourceLabel(source) {
+  const safe = String(source || '').trim().toLowerCase();
+  if (!safe) return '';
+  return SOURCE_LABELS[safe] || formatTitleFromKey(safe);
+}
+
 function formatObjectivesList(objectives) {
   if (!objectives || !objectives.length) return '-';
   return objectives.map((obj) => formatObjectiveLabel(obj)).join(', ');
@@ -937,6 +986,19 @@ function formatConstraintsSummary(constraints) {
     const threshold = c.threshold !== undefined && c.threshold !== null ? c.threshold : '-';
     return `${formatObjectiveLabel(c.metric)} ${operator} ${threshold}`;
   }).join(', ');
+}
+
+function getOptunaSortSubtitle() {
+  const objectives = ResultsState.optuna.objectives || [];
+  if (!objectives.length) return 'Sorted by objectives';
+  const primary = ResultsState.optuna.primaryObjective || null;
+  const mainObjective = objectives.length > 1 ? (primary || objectives[0]) : objectives[0];
+  const label = mainObjective ? formatObjectiveLabel(mainObjective) : '';
+  if (!label) return 'Sorted by objectives';
+  if (objectives.length > 1) {
+    return `Sorted by Primary Objective: ${label}`;
+  }
+  return `Sorted by Objective: ${label}`;
 }
 
 function formatParamName(name) {
@@ -2033,23 +2095,28 @@ function refreshResultsView() {
     if (summaryRow) summaryRow.style.display = 'none';
     const periodLabel = getActivePeriodLabel();
     if (ResultsState.activeTab === 'forward_test') {
-      updateTableHeader('Forward Test', 'Sorted by FT results', periodLabel);
+      const sortLabel = formatSortMetricLabel(ResultsState.forwardTest.sortMetric) || 'FT results';
+      updateTableHeader('Forward Test', `Sorted by ${sortLabel}`, periodLabel);
       renderForwardTestTable(ResultsState.forwardTest.trials || []);
     } else if (ResultsState.activeTab === 'stress_test') {
-      updateTableHeader('Stress Test', 'Sorted by retention', periodLabel);
+      const sortLabel = formatSortMetricLabel(ResultsState.stressTest.sortMetric) || 'retention';
+      updateTableHeader('Stress Test', `Sorted by ${sortLabel}`, periodLabel);
       renderStressTestTable(ResultsState.stressTest.trials || []);
     } else if (ResultsState.activeTab === 'oos_test') {
-      const sourceLabel = ResultsState.oosTest.source ? `Source: ${ResultsState.oosTest.source}` : 'Source: -';
-      updateTableHeader('OOS Test', `${sourceLabel} | Sorted by source order`, periodLabel);
+      const sourceLabel = formatSourceLabel(ResultsState.oosTest.source);
+      const subtitle = sourceLabel ? `Source: ${sourceLabel}` : 'Source: -';
+      updateTableHeader('OOS Test', subtitle, periodLabel);
       renderOosTestTable(ResultsState.oosTest.trials || []);
     } else if (ResultsState.activeTab === 'dsr') {
       updateTableHeader('DSR', 'Sorted by DSR probability', periodLabel);
       renderDsrTable(ResultsState.dsr.trials || []);
     } else if (ResultsState.activeTab === 'manual_tests') {
-      updateTableHeader('Test Results', 'Manual test results', periodLabel);
+      const sourceLabel = formatSourceLabel(ResultsState.activeManualTest?.source_tab);
+      const subtitle = sourceLabel ? `Source: ${sourceLabel}` : 'Source: -';
+      updateTableHeader('Test Results', subtitle, periodLabel);
       renderManualTestTable(ResultsState.manualTestResults || []);
     } else {
-      updateTableHeader('Optuna IS', 'Sorted by objectives', periodLabel);
+      updateTableHeader('Optuna IS', getOptunaSortSubtitle(), periodLabel);
       renderOptunaTable(ResultsState.results || []);
     }
     renderManualTestControls();
@@ -2285,6 +2352,12 @@ function bindEventHandlers() {
             return;
           }
           endpoint = `/api/studies/${encodeURIComponent(ResultsState.studyId)}/trials/${ResultsState.selectedRowId}/ft-trades`;
+        } else if (activeTab === 'oos_test') {
+          if (!ResultsState.selectedRowId) {
+            alert('Select a trial in the table.');
+            return;
+          }
+          endpoint = `/api/studies/${encodeURIComponent(ResultsState.studyId)}/trials/${ResultsState.selectedRowId}/oos-trades`;
         } else if (activeTab === 'manual_tests') {
           if (!ResultsState.activeManualTest || !ResultsState.activeManualTest.id) {
             alert('Select a manual test first.');

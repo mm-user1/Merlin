@@ -37,45 +37,46 @@ Key: Flask, pandas, numpy, matplotlib, optuna==4.6.0
 ### Core Principles
 
 1. **Config-driven design** - Parameter schemas in `config.json`, UI renders dynamically
-2. **camelCase naming** - End-to-end: Pine Script → config.json → Python → CSV
+2. **camelCase naming** - End-to-end: Pine Script -> config.json -> Python -> CSV
 3. **Optuna-only optimization** - Grid search removed
 4. **Strategy isolation** - Each strategy owns its params dataclass
 5. **Rolling WFA (Phase 2)** - Calendar-based IS/OOS windows, stitched OOS equity, annualized WFE
 6. **Database persistence** - All optimization results automatically saved to SQLite, browsable through web UI
 
 ### Directory Structure
-
 ```
 src/
-├── core/               # Engines + utilities
-│   ├── backtest_engine.py    # Trade simulation, TradeRecord, StrategyResult
-│   ├── optuna_engine.py      # Optimization, OptimizationResult, OptunaConfig
-│   ├── walkforward_engine.py # WFA orchestration
-│   ├── metrics.py            # BasicMetrics, AdvancedMetrics calculation
-│   ├── storage.py            # SQLite database operations
-│   └── export.py             # Trade CSV export functions
-├── indicators/         # Technical indicators
-│   ├── ma.py           # 11 MA types via get_ma()
-│   ├── volatility.py   # ATR, NATR
-│   └── oscillators.py  # RSI, StochRSI
-├── strategies/         # Trading strategies
-│   ├── base.py         # BaseStrategy class
-│   ├── s01_trailing_ma/
-│   └── s04_stochrsi/
-├── storage/            # Database storage (gitignored)
-│   ├── studies.db      # SQLite database (WAL mode)
-│   └── journals/       # SQLite journal files
-└── ui/                 # Web interface
-    ├── server.py       # Flask API
-    ├── templates/
-    │   ├── index.html  # Start page (configuration)
-    │   └── results.html # Results page (studies browser)
-    └── static/
-        ├── js/
-        │   ├── main.js     # Start page logic
-        │   ├── results.js  # Results page logic
-        │   └── api.js      # API client
-        └── css/
+|-- core/                     # Engines + utilities
+|   |-- backtest_engine.py    # Trade simulation, TradeRecord, StrategyResult
+|   |-- optuna_engine.py      # Optimization, OptimizationResult, OptunaConfig
+|   |-- walkforward_engine.py # WFA orchestration
+|   |-- metrics.py            # BasicMetrics, AdvancedMetrics calculation
+|   |-- storage.py            # SQLite database operations
+|   |-- export.py             # Trade CSV export functions
+|   |-- post_process.py       # Forward Test and DSR validation
+|   `-- testing.py            # OOS selection and test utilities
+|-- indicators/               # Technical indicators
+|   |-- ma.py                 # 11 MA types via get_ma()
+|   |-- volatility.py         # ATR, NATR
+|   `-- oscillators.py        # RSI, StochRSI
+|-- strategies/               # Trading strategies
+|   |-- base.py               # BaseStrategy class
+|   |-- s01_trailing_ma/
+|   `-- s04_stochrsi/
+|-- storage/                  # Database storage (gitignored)
+|   |-- studies.db            # SQLite database (WAL mode)
+|   `-- journals/             # SQLite journal files
+`-- ui/                       # Web interface
+    |-- server.py             # Flask API
+    |-- templates/
+    |   |-- index.html        # Start page (configuration)
+    |   `-- results.html      # Results page (studies browser)
+    `-- static/
+        |-- js/
+        |   |-- main.js       # Start page logic
+        |   |-- results.js    # Results page logic
+        |   `-- api.js        # API client
+        `-- css/
 ```
 
 ### Data Structure Ownership
@@ -91,14 +92,14 @@ src/
 
 **CRITICAL: Use camelCase everywhere**
 
-- ✅ `maType`, `closeCountLong`, `rsiLen`, `stopLongMaxPct`
-- ❌ `ma_type`, `close_count_long`, `rsi_len`, `stop_long_max_pct`
+- Correct: `maType`, `closeCountLong`, `rsiLen`, `stopLongMaxPct`
+- Avoid: `ma_type`, `close_count_long`, `rsi_len`, `stop_long_max_pct`
 
 Internal control fields (`use_backtester`, `start`, `end`) may use snake_case but are excluded from UI/config.
 
 **Do NOT add:**
 - `to_dict()` methods - use `dataclasses.asdict(params)` instead
-- Snake↔camel conversion helpers
+- Snake<->camel conversion helpers
 - Feature flags
 
 ## Adding New Strategies
@@ -130,7 +131,6 @@ print(study_data['study'])      # Study metadata
 print(study_data['trials'])     # Optuna trials (if mode='optuna')
 print(study_data['windows'])    # WFA windows (if mode='wfa')
 print(study_data['csv_exists']) # Whether CSV file still exists
-```
 
 ### Understanding Study Storage
 
@@ -147,12 +147,6 @@ print(study_data['csv_exists']) # Whether CSV file still exists
 - WFE (Walk-Forward Efficiency) stored as `best_value`
 
 ### Database Location
-```
-src/storage/studies.db          # Main database (WAL mode)
-src/storage/studies.db-wal      # Write-Ahead Log
-src/storage/studies.db-shm      # Shared memory
-src/storage/journals/           # Temporary Optuna journals
-```
 
 **Note:** Database files are gitignored. Only `.gitkeep` files are tracked.
 
@@ -166,14 +160,12 @@ from strategies.s01_trailing_ma.strategy import S01TrailingMA
 df = load_data("data/raw/OKX_LINKUSDT.P, 15 2025.05.01-2025.11.20.csv")
 df_prepared, trade_start_idx = prepare_dataset_with_warmup(df, start, end, warmup_bars=1000)
 result = S01TrailingMA.run(df_prepared, params, trade_start_idx)
-```
 
 ### Calculating Metrics
 ```python
 from core import metrics
 basic = metrics.calculate_basic(result, initial_capital=100.0)
 advanced = metrics.calculate_advanced(result)
-```
 
 ### Walk-Forward Analysis (Rolling)
 ```python
@@ -187,7 +179,6 @@ wf_config = WFConfig(
 )
 engine = WalkForwardEngine(wf_config, base_config_template, optuna_settings)
 wf_result = engine.run_wf_optimization(df)
-```
 
 ### Using Indicators
 ```python
@@ -198,14 +189,12 @@ from indicators.oscillators import rsi, stoch_rsi
 ma_values = get_ma(df["Close"], "HMA", 50)
 atr_values = atr(df["High"], df["Low"], df["Close"], 14)
 rsi_values = rsi(df["Close"], 14)
-```
 
 ## Testing
 
 ### Run All Tests
 ```bash
 pytest tests/ -v
-```
 
 ### Key Test Files
 - `test_sanity.py` - Infrastructure checks
@@ -215,7 +204,6 @@ pytest tests/ -v
 ### Regenerate S01 Baseline
 ```bash
 python tools/generate_baseline_s01.py
-```
 
 ## Optuna: Multi-objective & constraints
 
@@ -236,12 +224,12 @@ python tools/generate_baseline_s01.py
   - Failed trials are ignored by Optuna samplers (they do not affect future suggestions).
 
 - **Constraints**
-  - Constraints are **soft**: infeasible trials are retained but deprioritized in UI and “best” selection.
+- Constraints are **soft**: infeasible trials are retained but deprioritized in UI and "best" selection.
   - `constraints_func` is evaluated only after **successful** trials; it is not called for failed/pruned trials.
-  - Sorting/labeling should follow: feasible Pareto → feasible non-Pareto → infeasible (then by total violation, then primary objective).
+- Sorting/labeling should follow: feasible Pareto -> feasible non-Pareto -> infeasible (then by total violation, then primary objective).
 
 - **Concurrency**
-  - Keep Merlin’s existing multi-process optimization architecture. Do not replace it with `study.optimize(..., n_jobs=...)` threading.
+- Keep Merlin's existing multi-process optimization architecture. Do not replace it with `study.optimize(..., n_jobs=...)` threading.
 
 
 ## UI Notes
@@ -262,7 +250,7 @@ python tools/generate_baseline_s01.py
 - Pareto badge + constraint feasibility indicators for Optuna trials
 - Equity curve visualization
 - Parameter comparison tables
-- Download trades CSV for any trial (on-demand generation)
+- Download trades CSV for IS/FT/OOS/Manual/WFA results (on-demand generation)
 - Delete studies or update CSV file paths
 
 ### Frontend Architecture
@@ -274,6 +262,8 @@ python tools/generate_baseline_s01.py
 - **ui-handlers.js**: Shared UI event handlers
 - **optuna-ui.js**: Optuna Start-page UI helpers (objectives/constraints/sampler panels)
 - **optuna-results-ui.js**: Optuna Results-page UI helpers (dynamic columns/badges)
+- **post-process-ui.js**: Post process UI helpers (Forward Test, DSR panels)
+- **oos-test-ui.js**: OOS test UI helpers
 - Forms generated dynamically from `config.json`
 - Strategy dropdown auto-populated from discovered strategies
 - No hardcoded parameters in frontend
@@ -292,18 +282,29 @@ python tools/generate_baseline_s01.py
 - `POST /api/optimization/cancel` - Cancel running optimization
 
 ### Studies Management
+
 - `GET /api/studies` - List all saved studies
 - `GET /api/studies/<study_id>` - Load study with trials/windows
 - `DELETE /api/studies/<study_id>` - Delete study
 - `POST /api/studies/<study_id>/update-csv-path` - Update CSV path
-- `POST /api/studies/<study_id>/trials/<trial_number>/trades` - Download trades CSV
+- `POST /api/studies/<study_id>/test` - Run manual test on selected trials
+- `GET /api/studies/<study_id>/tests` - List manual tests
+- `GET /api/studies/<study_id>/tests/<test_id>` - Load manual test results
+- `DELETE /api/studies/<study_id>/tests/<test_id>` - Delete manual test
+- `POST /api/studies/<study_id>/trials/<trial_number>/trades` - Download IS trades CSV
+- `POST /api/studies/<study_id>/trials/<trial_number>/ft-trades` - Download Forward Test trades CSV
+- `POST /api/studies/<study_id>/trials/<trial_number>/oos-trades` - Download OOS Test trades CSV
+- `POST /api/studies/<study_id>/tests/<test_id>/trials/<trial_number>/mt-trades` - Download Manual Test trades CSV
+- `POST /api/studies/<study_id>/wfa/trades` - Download stitched WFA OOS trades CSV
 
 ### Strategy & Presets
 - `GET /api/strategies` - List available strategies
+- `GET /api/strategies/<strategy_id>` - Get strategy metadata
 - `GET /api/strategy/<strategy_id>/config` - Get strategy schema
 - `GET /api/presets` - List presets
 - `POST /api/presets` - Create preset
 - `GET/PUT/DELETE /api/presets/<name>` - Load/update/delete preset
+- `PUT /api/presets/defaults` - Update default preset values
 
 ## Performance Considerations
 
