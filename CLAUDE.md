@@ -41,7 +41,8 @@ Key: Flask, pandas, numpy, matplotlib, optuna==4.6.0
 3. **Optuna-only optimization** - Grid search removed
 4. **Strategy isolation** - Each strategy owns its params dataclass
 5. **Rolling WFA (Phase 2)** - Calendar-based IS/OOS windows, stitched OOS equity, annualized WFE
-6. **Database persistence** - All optimization results automatically saved to SQLite, browsable through web UI
+6. **OOS Test (Phase 3-4)** - Final holdout validation after DSR/FT/Stress, split from dataset end with inclusive boundaries
+7. **Database persistence** - All optimization results automatically saved to SQLite, browsable through web UI
 
 ### Directory Structure
 
@@ -251,6 +252,7 @@ python tools/generate_baseline_s01.py
 **Start Page (`/` - index.html):**
 - Strategy selection and parameter configuration
 - Optuna settings (objectives + primary objective, budget, sampler, pruner, constraints)
+- OOS Test settings (period + top-K, mutually exclusive with WFA)
 - Walk-Forward Analysis settings (IS/OOS periods)
 - Run Optuna or Run WFA buttons
 - Results automatically saved to database
@@ -260,6 +262,7 @@ python tools/generate_baseline_s01.py
 - Studies Manager: List all saved optimization studies
 - Study details: View trials (Optuna) or windows (WFA)
 - Pareto badge + constraint feasibility indicators for Optuna trials
+- OOS Test tab for final holdout results (source module + rank deltas)
 - Equity curve visualization
 - Parameter comparison tables
 - Download trades CSV for any trial (on-demand generation)

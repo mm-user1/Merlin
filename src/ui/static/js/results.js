@@ -51,6 +51,15 @@ const ResultsState = {
     candidatesInsufficientData: 0,
     source: 'optuna'
   },
+  oosTest: {
+    enabled: false,
+    topK: null,
+    trials: [],
+    periodDays: null,
+    startDate: '',
+    endDate: '',
+    source: 'optuna'
+  },
   manualTests: [],
   activeManualTest: null,
   manualTestResults: [],
@@ -272,6 +281,9 @@ function getActivePeriodLabel() {
   if (ResultsState.activeTab === 'forward_test') {
     return buildPeriodLabel(ResultsState.forwardTest.startDate, ResultsState.forwardTest.endDate);
   }
+  if (ResultsState.activeTab === 'oos_test') {
+    return buildPeriodLabel(ResultsState.oosTest.startDate, ResultsState.oosTest.endDate);
+  }
   if (ResultsState.activeTab === 'manual_tests') {
     const config = ResultsState.activeManualTest?.config || {};
     return buildPeriodLabel(config.start_date, config.end_date);
@@ -284,6 +296,7 @@ function updateTabsVisibility() {
   const dsrTab = document.querySelector('.tab-btn[data-tab="dsr"]');
   const forwardTab = document.querySelector('.tab-btn[data-tab="forward_test"]');
   const stressTab = document.querySelector('.tab-btn[data-tab="stress_test"]');
+  const oosTab = document.querySelector('.tab-btn[data-tab="oos_test"]');
   const manualTab = document.querySelector('.tab-btn[data-tab="manual_tests"]');
   const tabsContainer = document.getElementById('resultsTabs');
   const manualBtn = document.getElementById('manualTestBtn');
@@ -299,11 +312,13 @@ function updateTabsVisibility() {
   const hasDsr = ResultsState.dsr.enabled && ResultsState.dsr.trials.length > 0;
   const hasForwardTest = ResultsState.forwardTest.enabled && ResultsState.forwardTest.trials.length > 0;
   const hasStressTest = ResultsState.stressTest.enabled && ResultsState.stressTest.trials.length > 0;
+  const hasOosTest = ResultsState.oosTest.enabled && ResultsState.oosTest.trials.length > 0;
   const hasManualTests = ResultsState.manualTests.length > 0;
 
   if (dsrTab) dsrTab.style.display = hasDsr ? 'inline-flex' : 'none';
   if (forwardTab) forwardTab.style.display = hasForwardTest ? 'inline-flex' : 'none';
   if (stressTab) stressTab.style.display = hasStressTest ? 'inline-flex' : 'none';
+  if (oosTab) oosTab.style.display = hasOosTest ? 'inline-flex' : 'none';
   if (manualTab) manualTab.style.display = hasManualTests ? 'inline-flex' : 'none';
   if (manualBtn) {
     manualBtn.style.display = ['optuna', 'dsr', 'forward_test', 'stress_test'].includes(ResultsState.activeTab)
@@ -318,6 +333,9 @@ function updateTabsVisibility() {
     ResultsState.activeTab = 'optuna';
   }
   if (!hasStressTest && ResultsState.activeTab === 'stress_test') {
+    ResultsState.activeTab = 'optuna';
+  }
+  if (!hasOosTest && ResultsState.activeTab === 'oos_test') {
     ResultsState.activeTab = 'optuna';
   }
   if (!hasManualTests && ResultsState.activeTab === 'manual_tests') {
@@ -533,6 +551,20 @@ async function applyStudyPayload(data) {
       || 'optuna'
   };
 
+  const oosTrials = (data.trials || []).filter((trial) => trial.oos_test_rank !== null && trial.oos_test_rank !== undefined);
+  oosTrials.sort((a, b) => (a.oos_test_rank || 0) - (b.oos_test_rank || 0));
+  ResultsState.oosTest = {
+    enabled: Boolean(study.oos_test_enabled),
+    topK: study.oos_test_top_k ?? null,
+    trials: oosTrials,
+    periodDays: study.oos_test_period_days ?? null,
+    startDate: study.oos_test_start_date || '',
+    endDate: study.oos_test_end_date || '',
+    source: study.oos_test_source_module
+      || inferPostProcessSource(data.trials || [], 'oos_test_source')
+      || 'optuna'
+  };
+
   ResultsState.manualTests = data.manual_tests || [];
   ResultsState.activeManualTest = null;
   ResultsState.manualTestResults = [];
@@ -541,6 +573,7 @@ async function applyStudyPayload(data) {
     const hasDsr = ResultsState.dsr.enabled && ResultsState.dsr.trials.length > 0;
     const hasForward = ResultsState.forwardTest.enabled && ResultsState.forwardTest.trials.length > 0;
     const hasStress = ResultsState.stressTest.enabled && ResultsState.stressTest.trials.length > 0;
+    const hasOos = ResultsState.oosTest.enabled && ResultsState.oosTest.trials.length > 0;
     const hasManual = ResultsState.manualTests.length > 0;
     if (ResultsState.activeTab === 'dsr' && !hasDsr) {
       ResultsState.activeTab = 'optuna';
@@ -549,6 +582,9 @@ async function applyStudyPayload(data) {
       ResultsState.activeTab = 'optuna';
     }
     if (ResultsState.activeTab === 'stress_test' && !hasStress) {
+      ResultsState.activeTab = 'optuna';
+    }
+    if (ResultsState.activeTab === 'oos_test' && !hasOos) {
       ResultsState.activeTab = 'optuna';
     }
     if (ResultsState.activeTab === 'manual_tests' && !hasManual) {
@@ -837,6 +873,9 @@ function getTrialsForActiveTab() {
   if (ResultsState.activeTab === 'stress_test') {
     return ResultsState.stressTest.trials || [];
   }
+  if (ResultsState.activeTab === 'oos_test') {
+    return ResultsState.oosTest.trials || [];
+  }
   return ResultsState.results || [];
 }
 
@@ -978,18 +1017,18 @@ function renderOptunaTable(results) {
     const hashCell = row.querySelector('.param-hash');
     if (hashCell) hashCell.textContent = paramId;
 
-      row.addEventListener('click', async () => {
-        selectTableRow(index, trialNumber);
-        await showParameterDetails({ ...result, param_id: paramId });
-        setComparisonLine('');
-        if (result.equity_curve && result.equity_curve.length) {
-          renderEquityChart(result.equity_curve, null, result.timestamps);
-          return;
-        }
-        const payload = await fetchEquityCurve(result);
-        if (payload && payload.equity && payload.equity.length) {
-          renderEquityChart(payload.equity, null, payload.timestamps);
-        }
+    row.addEventListener('click', async () => {
+      selectTableRow(index, trialNumber);
+      await showParameterDetails({ ...result, param_id: paramId });
+      setComparisonLine('');
+      if (result.equity_curve && result.equity_curve.length) {
+        renderEquityChart(result.equity_curve, null, result.timestamps);
+        return;
+      }
+      const payload = await fetchEquityCurve(result);
+      if (payload && payload.equity && payload.equity.length) {
+        renderEquityChart(payload.equity, null, payload.timestamps);
+      }
     });
 
     tbody.appendChild(row);
@@ -1085,6 +1124,138 @@ function renderForwardTestTable(results) {
       const equity = await fetchEquityCurve(trial, {
         start: ResultsState.forwardTest.startDate,
         end: ResultsState.forwardTest.endDate
+      });
+      if (equity && equity.equity && equity.equity.length) {
+        renderEquityChart(equity.equity, null, equity.timestamps);
+      }
+    });
+
+    tbody.appendChild(row);
+  });
+}
+
+function buildOosComparisonMetrics(trial) {
+  const isNet = Number(trial.net_profit_pct || 0);
+  const oosNet = Number(trial.oos_test_net_profit_pct || 0);
+  const isDd = Number(trial.max_drawdown_pct || 0);
+  const oosDd = Number(trial.oos_test_max_drawdown_pct || 0);
+  const isRomad = Number(trial.romad || 0);
+  const oosRomad = Number(trial.oos_test_romad || 0);
+  const isSharpe = Number(trial.sharpe_ratio || 0);
+  const oosSharpe = Number(trial.oos_test_sharpe_ratio || 0);
+  const isPf = Number(trial.profit_factor || 0);
+  const oosPf = Number(trial.oos_test_profit_factor || 0);
+
+  return {
+    profit_degradation: trial.oos_test_profit_degradation,
+    max_dd_change: oosDd - isDd,
+    romad_change: oosRomad - isRomad,
+    sharpe_change: oosSharpe - isSharpe,
+    pf_change: oosPf - isPf,
+    is_net_profit_pct: isNet,
+    oos_net_profit_pct: oosNet
+  };
+}
+
+function renderOosTestTable(results) {
+  const tbody = document.querySelector('.data-table tbody');
+  if (!tbody) return;
+
+  tbody.innerHTML = '';
+
+  const thead = document.querySelector('.data-table thead tr');
+  const objectives = ResultsState.optuna.objectives || [];
+  const constraints = ResultsState.optuna.constraints || [];
+  const hasConstraints = constraints.some((c) => c && c.enabled);
+  if (thead && window.OptunaResultsUI) {
+    const headerRow = document.createElement('tr');
+    headerRow.innerHTML = window.OptunaResultsUI.buildTrialTableHeaders(objectives, hasConstraints);
+    const headerCells = headerRow.querySelectorAll('th');
+    if (headerCells.length >= 2) {
+      const sourceHeader = document.createElement('th');
+      sourceHeader.textContent = 'OOS Source';
+      const rankHeader = document.createElement('th');
+      rankHeader.textContent = 'Source Rank';
+      headerCells[1].insertAdjacentElement('afterend', sourceHeader);
+      sourceHeader.insertAdjacentElement('afterend', rankHeader);
+    }
+    thead.innerHTML = headerRow.innerHTML;
+  }
+
+  const oosSource = ResultsState.oosTest?.source || 'optuna';
+
+  (results || []).forEach((trial, index) => {
+    const mapped = {
+      ...trial,
+      net_profit_pct: trial.oos_test_net_profit_pct,
+      max_drawdown_pct: trial.oos_test_max_drawdown_pct,
+      total_trades: trial.oos_test_total_trades,
+      win_rate: trial.oos_test_win_rate,
+      max_consecutive_losses: trial.oos_test_max_consecutive_losses,
+      sharpe_ratio: trial.oos_test_sharpe_ratio,
+      sortino_ratio: trial.oos_test_sortino_ratio,
+      romad: trial.oos_test_romad,
+      profit_factor: trial.oos_test_profit_factor,
+      ulcer_index: trial.oos_test_ulcer_index,
+      sqn: trial.oos_test_sqn,
+      consistency_score: trial.oos_test_consistency_score,
+      score: null
+    };
+
+    const temp = document.createElement('tbody');
+    if (window.OptunaResultsUI) {
+      temp.innerHTML = window.OptunaResultsUI.renderTrialRow(mapped, objectives, { hasConstraints }).trim();
+    }
+    const row = temp.firstElementChild || document.createElement('tr');
+    row.className = 'clickable';
+    row.dataset.index = index;
+    const trialNumber = trial.trial_number ?? (index + 1);
+    row.dataset.trialNumber = trialNumber;
+
+    const paramId = trial.param_id
+      || createParamId(trial.params || {}, ResultsState.strategyConfig, ResultsState.fixedParams);
+
+    const rankCell = row.querySelector('.rank');
+    const displayedRank = trial.oos_test_rank || index + 1;
+    const sourceRank = trial.oos_test_source_rank;
+    const rankChange = sourceRank != null ? sourceRank - displayedRank : null;
+    if (rankCell) rankCell.innerHTML = formatRankCell(displayedRank, rankChange);
+    const hashCell = row.querySelector('.param-hash');
+    if (hashCell) hashCell.textContent = paramId;
+    const sourceLabel = trial.oos_test_source || oosSource || 'optuna';
+    const sourceCell = document.createElement('td');
+    sourceCell.textContent = sourceLabel;
+    const sourceRankCell = document.createElement('td');
+    sourceRankCell.textContent = sourceRank != null ? sourceRank : '-';
+    if (hashCell) {
+      hashCell.insertAdjacentElement('afterend', sourceCell);
+      sourceCell.insertAdjacentElement('afterend', sourceRankCell);
+    }
+
+    row.addEventListener('click', async () => {
+      selectTableRow(index, trialNumber);
+      await showParameterDetails({ ...trial, param_id: paramId });
+
+      const comparison = buildOosComparisonMetrics(trial);
+      const rankSourceLabel = oosSource === 'stress_test'
+        ? 'Stress Test'
+        : (oosSource === 'forward_test' ? 'Forward Test' : (oosSource === 'dsr' ? 'DSR' : 'Optuna'));
+
+      if (comparison) {
+        const line = [
+          rankChange !== null ? `Rank: ${formatSigned(rankChange, 0)} (vs ${rankSourceLabel})` : null,
+          `Profit Deg: ${formatSigned(comparison.profit_degradation || 0, 2)}`,
+          `Max DD: ${formatSigned(comparison.max_dd_change || 0, 2, '%')}`,
+          `ROMAD: ${formatSigned(comparison.romad_change || 0, 2)}`,
+          `Sharpe: ${formatSigned(comparison.sharpe_change || 0, 2)}`,
+          `PF: ${formatSigned(comparison.pf_change || 0, 2)}`
+        ].filter(Boolean).join(' | ');
+        setComparisonLine(line);
+      }
+
+      const equity = await fetchEquityCurve(trial, {
+        start: ResultsState.oosTest.startDate,
+        end: ResultsState.oosTest.endDate
       });
       if (equity && equity.equity && equity.equity.length) {
         renderEquityChart(equity.equity, null, equity.timestamps);
@@ -1897,6 +2068,9 @@ function refreshResultsView() {
     } else if (ResultsState.activeTab === 'stress_test') {
       updateTableHeader('Stress Test', 'Sorted by retention', periodLabel);
       renderStressTestTable(ResultsState.stressTest.trials || []);
+    } else if (ResultsState.activeTab === 'oos_test') {
+      updateTableHeader('OOS Test', 'Sorted by OOS results', periodLabel);
+      renderOosTestTable(ResultsState.oosTest.trials || []);
     } else if (ResultsState.activeTab === 'dsr') {
       updateTableHeader('DSR', 'Sorted by DSR probability', periodLabel);
       renderDsrTable(ResultsState.dsr.trials || []);

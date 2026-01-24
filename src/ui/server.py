@@ -33,13 +33,17 @@ from core.optuna_engine import (
 )
 from core.post_process import (
     DSRConfig,
+    OOSTestConfig,
     PostProcessConfig,
     StressTestConfig,
     calculate_comparison_metrics,
     calculate_ft_dates,
+    calculate_period_dates,
     calculate_is_period_days,
+    get_oos_test_candidates,
     run_dsr_analysis,
     run_forward_test,
+    run_oos_test,
     run_stress_test,
 )
 from core.storage import (
@@ -52,6 +56,7 @@ from core.storage import (
     load_study_from_db,
     save_dsr_results,
     save_forward_test_results,
+    save_oos_test_results,
     save_stress_test_results,
     save_manual_test_to_db,
     update_csv_path,
@@ -1517,6 +1522,12 @@ def run_walkforward_optimization() -> object:
     if not isinstance(post_process_payload, dict):
         post_process_payload = {}
 
+    oos_test_payload = config_payload.get("oosTest")
+    if not isinstance(oos_test_payload, dict):
+        oos_test_payload = {}
+    if oos_test_payload.get("enabled"):
+        return jsonify({"error": "OOS Test is not compatible with Walk-Forward Analysis."}), HTTPStatus.BAD_REQUEST
+
     objectives = config_payload.get("objectives", [])
     primary_objective = config_payload.get("primary_objective")
     valid, error = validate_objectives_config(objectives, primary_objective)
@@ -2335,6 +2346,10 @@ def run_optimization_endpoint() -> object:
     if not isinstance(post_process_payload, dict):
         post_process_payload = {}
 
+    oos_test_payload = config_payload.get("oosTest")
+    if not isinstance(oos_test_payload, dict):
+        oos_test_payload = {}
+
     objectives = config_payload.get("objectives", [])
     primary_objective = config_payload.get("primary_objective")
     valid, error = validate_objectives_config(objectives, primary_objective)
@@ -2373,6 +2388,8 @@ def run_optimization_endpoint() -> object:
     except (TypeError, ValueError):
         warmup_bars = 1000
 
+    oos_enabled = bool(oos_test_payload.get("enabled", False))
+
     ft_enabled = bool(post_process_payload.get("enabled", False))
     dsr_enabled = bool(post_process_payload.get("dsrEnabled", False))
     st_payload = post_process_payload.get("stressTest")
@@ -2383,12 +2400,20 @@ def run_optimization_endpoint() -> object:
         dsr_top_k = int(post_process_payload.get("dsrTopK", 20))
     except (TypeError, ValueError):
         dsr_top_k = 20
+    try:
+        oos_top_k = int(oos_test_payload.get("topK", 10))
+    except (TypeError, ValueError):
+        oos_top_k = 10
+
     ft_start = None
     ft_end = None
+    oos_start = None
+    oos_end = None
     is_days = None
     ft_days = None
+    oos_days = None
 
-    if ft_enabled:
+    if ft_enabled or oos_enabled:
         fixed_params_payload = config_payload.get("fixed_params") or {}
         config_payload["fixed_params"] = fixed_params_payload
 
@@ -2401,29 +2426,44 @@ def run_optimization_endpoint() -> object:
             try:
                 df_temp = load_data(data_source)
             except Exception as exc:
-                return (f"Failed to load CSV for FT split: {exc}", HTTPStatus.BAD_REQUEST)
+                return (f"Failed to load CSV for period split: {exc}", HTTPStatus.BAD_REQUEST)
             user_start = df_temp.index.min()
             user_end = df_temp.index.max()
 
         if user_start is None or user_end is None:
-            return ("Failed to determine FT date range.", HTTPStatus.BAD_REQUEST)
+            return ("Failed to determine date range.", HTTPStatus.BAD_REQUEST)
 
         try:
-            ft_period_days = int(post_process_payload.get("ftPeriodDays", 30))
+            ft_period_days = int(post_process_payload.get("ftPeriodDays", 30)) if ft_enabled else 0
         except (TypeError, ValueError):
             return ("Invalid FT period days.", HTTPStatus.BAD_REQUEST)
+        try:
+            oos_period_days = int(oos_test_payload.get("periodDays", 30)) if oos_enabled else 0
+        except (TypeError, ValueError):
+            return ("Invalid OOS period days.", HTTPStatus.BAD_REQUEST)
 
         try:
-            is_end, ft_start, ft_end, is_days, ft_days = calculate_ft_dates(
-                user_start, user_end, ft_period_days
+            period_dates = calculate_period_dates(
+                user_start,
+                user_end,
+                ft_period_days=ft_period_days,
+                oos_period_days=oos_period_days,
             )
         except ValueError as exc:
             return (str(exc), HTTPStatus.BAD_REQUEST)
 
+        ft_start = period_dates.ft_start
+        ft_end = period_dates.ft_end
+        oos_start = period_dates.oos_start
+        oos_end = period_dates.oos_end
+        is_days = period_dates.is_days
+        ft_days = period_dates.ft_days
+        oos_days = period_dates.oos_days
+
         fixed_params_payload["dateFilter"] = True
         if not fixed_params_payload.get("start"):
-            fixed_params_payload["start"] = user_start.isoformat()
-        fixed_params_payload["end"] = is_end.isoformat()
+            fixed_params_payload["start"] = user_start.date().isoformat()
+        fixed_params_payload["end"] = period_dates.is_end
 
     fixed_params_payload = config_payload.get("fixed_params") or {}
     is_start_date = fixed_params_payload.get("start")
@@ -2474,8 +2514,8 @@ def run_optimization_endpoint() -> object:
         optimization_config.ft_period_days = ft_days
         optimization_config.ft_top_k = int(post_process_payload.get("topK", 20))
         optimization_config.ft_sort_metric = post_process_payload.get("sortMetric", "profit_degradation")
-        optimization_config.ft_start_date = ft_start.strftime("%Y-%m-%d") if ft_start else None
-        optimization_config.ft_end_date = ft_end.strftime("%Y-%m-%d") if ft_end else None
+        optimization_config.ft_start_date = ft_start or None
+        optimization_config.ft_end_date = ft_end or None
         optimization_config.is_period_days = is_days
 
     _set_optimization_state({
@@ -2582,8 +2622,14 @@ def run_optimization_endpoint() -> object:
     if study_id:
         study_data = load_study_from_db(study_id) or {}
         config_json = (study_data.get("study") or {}).get("config_json") or {}
+        updated_config = False
         if post_process_payload:
             config_json["postProcess"] = post_process_payload
+            updated_config = True
+        if oos_test_payload:
+            config_json["oosTest"] = oos_test_payload
+            updated_config = True
+        if updated_config:
             update_study_config_json(study_id, config_json)
 
     dsr_results: List[Any] = []
@@ -2637,8 +2683,8 @@ def run_optimization_endpoint() -> object:
             config=pp_config,
             is_period_days=int(is_days or 0),
             ft_period_days=int(ft_days or 0),
-            ft_start_date=ft_start.strftime("%Y-%m-%d") if ft_start else "",
-            ft_end_date=ft_end.strftime("%Y-%m-%d") if ft_end else "",
+            ft_start_date=ft_start or "",
+            ft_end_date=ft_end or "",
             n_workers=worker_processes,
         )
         save_forward_test_results(
@@ -2648,8 +2694,8 @@ def run_optimization_endpoint() -> object:
             ft_period_days=int(ft_days or 0),
             ft_top_k=int(post_process_payload.get("topK", 20)),
             ft_sort_metric=str(post_process_payload.get("sortMetric", "profit_degradation")),
-            ft_start_date=ft_start.strftime("%Y-%m-%d") if ft_start else None,
-            ft_end_date=ft_end.strftime("%Y-%m-%d") if ft_end else None,
+            ft_start_date=ft_start or None,
+            ft_end_date=ft_end or None,
             is_period_days=int(is_days or 0),
             ft_source=ft_source,
         )
@@ -2708,6 +2754,59 @@ def run_optimization_endpoint() -> object:
             st_summary,
             stress_test_config,
             st_source=st_source,
+        )
+
+    oos_results: List[Any] = []
+    if oos_enabled and study_id:
+        if not oos_start or not oos_end:
+            return ("OOS period boundaries are missing.", HTTPStatus.BAD_REQUEST)
+
+        oos_config = OOSTestConfig(
+            enabled=True,
+            period_days=int(oos_days or 0),
+            top_k=int(oos_top_k or 1),
+            warmup_bars=warmup_bars,
+        )
+
+        _set_optimization_state(
+            {
+                "status": "running",
+                "mode": "optuna",
+                "study_id": study_id,
+                "stage": "oos_test",
+                "message": "Running OOS Test...",
+            }
+        )
+
+        oos_candidates, oos_source = get_oos_test_candidates(
+            study_id=study_id,
+            top_k=int(oos_top_k or 1),
+            dsr_results=dsr_results if dsr_results else None,
+            ft_results=ft_results if ft_results else None,
+            st_results=st_results if st_results else None,
+        )
+
+        oos_results = run_oos_test(
+            csv_path=data_path,
+            strategy_id=strategy_id,
+            candidates=oos_candidates,
+            config=oos_config,
+            is_period_days=int(is_days or 0),
+            oos_period_days=int(oos_days or 0),
+            oos_start_date=oos_start,
+            oos_end_date=oos_end,
+            n_workers=worker_processes,
+        )
+
+        save_oos_test_results(
+            study_id,
+            oos_results,
+            oos_test_enabled=True,
+            oos_test_period_days=int(oos_days or 0),
+            oos_test_top_k=int(oos_top_k or 1),
+            oos_test_start_date=oos_start,
+            oos_test_end_date=oos_end,
+            oos_test_source_module=oos_source,
         )
 
     _set_optimization_state(

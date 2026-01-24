@@ -13,7 +13,13 @@
       stTopK: document.getElementById('stTopK'),
       stFailureThreshold: document.getElementById('stFailureThreshold'),
       stSortMetric: document.getElementById('stSortMetric'),
-      stSettings: document.getElementById('stressTestSettings')
+      stSettings: document.getElementById('stressTestSettings'),
+      oosEnable: document.getElementById('enableOosTest'),
+      oosPeriod: document.getElementById('oosPeriodDays'),
+      oosTopK: document.getElementById('oosTopK'),
+      oosSettings: document.getElementById('oosTestSettings'),
+      wfEnable: document.getElementById('enableWF'),
+      wfSettings: document.getElementById('wfSettings')
     };
   }
 
@@ -40,7 +46,13 @@
       stTopK,
       stFailureThreshold,
       stSortMetric,
-      stSettings
+      stSettings,
+      oosEnable,
+      oosPeriod,
+      oosTopK,
+      oosSettings,
+      wfEnable,
+      wfSettings
     } = getPostProcessElements();
     if (enable) {
       const disabled = !enable.checked;
@@ -60,6 +72,29 @@
       if (stFailureThreshold) stFailureThreshold.disabled = stDisabled;
       if (stSortMetric) stSortMetric.disabled = stDisabled;
       if (stSettings) stSettings.style.display = stDisabled ? 'none' : 'block';
+    }
+
+    if (oosEnable && wfEnable) {
+      if (oosEnable.checked) {
+        wfEnable.checked = false;
+        wfEnable.disabled = true;
+        if (wfSettings) wfSettings.style.display = 'none';
+      } else {
+        wfEnable.disabled = false;
+      }
+      if (wfEnable.checked) {
+        oosEnable.checked = false;
+        oosEnable.disabled = true;
+        if (oosSettings) oosSettings.style.display = 'none';
+      } else if (!oosEnable.checked) {
+        oosEnable.disabled = false;
+      }
+    }
+    if (oosEnable) {
+      const oosDisabled = !oosEnable.checked;
+      if (oosPeriod) oosPeriod.disabled = oosDisabled;
+      if (oosTopK) oosTopK.disabled = oosDisabled;
+      if (oosSettings) oosSettings.style.display = oosDisabled ? 'none' : 'block';
     }
   }
 
@@ -97,8 +132,18 @@
     };
   }
 
+  function collectOosConfig() {
+    const { oosEnable, oosPeriod, oosTopK } = getPostProcessElements();
+    const enabled = Boolean(oosEnable && oosEnable.checked);
+    return {
+      enabled,
+      periodDays: normalizeInt(oosPeriod?.value, 30, 1, 3650),
+      topK: normalizeInt(oosTopK?.value, 10, 1, 10000)
+    };
+  }
+
   function bind() {
-    const { enable, dsrEnable, stEnable } = getPostProcessElements();
+    const { enable, dsrEnable, stEnable, oosEnable, wfEnable } = getPostProcessElements();
     if (enable) {
       enable.addEventListener('change', syncPostProcessUI);
     }
@@ -107,6 +152,12 @@
     }
     if (stEnable) {
       stEnable.addEventListener('change', syncPostProcessUI);
+    }
+    if (oosEnable) {
+      oosEnable.addEventListener('change', syncPostProcessUI);
+    }
+    if (wfEnable) {
+      wfEnable.addEventListener('change', syncPostProcessUI);
     }
     syncPostProcessUI();
   }
@@ -137,6 +188,7 @@
   window.PostProcessUI = {
     bind,
     collectConfig,
+    collectOosConfig,
     buildComparisonMetrics
   };
 })();

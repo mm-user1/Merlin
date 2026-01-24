@@ -833,6 +833,9 @@ function buildOptunaConfig(state) {
     const postProcessConfig = window.PostProcessUI
       ? window.PostProcessUI.collectConfig()
       : { enabled: false, ftPeriodDays: 30, topK: 20, sortMetric: 'profit_degradation' };
+    const oosTestConfig = window.PostProcessUI
+      ? window.PostProcessUI.collectOosConfig()
+      : { enabled: false, periodDays: 30, topK: 10 };
 
   return {
     ...baseConfig,
@@ -855,9 +858,10 @@ function buildOptunaConfig(state) {
       crossover_prob: normalizedCrossover,
       mutation_prob: normalizedMutation,
       swapping_prob: normalizedSwapping,
-      postProcess: postProcessConfig
-    };
-  }
+        postProcess: postProcessConfig,
+        oosTest: oosTestConfig
+      };
+    }
 function clearWFResults() {
   const wfStatusEl = document.getElementById('wfStatus');
   if (wfStatusEl) {

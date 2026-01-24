@@ -11,6 +11,7 @@ from __future__ import annotations
 import logging
 import multiprocessing as mp
 from dataclasses import dataclass
+from datetime import timedelta
 from enum import Enum
 import math
 from typing import Any, Dict, List, Optional, Sequence, Tuple
@@ -57,6 +58,31 @@ class StressTestConfig:
     failure_threshold: float = 0.7
     sort_metric: str = "profit_retention"
     warmup_bars: int = 1000
+
+
+@dataclass
+class OOSTestConfig:
+    """Out-of-sample (OOS) Test configuration."""
+
+    enabled: bool = False
+    period_days: int = 30
+    top_k: int = 10
+    warmup_bars: int = 1000
+
+
+@dataclass
+class PeriodDates:
+    """Calculated period boundaries (all inclusive)."""
+
+    is_start: str
+    is_end: str
+    ft_start: Optional[str]
+    ft_end: Optional[str]
+    oos_start: Optional[str]
+    oos_end: Optional[str]
+    is_days: int
+    ft_days: int
+    oos_days: int
 
 
 @dataclass
@@ -114,6 +140,43 @@ class DSRResult:
     dsr_kurtosis: Optional[float] = None
     dsr_track_length: Optional[int] = None
     dsr_luck_share_pct: Optional[float] = None
+
+
+@dataclass
+class OOSTestCandidate:
+    """OOS Test candidate."""
+
+    trial_number: int
+    params: Dict[str, Any]
+    source_module: str
+    source_rank: int
+    is_metrics: Dict[str, Any]
+
+
+@dataclass
+class OOSTestResult:
+    """Out-of-sample test result for a single trial."""
+
+    trial_number: int
+    source_module: str
+    source_rank: int
+
+    oos_test_net_profit_pct: float
+    oos_test_max_drawdown_pct: float
+    oos_test_total_trades: int
+    oos_test_win_rate: float
+    oos_test_max_consecutive_losses: int
+    oos_test_sharpe_ratio: Optional[float]
+    oos_test_sortino_ratio: Optional[float]
+    oos_test_romad: Optional[float]
+    oos_test_profit_factor: Optional[float]
+    oos_test_ulcer_index: Optional[float]
+    oos_test_sqn: Optional[float]
+    oos_test_consistency_score: Optional[float]
+
+    oos_test_profit_degradation: float
+
+    oos_test_rank: Optional[int] = None
 
 
 class StressTestStatus(Enum):
@@ -309,6 +372,94 @@ def _ft_worker_entry(
         return None
 
 
+def _oos_test_worker_entry(
+    csv_path: str,
+    strategy_id: str,
+    task_dict: Dict[str, Any],
+    oos_start_date: str,
+    oos_end_date: str,
+    warmup_bars: int,
+    is_period_days: int,
+    oos_period_days: int,
+) -> Optional[Dict[str, Any]]:
+    """
+    Entry point for OOS Test worker process.
+    """
+    from .backtest_engine import align_date_bounds, load_data
+    from . import metrics
+    from strategies import get_strategy
+
+    worker_logger = logging.getLogger(__name__)
+    trial_number = task_dict["trial_number"]
+
+    try:
+        df = load_data(csv_path)
+        strategy_class = get_strategy(strategy_id)
+
+        oos_start, oos_end = align_date_bounds(df.index, oos_start_date, oos_end_date)
+
+        if oos_start is None or oos_end is None:
+            raise ValueError(f"Invalid OOS dates: start={oos_start_date}, end={oos_end_date}")
+
+        oos_start_idx = df.index.get_indexer([oos_start], method="bfill")[0]
+        if oos_start_idx < 0 or oos_start_idx >= len(df):
+            raise ValueError(
+                f"OOS start date {oos_start_date} not found in data range "
+                f"{df.index.min()} to {df.index.max()}"
+            )
+
+        warmup_start_idx = max(0, oos_start_idx - warmup_bars)
+        df_oos_with_warmup = df.iloc[warmup_start_idx:]
+        df_oos_with_warmup = df_oos_with_warmup[df_oos_with_warmup.index <= oos_end]
+
+        if len(df_oos_with_warmup) == 0:
+            raise ValueError(f"No data in OOS period {oos_start_date} to {oos_end_date}")
+
+        trade_start_idx = oos_start_idx - warmup_start_idx
+
+        params = task_dict["params"]
+        result = strategy_class.run(df_oos_with_warmup, params, trade_start_idx)
+
+        basic = metrics.calculate_basic(result, 100.0)
+        advanced = metrics.calculate_advanced(result, 100.0)
+
+        oos_metrics = {
+            "net_profit_pct": basic.net_profit_pct,
+            "max_drawdown_pct": basic.max_drawdown_pct,
+            "total_trades": basic.total_trades,
+            "win_rate": basic.win_rate,
+            "max_consecutive_losses": basic.max_consecutive_losses,
+            "sharpe_ratio": advanced.sharpe_ratio,
+            "sortino_ratio": advanced.sortino_ratio,
+            "romad": advanced.romad,
+            "profit_factor": advanced.profit_factor,
+            "ulcer_index": advanced.ulcer_index,
+            "sqn": advanced.sqn,
+            "consistency_score": advanced.consistency_score,
+        }
+
+        is_metrics = task_dict["is_metrics"]
+        profit_deg = calculate_profit_degradation(
+            is_metrics.get("net_profit_pct", 0),
+            oos_metrics.get("net_profit_pct", 0),
+            is_period_days,
+            oos_period_days,
+        )
+
+        return {
+            "trial_number": trial_number,
+            "source_rank": task_dict["source_rank"],
+            "source_module": task_dict["source_module"],
+            "params": params,
+            "oos_metrics": oos_metrics,
+            "profit_degradation": profit_deg,
+        }
+
+    except Exception as exc:
+        worker_logger.warning("OOS test failed for trial %s: %s", trial_number, exc)
+        return None
+
+
 # ============================================================
 # Core Functions
 # ============================================================
@@ -340,6 +491,94 @@ def calculate_ft_dates(
     ft_days = ft_period_days
 
     return is_end, ft_start, user_end, is_days, ft_days
+
+
+def calculate_period_dates(
+    user_start: pd.Timestamp,
+    user_end: pd.Timestamp,
+    ft_period_days: int = 0,
+    oos_period_days: int = 0,
+) -> PeriodDates:
+    """
+    Calculate IS, FT, and OOS period boundaries.
+
+    Cutting order: OOS from end first, then FT from remaining.
+    All periods are inclusive-ended in keeping with Merlin's slicing.
+    Non-overlap is achieved by setting:
+      is_end = ft_start - 1 day
+      ft_end = oos_start - 1 day
+    """
+    if user_start is None or user_end is None:
+        raise ValueError("User start/end dates are required for period splitting.")
+
+    start_date = user_start.date()
+    end_date = user_end.date()
+    total_days = (end_date - start_date).days + 1
+    if total_days <= 0:
+        raise ValueError("Invalid date range for period splitting.")
+
+    try:
+        ft_days = int(ft_period_days or 0)
+    except (TypeError, ValueError):
+        ft_days = 0
+    try:
+        oos_days = int(oos_period_days or 0)
+    except (TypeError, ValueError):
+        oos_days = 0
+
+    ft_days = max(0, ft_days)
+    oos_days = max(0, oos_days)
+
+    oos_start_date = None
+    oos_end_date = None
+
+    remaining_end = end_date
+    remaining_days = total_days
+
+    if oos_days > 0:
+        if oos_days >= total_days:
+            raise ValueError(
+                f"OOS period ({oos_days} days) must be less than user-selected range "
+                f"({total_days} days). User range: {start_date} to {end_date}"
+            )
+        oos_end_date = end_date
+        oos_start_date = oos_end_date - timedelta(days=oos_days - 1)
+        remaining_end = oos_start_date - timedelta(days=1)
+        remaining_days = (remaining_end - start_date).days + 1
+
+    ft_start_date = None
+    ft_end_date = None
+
+    if ft_days > 0:
+        if ft_days >= remaining_days:
+            raise ValueError(
+                f"FT period ({ft_days} days) must be less than remaining range "
+                f"({remaining_days} days) after OOS split."
+            )
+        ft_end_date = remaining_end
+        ft_start_date = ft_end_date - timedelta(days=ft_days - 1)
+        is_end_date = ft_start_date - timedelta(days=1)
+    else:
+        is_end_date = remaining_end
+
+    is_days = (is_end_date - start_date).days + 1
+    if is_days <= 0:
+        raise ValueError("IS period is empty after period splitting.")
+
+    def _format(value):
+        return value.isoformat() if value else None
+
+    return PeriodDates(
+        is_start=start_date.isoformat(),
+        is_end=is_end_date.isoformat(),
+        ft_start=_format(ft_start_date),
+        ft_end=_format(ft_end_date),
+        oos_start=_format(oos_start_date),
+        oos_end=_format(oos_end_date),
+        is_days=int(is_days),
+        ft_days=int(ft_days),
+        oos_days=int(oos_days),
+    )
 
 
 def calculate_profit_degradation(
@@ -501,6 +740,19 @@ def _build_is_metrics(result: Any) -> Dict[str, Any]:
         "sharpe_ratio": getattr(result, "sharpe_ratio", None),
         "romad": getattr(result, "romad", None),
         "profit_factor": getattr(result, "profit_factor", None),
+    }
+
+
+def _build_is_metrics_from_trial(trial: Dict[str, Any]) -> Dict[str, Any]:
+    return {
+        "net_profit_pct": trial.get("net_profit_pct", 0.0),
+        "max_drawdown_pct": trial.get("max_drawdown_pct", 0.0),
+        "total_trades": trial.get("total_trades", 0),
+        "win_rate": trial.get("win_rate", 0.0),
+        "max_consecutive_losses": trial.get("max_consecutive_losses", 0),
+        "sharpe_ratio": trial.get("sharpe_ratio"),
+        "romad": trial.get("romad"),
+        "profit_factor": trial.get("profit_factor"),
     }
 
 
@@ -707,6 +959,101 @@ def run_dsr_analysis(
     return analysis_results, summary
 
 
+def get_oos_test_candidates(
+    study_id: str,
+    top_k: int,
+    dsr_results: Optional[List[DSRResult]],
+    ft_results: Optional[List[FTResult]],
+    st_results: Optional[List[StressTestResult]],
+) -> Tuple[List[OOSTestCandidate], str]:
+    if not study_id:
+        return [], "optuna"
+
+    try:
+        resolved_top_k = max(1, int(top_k or 1))
+    except (TypeError, ValueError):
+        resolved_top_k = 1
+
+    if st_results:
+        valid = [r for r in st_results if getattr(r, "status", None) == "ok"]
+        valid = valid[:resolved_top_k]
+        candidates: List[OOSTestCandidate] = []
+        from .storage import get_study_trial
+
+        for idx, result in enumerate(valid, 1):
+            trial_number = int(getattr(result, "trial_number", idx))
+            trial = get_study_trial(study_id, trial_number)
+            if not trial or not trial.get("params"):
+                continue
+            candidates.append(
+                OOSTestCandidate(
+                    trial_number=trial_number,
+                    params=dict(trial["params"]),
+                    source_module="stress_test",
+                    source_rank=int(getattr(result, "st_rank", None) or idx),
+                    is_metrics=_build_is_metrics_from_trial(trial),
+                )
+            )
+        return candidates, "stress_test"
+
+    if ft_results:
+        chosen = list(ft_results)[:resolved_top_k]
+        return [
+            OOSTestCandidate(
+                trial_number=int(getattr(result, "trial_number", idx)),
+                params=dict(getattr(result, "params", {}) or {}),
+                source_module="forward_test",
+                source_rank=int(getattr(result, "ft_rank", None) or getattr(result, "source_rank", None) or idx),
+                is_metrics={
+                    "net_profit_pct": getattr(result, "is_net_profit_pct", 0.0),
+                    "max_drawdown_pct": getattr(result, "is_max_drawdown_pct", 0.0),
+                    "total_trades": getattr(result, "is_total_trades", 0),
+                    "win_rate": getattr(result, "is_win_rate", 0.0),
+                    "max_consecutive_losses": getattr(result, "is_max_consecutive_losses", 0),
+                    "sharpe_ratio": getattr(result, "is_sharpe_ratio", None),
+                    "romad": getattr(result, "is_romad", None),
+                    "profit_factor": getattr(result, "is_profit_factor", None),
+                },
+            )
+            for idx, result in enumerate(chosen, 1)
+        ], "forward_test"
+
+    if dsr_results:
+        chosen = list(dsr_results)[:resolved_top_k]
+        from .storage import get_study_trial
+
+        candidates: List[OOSTestCandidate] = []
+        for idx, result in enumerate(chosen, 1):
+            trial_number = int(getattr(result, "trial_number", idx))
+            trial = get_study_trial(study_id, trial_number) or {}
+            candidates.append(
+                OOSTestCandidate(
+                    trial_number=trial_number,
+                    params=dict(getattr(result, "params", {}) or {}),
+                    source_module="dsr",
+                    source_rank=int(getattr(result, "dsr_rank", None) or getattr(result, "optuna_rank", None) or idx),
+                    is_metrics=_build_is_metrics_from_trial(trial),
+                )
+            )
+        return candidates, "dsr"
+
+    from .storage import load_study_from_db
+
+    study_data = load_study_from_db(study_id) or {}
+    trials = list(study_data.get("trials") or [])[:resolved_top_k]
+    candidates = [
+        OOSTestCandidate(
+            trial_number=int(trial.get("trial_number", idx)),
+            params=dict(trial.get("params") or {}),
+            source_module="optuna",
+            source_rank=idx,
+            is_metrics=_build_is_metrics_from_trial(trial),
+        )
+        for idx, trial in enumerate(trials, 1)
+    ]
+    return candidates, "optuna"
+
+
 def run_forward_test(
     *,
     csv_path: str,
@@ -816,6 +1163,102 @@ def run_forward_test(
     for idx, result in enumerate(results, 1):
         result.ft_rank = idx
         result.rank_change = result.source_rank - idx
+
+    return results
+
+
+# ============================================================
+# OOS Test
+# ============================================================
+
+
+def run_oos_test(
+    *,
+    csv_path: str,
+    strategy_id: str,
+    candidates: Sequence[OOSTestCandidate],
+    config: OOSTestConfig,
+    is_period_days: int,
+    oos_period_days: int,
+    oos_start_date: str,
+    oos_end_date: str,
+    n_workers: int,
+) -> List[OOSTestResult]:
+    """
+    Run OOS Test for top-K candidates.
+    """
+    if not config.enabled:
+        return []
+
+    candidate_list = list(candidates or [])
+    if not candidate_list:
+        return []
+
+    top_k = max(1, int(config.top_k or 1))
+    top_k = min(top_k, len(candidate_list))
+
+    tasks: List[Dict[str, Any]] = []
+    for candidate in candidate_list[:top_k]:
+        tasks.append(
+            {
+                "trial_number": int(candidate.trial_number),
+                "source_rank": int(candidate.source_rank),
+                "source_module": candidate.source_module,
+                "params": dict(candidate.params or {}),
+                "is_metrics": dict(candidate.is_metrics or {}),
+            }
+        )
+
+    max_workers = max(1, min(int(n_workers or 1), len(tasks)))
+    ctx = mp.get_context("spawn")
+    results: List[OOSTestResult] = []
+
+    with ctx.Pool(processes=max_workers) as pool:
+        worker_args = [
+            (
+                csv_path,
+                strategy_id,
+                task,
+                oos_start_date,
+                oos_end_date,
+                int(config.warmup_bars),
+                int(is_period_days),
+                int(oos_period_days),
+            )
+            for task in tasks
+        ]
+        for payload in pool.starmap(_oos_test_worker_entry, worker_args):
+            if not payload:
+                continue
+            oos_metrics = payload["oos_metrics"]
+            results.append(
+                OOSTestResult(
+                    trial_number=int(payload["trial_number"]),
+                    source_module=str(payload["source_module"]),
+                    source_rank=int(payload["source_rank"]),
+                    oos_test_net_profit_pct=oos_metrics.get("net_profit_pct", 0.0),
+                    oos_test_max_drawdown_pct=oos_metrics.get("max_drawdown_pct", 0.0),
+                    oos_test_total_trades=oos_metrics.get("total_trades", 0),
+                    oos_test_win_rate=oos_metrics.get("win_rate", 0.0),
+                    oos_test_max_consecutive_losses=oos_metrics.get("max_consecutive_losses", 0),
+                    oos_test_sharpe_ratio=oos_metrics.get("sharpe_ratio"),
+                    oos_test_sortino_ratio=oos_metrics.get("sortino_ratio"),
+                    oos_test_romad=oos_metrics.get("romad"),
+                    oos_test_profit_factor=oos_metrics.get("profit_factor"),
+                    oos_test_ulcer_index=oos_metrics.get("ulcer_index"),
+                    oos_test_sqn=oos_metrics.get("sqn"),
+                    oos_test_consistency_score=oos_metrics.get("consistency_score"),
+                    oos_test_profit_degradation=payload.get("profit_degradation", 0.0),
+                )
+            )
+
+    if not results:
+        return []
+
+    results.sort(key=lambda r: float(r.oos_test_profit_degradation), reverse=True)
+
+    for idx, result in enumerate(results, 1):
+        result.oos_test_rank = idx
 
     return results
 

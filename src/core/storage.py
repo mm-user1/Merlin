@@ -135,6 +135,13 @@ def _create_schema(conn: sqlite3.Connection) -> None:
             ft_end_date TEXT,
             is_period_days INTEGER,
 
+            oos_test_enabled INTEGER DEFAULT 0,
+            oos_test_period_days INTEGER,
+            oos_test_top_k INTEGER,
+            oos_test_start_date TEXT,
+            oos_test_end_date TEXT,
+            oos_test_source_module TEXT,
+
             dsr_enabled INTEGER DEFAULT 0,
             dsr_top_k INTEGER,
             dsr_n_trials INTEGER,
@@ -216,6 +223,23 @@ def _create_schema(conn: sqlite3.Connection) -> None:
             profit_degradation REAL,
             ft_rank INTEGER,
             ft_source TEXT,
+
+            oos_test_net_profit_pct REAL,
+            oos_test_max_drawdown_pct REAL,
+            oos_test_total_trades INTEGER,
+            oos_test_win_rate REAL,
+            oos_test_max_consecutive_losses INTEGER,
+            oos_test_sharpe_ratio REAL,
+            oos_test_sortino_ratio REAL,
+            oos_test_romad REAL,
+            oos_test_profit_factor REAL,
+            oos_test_ulcer_index REAL,
+            oos_test_sqn REAL,
+            oos_test_consistency_score REAL,
+            oos_test_profit_degradation REAL,
+            oos_test_rank INTEGER,
+            oos_test_source TEXT,
+            oos_test_source_rank INTEGER,
 
             dsr_probability REAL,
             dsr_rank INTEGER,
@@ -329,6 +353,12 @@ def _ensure_columns(conn: sqlite3.Connection) -> None:
     ensure("studies", "dsr_n_trials", "INTEGER")
     ensure("studies", "dsr_mean_sharpe", "REAL")
     ensure("studies", "dsr_var_sharpe", "REAL")
+    ensure("studies", "oos_test_enabled", "INTEGER DEFAULT 0")
+    ensure("studies", "oos_test_period_days", "INTEGER")
+    ensure("studies", "oos_test_top_k", "INTEGER")
+    ensure("studies", "oos_test_start_date", "TEXT")
+    ensure("studies", "oos_test_end_date", "TEXT")
+    ensure("studies", "oos_test_source_module", "TEXT")
     ensure("studies", "st_enabled", "INTEGER DEFAULT 0")
     ensure("studies", "st_top_k", "INTEGER")
     ensure("studies", "st_failure_threshold", "REAL")
@@ -344,6 +374,22 @@ def _ensure_columns(conn: sqlite3.Connection) -> None:
 
     ensure("trials", "max_consecutive_losses", "INTEGER")
     ensure("trials", "ft_max_consecutive_losses", "INTEGER")
+    ensure("trials", "oos_test_net_profit_pct", "REAL")
+    ensure("trials", "oos_test_max_drawdown_pct", "REAL")
+    ensure("trials", "oos_test_total_trades", "INTEGER")
+    ensure("trials", "oos_test_win_rate", "REAL")
+    ensure("trials", "oos_test_max_consecutive_losses", "INTEGER")
+    ensure("trials", "oos_test_sharpe_ratio", "REAL")
+    ensure("trials", "oos_test_sortino_ratio", "REAL")
+    ensure("trials", "oos_test_romad", "REAL")
+    ensure("trials", "oos_test_profit_factor", "REAL")
+    ensure("trials", "oos_test_ulcer_index", "REAL")
+    ensure("trials", "oos_test_sqn", "REAL")
+    ensure("trials", "oos_test_consistency_score", "REAL")
+    ensure("trials", "oos_test_profit_degradation", "REAL")
+    ensure("trials", "oos_test_rank", "INTEGER")
+    ensure("trials", "oos_test_source", "TEXT")
+    ensure("trials", "oos_test_source_rank", "INTEGER")
     ensure("trials", "dsr_probability", "REAL")
     ensure("trials", "dsr_rank", "INTEGER")
     ensure("trials", "dsr_skewness", "REAL")
@@ -1235,6 +1281,109 @@ def save_forward_test_results(
         except Exception as exc:
             conn.execute("ROLLBACK")
             raise RuntimeError(f"Failed to save FT results: {exc}")
+
+    return True
+
+
+def save_oos_test_results(
+    study_id: str,
+    oos_results: List[Any],
+    *,
+    oos_test_enabled: bool,
+    oos_test_period_days: Optional[int],
+    oos_test_top_k: Optional[int],
+    oos_test_start_date: Optional[str],
+    oos_test_end_date: Optional[str],
+    oos_test_source_module: Optional[str],
+) -> bool:
+    if not study_id:
+        return False
+
+    with get_db_connection() as conn:
+        try:
+            conn.execute("BEGIN TRANSACTION")
+            conn.execute(
+                """
+                UPDATE studies
+                SET
+                    oos_test_enabled = ?,
+                    oos_test_period_days = ?,
+                    oos_test_top_k = ?,
+                    oos_test_start_date = ?,
+                    oos_test_end_date = ?,
+                    oos_test_source_module = ?
+                WHERE study_id = ?
+                """,
+                (
+                    1 if oos_test_enabled else 0,
+                    oos_test_period_days,
+                    oos_test_top_k,
+                    _format_date(oos_test_start_date),
+                    _format_date(oos_test_end_date),
+                    oos_test_source_module,
+                    study_id,
+                ),
+            )
+
+            if oos_results:
+                rows = []
+                for result in oos_results:
+                    payload = result
+                    if hasattr(result, "__dict__"):
+                        payload = result.__dict__
+                    source_module = payload.get("source_module") or oos_test_source_module
+                    rows.append(
+                        (
+                            payload.get("oos_test_net_profit_pct"),
+                            payload.get("oos_test_max_drawdown_pct"),
+                            payload.get("oos_test_total_trades"),
+                            payload.get("oos_test_win_rate"),
+                            payload.get("oos_test_max_consecutive_losses"),
+                            payload.get("oos_test_sharpe_ratio"),
+                            payload.get("oos_test_sortino_ratio"),
+                            payload.get("oos_test_romad"),
+                            payload.get("oos_test_profit_factor"),
+                            payload.get("oos_test_ulcer_index"),
+                            payload.get("oos_test_sqn"),
+                            payload.get("oos_test_consistency_score"),
+                            payload.get("oos_test_profit_degradation"),
+                            payload.get("oos_test_rank"),
+                            source_module,
+                            payload.get("source_rank"),
+                            study_id,
+                            payload.get("trial_number"),
+                        )
+                    )
+
+                conn.executemany(
+                    """
+                    UPDATE trials
+                    SET
+                        oos_test_net_profit_pct = ?,
+                        oos_test_max_drawdown_pct = ?,
+                        oos_test_total_trades = ?,
+                        oos_test_win_rate = ?,
+                        oos_test_max_consecutive_losses = ?,
+                        oos_test_sharpe_ratio = ?,
+                        oos_test_sortino_ratio = ?,
+                        oos_test_romad = ?,
+                        oos_test_profit_factor = ?,
+                        oos_test_ulcer_index = ?,
+                        oos_test_sqn = ?,
+                        oos_test_consistency_score = ?,
+                        oos_test_profit_degradation = ?,
+                        oos_test_rank = ?,
+                        oos_test_source = ?,
+                        oos_test_source_rank = ?
+                    WHERE study_id = ? AND trial_number = ?
+                    """,
+                    rows,
+                )
+
+            conn.execute("COMMIT")
+        except Exception as exc:
+            conn.execute("ROLLBACK")
+            raise RuntimeError(f"Failed to save OOS test results: {exc}")
 
     return True
 
