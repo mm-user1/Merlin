@@ -35,13 +35,13 @@ from core.post_process import (
     DSRConfig,
     PostProcessConfig,
     StressTestConfig,
-    calculate_comparison_metrics,
-    calculate_ft_dates,
+    calculate_period_dates,
     calculate_is_period_days,
     run_dsr_analysis,
     run_forward_test,
     run_stress_test,
 )
+from core.testing import run_period_test_for_trials, select_oos_source_candidates
 from core.storage import (
     delete_manual_test,
     delete_study,
@@ -54,6 +54,7 @@ from core.storage import (
     save_forward_test_results,
     save_stress_test_results,
     save_manual_test_to_db,
+    save_oos_test_results,
     update_csv_path,
     update_study_config_json,
 )
@@ -838,6 +839,27 @@ def update_study_csv_path_endpoint(study_id: str) -> object:
     return jsonify({"status": "updated", "warnings": warnings, "csv_file_path": new_path})
 
 
+def _build_trial_metrics(trial: Dict[str, Any], prefix: str = "") -> Dict[str, Any]:
+    def get(field: str, default: Any = None) -> Any:
+        key = f"{prefix}{field}" if prefix else field
+        return trial.get(key, default)
+
+    return {
+        "net_profit_pct": get("net_profit_pct") or 0.0,
+        "max_drawdown_pct": get("max_drawdown_pct") or 0.0,
+        "total_trades": get("total_trades") or 0,
+        "win_rate": get("win_rate") or 0.0,
+        "max_consecutive_losses": get("max_consecutive_losses") or 0,
+        "sharpe_ratio": get("sharpe_ratio"),
+        "sortino_ratio": get("sortino_ratio"),
+        "romad": get("romad"),
+        "profit_factor": get("profit_factor"),
+        "ulcer_index": get("ulcer_index"),
+        "sqn": get("sqn"),
+        "consistency_score": get("consistency_score"),
+    }
+
+
 @app.post("/api/studies/<string:study_id>/test")
 def run_manual_test_endpoint(study_id: str) -> object:
     payload = request.get_json(silent=True) if request.is_json else None
@@ -854,8 +876,11 @@ def run_manual_test_endpoint(study_id: str) -> object:
 
     if data_source not in {"original_csv", "new_csv"}:
         return jsonify({"error": "dataSource must be 'original_csv' or 'new_csv'."}), HTTPStatus.BAD_REQUEST
-    if source_tab not in {"optuna", "forward_test", "dsr"}:
-        return jsonify({"error": "sourceTab must be 'optuna', 'forward_test', or 'dsr'."}), HTTPStatus.BAD_REQUEST
+    if source_tab not in {"optuna", "forward_test", "dsr", "stress_test"}:
+        return (
+            jsonify({"error": "sourceTab must be 'optuna', 'forward_test', 'dsr', or 'stress_test'."}),
+            HTTPStatus.BAD_REQUEST,
+        )
     if not start_date or not end_date:
         return jsonify({"error": "startDate and endDate are required."}), HTTPStatus.BAD_REQUEST
     if not isinstance(trial_numbers, list) or not trial_numbers:
@@ -909,10 +934,16 @@ def run_manual_test_endpoint(study_id: str) -> object:
             rank = trial.get("ft_rank")
             if number and rank:
                 baseline_rank_map[number] = int(rank)
-    else:
+    elif source_tab == "dsr":
         for trial in trials:
             number = int(trial.get("trial_number") or 0)
             rank = trial.get("dsr_rank")
+            if number and rank:
+                baseline_rank_map[number] = int(rank)
+    else:
+        for trial in trials:
+            number = int(trial.get("trial_number") or 0)
+            rank = trial.get("st_rank")
             if number and rank:
                 baseline_rank_map[number] = int(rank)
 
@@ -932,14 +963,9 @@ def run_manual_test_endpoint(study_id: str) -> object:
         return jsonify({"error": "Invalid startDate/endDate."}), HTTPStatus.BAD_REQUEST
     start_ts = aligned_start
     end_ts = aligned_end
-
-    from strategies import get_strategy
-    from core import metrics
-
-    try:
-        strategy_class = get_strategy(study.get("strategy_id"))
-    except ValueError as exc:
-        return jsonify({"error": str(exc)}), HTTPStatus.BAD_REQUEST
+    test_period_days = max(0, (end_ts - start_ts).days)
+    if test_period_days <= 0:
+        return jsonify({"error": "Test period must be at least 1 day."}), HTTPStatus.BAD_REQUEST
 
     baseline_period_days = None
     if source_tab == "forward_test":
@@ -949,80 +975,28 @@ def run_manual_test_endpoint(study_id: str) -> object:
     if baseline_period_days is None:
         baseline_period_days = calculate_is_period_days(config) or 0
 
-    results_payload: List[Dict[str, Any]] = []
-    for number in trial_numbers:
-        trial_number = int(number)
-        trial = trial_map[trial_number]
+    trials_to_test = [trial_map[int(number)] for number in trial_numbers]
 
-        params = {**fixed_params, **(trial.get("params") or {})}
-        params["dateFilter"] = True
-        params["start"] = start_ts
-        params["end"] = end_ts
-
-        try:
-            df_prepared, trade_start_idx = prepare_dataset_with_warmup(
-                df, start_ts, end_ts, int(warmup_bars)
-            )
-        except Exception as exc:
-            return jsonify({"error": f"Failed to prepare dataset: {exc}"}), HTTPStatus.BAD_REQUEST
-
-        try:
-            result = strategy_class.run(df_prepared, params, trade_start_idx)
-        except Exception as exc:
-            return jsonify({"error": str(exc)}), HTTPStatus.BAD_REQUEST
-
-        basic = metrics.calculate_basic(result, 100.0)
-        advanced = metrics.calculate_advanced(result, 100.0)
-
-        test_metrics = {
-            "net_profit_pct": basic.net_profit_pct,
-            "max_drawdown_pct": basic.max_drawdown_pct,
-            "total_trades": basic.total_trades,
-            "win_rate": basic.win_rate,
-            "max_consecutive_losses": basic.max_consecutive_losses,
-            "sharpe_ratio": advanced.sharpe_ratio,
-            "romad": advanced.romad,
-            "profit_factor": advanced.profit_factor,
-        }
-
+    def resolve_original_metrics(trial: Dict[str, Any]) -> Dict[str, Any]:
         if source_tab == "forward_test":
-            original_metrics = {
-                "net_profit_pct": trial.get("ft_net_profit_pct") or 0.0,
-                "max_drawdown_pct": trial.get("ft_max_drawdown_pct") or 0.0,
-                "total_trades": trial.get("ft_total_trades") or 0,
-                "win_rate": trial.get("ft_win_rate") or 0.0,
-                "max_consecutive_losses": trial.get("ft_max_consecutive_losses") or 0,
-                "sharpe_ratio": trial.get("ft_sharpe_ratio"),
-                "romad": trial.get("ft_romad"),
-                "profit_factor": trial.get("ft_profit_factor"),
-            }
-        else:
-            original_metrics = {
-                "net_profit_pct": trial.get("net_profit_pct") or 0.0,
-                "max_drawdown_pct": trial.get("max_drawdown_pct") or 0.0,
-                "total_trades": trial.get("total_trades") or 0,
-                "win_rate": trial.get("win_rate") or 0.0,
-                "max_consecutive_losses": trial.get("max_consecutive_losses") or 0,
-                "sharpe_ratio": trial.get("sharpe_ratio"),
-                "romad": trial.get("romad"),
-                "profit_factor": trial.get("profit_factor"),
-            }
+            return _build_trial_metrics(trial, prefix="ft_")
+        return _build_trial_metrics(trial)
 
-        comparison = calculate_comparison_metrics(
-            original_metrics,
-            test_metrics,
-            int(baseline_period_days or 0),
-            int(test_period_days),
+    try:
+        results_payload = run_period_test_for_trials(
+            df=df,
+            strategy_id=study.get("strategy_id"),
+            warmup_bars=int(warmup_bars),
+            fixed_params=fixed_params,
+            start_ts=start_ts,
+            end_ts=end_ts,
+            trials=trials_to_test,
+            baseline_period_days=int(baseline_period_days or 0),
+            test_period_days=int(test_period_days),
+            original_metrics_resolver=resolve_original_metrics,
         )
-
-        results_payload.append(
-            {
-                "trial_number": trial_number,
-                "original_metrics": original_metrics,
-                "test_metrics": test_metrics,
-                "comparison": comparison,
-            }
-        )
+    except Exception as exc:
+        return jsonify({"error": str(exc)}), HTTPStatus.BAD_REQUEST
 
     for idx, item in enumerate(results_payload, 1):
         trial_number = item.get("trial_number")
@@ -2373,22 +2347,39 @@ def run_optimization_endpoint() -> object:
     except (TypeError, ValueError):
         warmup_bars = 1000
 
+    oos_payload = config_payload.get("oosTest")
+    if not isinstance(oos_payload, dict):
+        oos_payload = {}
+
     ft_enabled = bool(post_process_payload.get("enabled", False))
     dsr_enabled = bool(post_process_payload.get("dsrEnabled", False))
     st_payload = post_process_payload.get("stressTest")
     if not isinstance(st_payload, dict):
         st_payload = {}
     st_enabled = bool(st_payload.get("enabled", False))
+    oos_enabled = bool(oos_payload.get("enabled", False))
     try:
         dsr_top_k = int(post_process_payload.get("dsrTopK", 20))
     except (TypeError, ValueError):
         dsr_top_k = 20
+    try:
+        oos_period_days = int(oos_payload.get("periodDays", 30))
+    except (TypeError, ValueError):
+        oos_period_days = 30
+    try:
+        oos_top_k = int(oos_payload.get("topK", 20))
+    except (TypeError, ValueError):
+        oos_top_k = 20
+    oos_top_k = max(1, min(10000, oos_top_k))
     ft_start = None
     ft_end = None
+    oos_start = None
+    oos_end = None
     is_days = None
     ft_days = None
+    oos_days = None
 
-    if ft_enabled:
+    if ft_enabled or oos_enabled:
         fixed_params_payload = config_payload.get("fixed_params") or {}
         config_payload["fixed_params"] = fixed_params_payload
 
@@ -2401,29 +2392,49 @@ def run_optimization_endpoint() -> object:
             try:
                 df_temp = load_data(data_source)
             except Exception as exc:
-                return (f"Failed to load CSV for FT split: {exc}", HTTPStatus.BAD_REQUEST)
+                return (f"Failed to load CSV for period split: {exc}", HTTPStatus.BAD_REQUEST)
             user_start = df_temp.index.min()
             user_end = df_temp.index.max()
 
         if user_start is None or user_end is None:
-            return ("Failed to determine FT date range.", HTTPStatus.BAD_REQUEST)
+            return ("Failed to determine date range.", HTTPStatus.BAD_REQUEST)
+
+        ft_period_days = None
+        if ft_enabled:
+            try:
+                ft_period_days = int(post_process_payload.get("ftPeriodDays", 30))
+            except (TypeError, ValueError):
+                return ("Invalid FT period days.", HTTPStatus.BAD_REQUEST)
+
+        if oos_enabled:
+            oos_period_days = max(1, min(3650, oos_period_days))
+        if ft_period_days is not None:
+            ft_period_days = max(1, min(3650, ft_period_days))
 
         try:
-            ft_period_days = int(post_process_payload.get("ftPeriodDays", 30))
-        except (TypeError, ValueError):
-            return ("Invalid FT period days.", HTTPStatus.BAD_REQUEST)
-
-        try:
-            is_end, ft_start, ft_end, is_days, ft_days = calculate_ft_dates(
-                user_start, user_end, ft_period_days
+            period_dates = calculate_period_dates(
+                user_start,
+                user_end,
+                ft_enabled=ft_enabled,
+                ft_period_days=ft_period_days,
+                oos_enabled=oos_enabled,
+                oos_period_days=oos_period_days,
             )
         except ValueError as exc:
             return (str(exc), HTTPStatus.BAD_REQUEST)
 
+        ft_start = period_dates.get("ft_start")
+        ft_end = period_dates.get("ft_end")
+        oos_start = period_dates.get("oos_start")
+        oos_end = period_dates.get("oos_end")
+        is_days = period_dates.get("is_days")
+        ft_days = period_dates.get("ft_days")
+        oos_days = period_dates.get("oos_days")
+
         fixed_params_payload["dateFilter"] = True
         if not fixed_params_payload.get("start"):
             fixed_params_payload["start"] = user_start.isoformat()
-        fixed_params_payload["end"] = is_end.isoformat()
+        fixed_params_payload["end"] = period_dates["is_end"].isoformat()
 
     fixed_params_payload = config_payload.get("fixed_params") or {}
     is_start_date = fixed_params_payload.get("start")
@@ -2476,6 +2487,7 @@ def run_optimization_endpoint() -> object:
         optimization_config.ft_sort_metric = post_process_payload.get("sortMetric", "profit_degradation")
         optimization_config.ft_start_date = ft_start.strftime("%Y-%m-%d") if ft_start else None
         optimization_config.ft_end_date = ft_end.strftime("%Y-%m-%d") if ft_end else None
+    if ft_enabled or oos_enabled:
         optimization_config.is_period_days = is_days
 
     _set_optimization_state({
@@ -2584,6 +2596,9 @@ def run_optimization_endpoint() -> object:
         config_json = (study_data.get("study") or {}).get("config_json") or {}
         if post_process_payload:
             config_json["postProcess"] = post_process_payload
+        if oos_payload:
+            config_json["oosTest"] = oos_payload
+        if post_process_payload or oos_payload:
             update_study_config_json(study_id, config_json)
 
     dsr_results: List[Any] = []
@@ -2708,6 +2723,108 @@ def run_optimization_endpoint() -> object:
             st_summary,
             stress_test_config,
             st_source=st_source,
+        )
+
+    oos_results_payload: List[Dict[str, Any]] = []
+    if oos_enabled and study_id:
+        if not oos_start or not oos_end:
+            raise ValueError("OOS Test enabled but OOS period could not be determined.")
+
+        _set_optimization_state({
+            "status": "running",
+            "mode": "optuna",
+            "study_id": study_id,
+            "stage": "oos_test",
+            "message": "Running OOS Test...",
+        })
+
+        source_module, candidates = select_oos_source_candidates(
+            optuna_results=results,
+            dsr_results=dsr_results,
+            ft_results=ft_results,
+            st_results=st_results,
+        )
+
+        if oos_top_k:
+            candidates = candidates[: int(oos_top_k)]
+
+        if not candidates:
+            raise ValueError("No candidates available for OOS Test.")
+
+        study_data = load_study_from_db(study_id) or {}
+        trial_rows = study_data.get("trials") or []
+        trial_map = {int(t.get("trial_number")): t for t in trial_rows if t.get("trial_number") is not None}
+
+        trials_to_test: List[Dict[str, Any]] = []
+        source_rank_map: Dict[int, int] = {}
+        for candidate in candidates:
+            trial_number = int(candidate.get("trial_number") or 0)
+            if trial_number <= 0:
+                continue
+            trial = trial_map.get(trial_number)
+            if not trial:
+                continue
+            source_rank_map[trial_number] = int(candidate.get("source_rank") or len(source_rank_map) + 1)
+            trials_to_test.append(trial)
+
+        if not trials_to_test:
+            raise ValueError("No matching trials found for OOS Test candidates.")
+
+        try:
+            df_oos = load_data(data_path)
+        except Exception as exc:
+            raise ValueError(f"Failed to load CSV for OOS Test: {exc}") from exc
+
+        aligned_start, aligned_end = align_date_bounds(df_oos.index, oos_start, oos_end)
+        if aligned_start is None or aligned_end is None:
+            raise ValueError("Invalid OOS Test date range.")
+
+        oos_start_ts = aligned_start
+        oos_end_ts = aligned_end
+        test_period_days = max(0, (oos_end_ts - oos_start_ts).days)
+        if test_period_days <= 0:
+            raise ValueError("OOS Test period must be at least 1 day.")
+
+        baseline_period_days = None
+        if source_module == "forward_test":
+            baseline_period_days = int(ft_days or 0)
+        if baseline_period_days is None or baseline_period_days <= 0:
+            baseline_period_days = int(is_days or 0)
+        if baseline_period_days <= 0:
+            baseline_period_days = calculate_is_period_days(config_payload) or 0
+
+        def resolve_original_metrics(trial: Dict[str, Any]) -> Dict[str, Any]:
+            if source_module == "forward_test":
+                return _build_trial_metrics(trial, prefix="ft_")
+            return _build_trial_metrics(trial)
+
+        oos_results_payload = run_period_test_for_trials(
+            df=df_oos,
+            strategy_id=strategy_id,
+            warmup_bars=int(warmup_bars),
+            fixed_params=fixed_params_payload,
+            start_ts=oos_start_ts,
+            end_ts=oos_end_ts,
+            trials=trials_to_test,
+            baseline_period_days=int(baseline_period_days),
+            test_period_days=int(test_period_days),
+            original_metrics_resolver=resolve_original_metrics,
+        )
+
+        for item in oos_results_payload:
+            trial_number = int(item.get("trial_number") or 0)
+            item["oos_test_source"] = source_module
+            item["oos_test_source_rank"] = source_rank_map.get(trial_number) or 0
+
+        save_oos_test_results(
+            study_id,
+            oos_results_payload,
+            oos_enabled=True,
+            oos_period_days=int(oos_days or oos_period_days),
+            oos_top_k=int(oos_top_k),
+            oos_start_date=oos_start_ts.strftime("%Y-%m-%d"),
+            oos_end_date=oos_end_ts.strftime("%Y-%m-%d"),
+            oos_source_module=source_module,
         )
 
     _set_optimization_state(

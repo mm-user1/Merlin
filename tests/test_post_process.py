@@ -9,6 +9,7 @@ sys.path.insert(0, str(Path(__file__).parent.parent / "src"))
 from core.post_process import (
     calculate_comparison_metrics,
     calculate_ft_dates,
+    calculate_period_dates,
     calculate_profit_degradation,
 )
 
@@ -40,6 +41,39 @@ def test_calculate_profit_degradation_annualized():
     ft_profit = 5.0
     ratio = calculate_profit_degradation(is_profit, ft_profit, 100, 50)
     assert abs(ratio - 1.0) < 1e-6
+
+
+def test_calculate_period_dates_oos_only():
+    start = pd.Timestamp("2025-05-01", tz="UTC")
+    end = pd.Timestamp("2025-11-20", tz="UTC")
+    result = calculate_period_dates(
+        start,
+        end,
+        ft_enabled=False,
+        oos_enabled=True,
+        oos_period_days=30,
+    )
+    assert result["oos_end"] == end
+    assert result["oos_start"] == end - pd.Timedelta(days=30)
+    assert result["is_end"] == result["oos_start"]
+    assert result["is_days"] == (result["is_end"] - start).days
+
+
+def test_calculate_period_dates_ft_and_oos():
+    start = pd.Timestamp("2025-05-01", tz="UTC")
+    end = pd.Timestamp("2025-11-20", tz="UTC")
+    result = calculate_period_dates(
+        start,
+        end,
+        ft_enabled=True,
+        ft_period_days=15,
+        oos_enabled=True,
+        oos_period_days=30,
+    )
+    assert result["oos_start"] == end - pd.Timedelta(days=30)
+    assert result["ft_end"] == result["oos_start"]
+    assert result["ft_start"] == result["ft_end"] - pd.Timedelta(days=15)
+    assert result["is_end"] == result["ft_start"]
 
 
 def test_calculate_comparison_metrics():

@@ -154,6 +154,13 @@ def _create_schema(conn: sqlite3.Connection) -> None:
             st_candidates_insufficient_data INTEGER,
             optimization_time_seconds INTEGER,
 
+            oos_test_enabled INTEGER DEFAULT 0,
+            oos_test_period_days INTEGER,
+            oos_test_top_k INTEGER,
+            oos_test_start_date TEXT,
+            oos_test_end_date TEXT,
+            oos_test_source_module TEXT,
+
             created_at TEXT DEFAULT (datetime('now')),
             completed_at TEXT,
 
@@ -245,6 +252,22 @@ def _create_schema(conn: sqlite3.Connection) -> None:
             param_worst_ratios TEXT,
             most_sensitive_param TEXT,
             st_source TEXT,
+
+            oos_test_net_profit_pct REAL,
+            oos_test_max_drawdown_pct REAL,
+            oos_test_total_trades INTEGER,
+            oos_test_win_rate REAL,
+            oos_test_max_consecutive_losses INTEGER,
+            oos_test_sharpe_ratio REAL,
+            oos_test_sortino_ratio REAL,
+            oos_test_romad REAL,
+            oos_test_profit_factor REAL,
+            oos_test_ulcer_index REAL,
+            oos_test_sqn REAL,
+            oos_test_consistency_score REAL,
+            oos_test_profit_degradation REAL,
+            oos_test_source TEXT,
+            oos_test_source_rank INTEGER,
 
             created_at TEXT DEFAULT (datetime('now')),
 
@@ -341,6 +364,12 @@ def _ensure_columns(conn: sqlite3.Connection) -> None:
     ensure("studies", "st_candidates_skipped_no_params", "INTEGER")
     ensure("studies", "st_candidates_insufficient_data", "INTEGER")
     ensure("studies", "optimization_time_seconds", "INTEGER")
+    ensure("studies", "oos_test_enabled", "INTEGER DEFAULT 0")
+    ensure("studies", "oos_test_period_days", "INTEGER")
+    ensure("studies", "oos_test_top_k", "INTEGER")
+    ensure("studies", "oos_test_start_date", "TEXT")
+    ensure("studies", "oos_test_end_date", "TEXT")
+    ensure("studies", "oos_test_source_module", "TEXT")
 
     ensure("trials", "max_consecutive_losses", "INTEGER")
     ensure("trials", "ft_max_consecutive_losses", "INTEGER")
@@ -370,6 +399,21 @@ def _ensure_columns(conn: sqlite3.Connection) -> None:
     ensure("trials", "st_failure_threshold", "REAL")
     ensure("trials", "param_worst_ratios", "TEXT")
     ensure("trials", "most_sensitive_param", "TEXT")
+    ensure("trials", "oos_test_net_profit_pct", "REAL")
+    ensure("trials", "oos_test_max_drawdown_pct", "REAL")
+    ensure("trials", "oos_test_total_trades", "INTEGER")
+    ensure("trials", "oos_test_win_rate", "REAL")
+    ensure("trials", "oos_test_max_consecutive_losses", "INTEGER")
+    ensure("trials", "oos_test_sharpe_ratio", "REAL")
+    ensure("trials", "oos_test_sortino_ratio", "REAL")
+    ensure("trials", "oos_test_romad", "REAL")
+    ensure("trials", "oos_test_profit_factor", "REAL")
+    ensure("trials", "oos_test_ulcer_index", "REAL")
+    ensure("trials", "oos_test_sqn", "REAL")
+    ensure("trials", "oos_test_consistency_score", "REAL")
+    ensure("trials", "oos_test_profit_degradation", "REAL")
+    ensure("trials", "oos_test_source", "TEXT")
+    ensure("trials", "oos_test_source_rank", "INTEGER")
 
 
 @contextmanager
@@ -1480,6 +1524,129 @@ def save_stress_test_results(
         except Exception as exc:
             conn.execute("ROLLBACK")
             raise RuntimeError(f"Failed to save stress test results: {exc}")
+
+    return True
+
+
+def save_oos_test_results(
+    study_id: str,
+    oos_results: List[Dict[str, Any]],
+    *,
+    oos_enabled: bool,
+    oos_period_days: Optional[int],
+    oos_top_k: Optional[int],
+    oos_start_date: Optional[str],
+    oos_end_date: Optional[str],
+    oos_source_module: Optional[str],
+) -> bool:
+    if not study_id:
+        return False
+
+    with get_db_connection() as conn:
+        try:
+            conn.execute("BEGIN TRANSACTION")
+            conn.execute(
+                """
+                UPDATE studies
+                SET
+                    oos_test_enabled = ?,
+                    oos_test_period_days = ?,
+                    oos_test_top_k = ?,
+                    oos_test_start_date = ?,
+                    oos_test_end_date = ?,
+                    oos_test_source_module = ?
+                WHERE study_id = ?
+                """,
+                (
+                    1 if oos_enabled else 0,
+                    oos_period_days,
+                    oos_top_k,
+                    _format_date(oos_start_date),
+                    _format_date(oos_end_date),
+                    oos_source_module,
+                    study_id,
+                ),
+            )
+
+            conn.execute(
+                """
+                UPDATE trials
+                SET
+                    oos_test_net_profit_pct = NULL,
+                    oos_test_max_drawdown_pct = NULL,
+                    oos_test_total_trades = NULL,
+                    oos_test_win_rate = NULL,
+                    oos_test_max_consecutive_losses = NULL,
+                    oos_test_sharpe_ratio = NULL,
+                    oos_test_sortino_ratio = NULL,
+                    oos_test_romad = NULL,
+                    oos_test_profit_factor = NULL,
+                    oos_test_ulcer_index = NULL,
+                    oos_test_sqn = NULL,
+                    oos_test_consistency_score = NULL,
+                    oos_test_profit_degradation = NULL,
+                    oos_test_source = NULL,
+                    oos_test_source_rank = NULL
+                WHERE study_id = ?
+                """,
+                (study_id,),
+            )
+
+            if oos_results:
+                rows = []
+                for result in oos_results:
+                    test_metrics = result.get("test_metrics") or {}
+                    comparison = result.get("comparison") or {}
+                    rows.append(
+                        (
+                            test_metrics.get("net_profit_pct"),
+                            test_metrics.get("max_drawdown_pct"),
+                            test_metrics.get("total_trades"),
+                            test_metrics.get("win_rate"),
+                            test_metrics.get("max_consecutive_losses"),
+                            test_metrics.get("sharpe_ratio"),
+                            test_metrics.get("sortino_ratio"),
+                            test_metrics.get("romad"),
+                            test_metrics.get("profit_factor"),
+                            test_metrics.get("ulcer_index"),
+                            test_metrics.get("sqn"),
+                            test_metrics.get("consistency_score"),
+                            comparison.get("profit_degradation"),
+                            result.get("oos_test_source"),
+                            result.get("oos_test_source_rank"),
+                            study_id,
+                            result.get("trial_number"),
+                        )
+                    )
+
+                conn.executemany(
+                    """
+                    UPDATE trials
+                    SET
+                        oos_test_net_profit_pct = ?,
+                        oos_test_max_drawdown_pct = ?,
+                        oos_test_total_trades = ?,
+                        oos_test_win_rate = ?,
+                        oos_test_max_consecutive_losses = ?,
+                        oos_test_sharpe_ratio = ?,
+                        oos_test_sortino_ratio = ?,
+                        oos_test_romad = ?,
+                        oos_test_profit_factor = ?,
+                        oos_test_ulcer_index = ?,
+                        oos_test_sqn = ?,
+                        oos_test_consistency_score = ?,
+                        oos_test_profit_degradation = ?,
+                        oos_test_source = ?,
+                        oos_test_source_rank = ?
+                    WHERE study_id = ? AND trial_number = ?
+                    """,
+                    rows,
+                )
+
+            conn.execute("COMMIT")
+        except Exception as exc:
+            conn.execute("ROLLBACK")
+            raise RuntimeError(f"Failed to save OOS test results: {exc}")
 
     return True
 

@@ -342,6 +342,86 @@ def calculate_ft_dates(
     return is_end, ft_start, user_end, is_days, ft_days
 
 
+def calculate_period_dates(
+    user_start: pd.Timestamp,
+    user_end: pd.Timestamp,
+    *,
+    ft_enabled: bool = False,
+    ft_period_days: Optional[int] = None,
+    oos_enabled: bool = False,
+    oos_period_days: Optional[int] = None,
+) -> Dict[str, Any]:
+    """
+    Calculate IS/FT/OOS boundaries with inclusive ends and shared boundary bars.
+
+    Returns dict with:
+        is_end, ft_start, ft_end, oos_start, oos_end, is_days, ft_days, oos_days
+    """
+    if user_start is None or user_end is None:
+        raise ValueError("User start/end dates are required for period splitting.")
+
+    total_days = (user_end - user_start).days
+    if total_days <= 0:
+        raise ValueError("User-selected range must be at least 1 day.")
+
+    ft_start = None
+    ft_end = None
+    oos_start = None
+    oos_end = None
+    ft_days = None
+    oos_days = None
+
+    if oos_enabled:
+        if oos_period_days is None:
+            raise ValueError("OOS period days is required when OOS test is enabled.")
+        oos_days = int(oos_period_days)
+        if oos_days >= total_days:
+            raise ValueError(
+                f"OOS period ({oos_days} days) must be less than "
+                f"user-selected range ({total_days} days). "
+                f"User range: {user_start.date()} to {user_end.date()}"
+            )
+        oos_start = user_end - pd.Timedelta(days=oos_days)
+        oos_end = user_end
+
+    if ft_enabled:
+        if ft_period_days is None:
+            raise ValueError("FT period days is required when Forward Test is enabled.")
+        ft_days = int(ft_period_days)
+        remaining_end = oos_start if oos_enabled else user_end
+        remaining_days = (remaining_end - user_start).days
+        if ft_days >= remaining_days:
+            raise ValueError(
+                f"FT period ({ft_days} days) must be less than "
+                f"remaining range ({remaining_days} days). "
+                f"User range: {user_start.date()} to {user_end.date()}"
+            )
+        ft_end = remaining_end
+        ft_start = ft_end - pd.Timedelta(days=ft_days)
+
+    if ft_enabled:
+        is_end = ft_start
+    elif oos_enabled:
+        is_end = oos_start
+    else:
+        is_end = user_end
+
+    is_days = (is_end - user_start).days
+    if is_days <= 0:
+        raise ValueError("In-sample period must be at least 1 day.")
+
+    return {
+        "is_end": is_end,
+        "ft_start": ft_start,
+        "ft_end": ft_end,
+        "oos_start": oos_start,
+        "oos_end": oos_end,
+        "is_days": is_days,
+        "ft_days": ft_days,
+        "oos_days": oos_days,
+    }
+
+
 def calculate_profit_degradation(
     is_profit: float,
     ft_profit: float,
