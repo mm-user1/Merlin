@@ -48,6 +48,7 @@ def select_oos_source_candidates(
     dsr_results: Sequence[Any],
     ft_results: Sequence[Any],
     st_results: Sequence[Any],
+    st_ran: bool = False,
 ) -> Tuple[str, List[Dict[str, int]]]:
     """
     Select OOS source candidates using last-finished-module precedence.
@@ -56,8 +57,8 @@ def select_oos_source_candidates(
         (source_module, candidates) where candidates is a list of
         {"trial_number": int, "source_rank": int} in source order.
     """
-    filtered_st = [item for item in (st_results or []) if _is_stress_ok(item)]
-    if filtered_st:
+    if st_ran:
+        filtered_st = [item for item in (st_results or []) if _is_stress_ok(item)]
         return "stress_test", _build_source_candidates(filtered_st, "st_rank")
     if ft_results:
         return "forward_test", _build_source_candidates(ft_results, "ft_rank")

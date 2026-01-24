@@ -212,6 +212,10 @@ function toggleWFSettings() {
   if (!wfToggle || !wfSettings) {
     return;
   }
+  if (wfToggle.disabled) {
+    wfSettings.style.display = 'none';
+    return;
+  }
   wfSettings.style.display = wfToggle.checked ? 'block' : 'none';
 }
 
@@ -1173,7 +1177,8 @@ async function submitOptimization(event) {
     return;
   }
 
-  const wfEnabled = Boolean(document.getElementById('enableWF')?.checked);
+  const wfToggle = document.getElementById('enableWF');
+  const wfEnabled = Boolean(wfToggle && wfToggle.checked && !wfToggle.disabled);
 
   if (!state.start || !state.end) {
     optimizerResultsEl.textContent = 'Please specify both start and end dates before optimization.';

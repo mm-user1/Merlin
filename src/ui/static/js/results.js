@@ -1339,6 +1339,23 @@ function renderOosTestTable(results) {
   }
 
   (results || []).forEach((trial, index) => {
+    const source = trial.oos_test_source || ResultsState.oosTest.source || '';
+    const baseMetrics = source === 'forward_test'
+      ? {
+        net_profit_pct: trial.ft_net_profit_pct,
+        max_drawdown_pct: trial.ft_max_drawdown_pct,
+        romad: trial.ft_romad,
+        sharpe_ratio: trial.ft_sharpe_ratio,
+        profit_factor: trial.ft_profit_factor
+      }
+      : {
+        net_profit_pct: trial.net_profit_pct,
+        max_drawdown_pct: trial.max_drawdown_pct,
+        romad: trial.romad,
+        sharpe_ratio: trial.sharpe_ratio,
+        profit_factor: trial.profit_factor
+      };
+
     const metrics = {
       net_profit_pct: trial.oos_test_net_profit_pct,
       max_drawdown_pct: trial.oos_test_max_drawdown_pct,
@@ -1377,13 +1394,18 @@ function renderOosTestTable(results) {
       selectTableRow(index, trial.trial_number);
       await showParameterDetails({ ...trial, param_id: paramId });
 
-      const source = trial.oos_test_source || ResultsState.oosTest.source || '';
-      const sourceRank = trial.oos_test_source_rank;
       const profitDeg = trial.oos_test_profit_degradation;
+      const maxDdChange = Number(metrics.max_drawdown_pct || 0) - Number(baseMetrics.max_drawdown_pct || 0);
+      const romadChange = Number(metrics.romad || 0) - Number(baseMetrics.romad || 0);
+      const sharpeChange = Number(metrics.sharpe_ratio || 0) - Number(baseMetrics.sharpe_ratio || 0);
+      const pfChange = Number(metrics.profit_factor || 0) - Number(baseMetrics.profit_factor || 0);
+
       const line = [
-        source ? `Source: ${source}` : null,
-        sourceRank ? `Source Rank: ${sourceRank}` : null,
-        profitDeg !== null && profitDeg !== undefined ? `Profit Deg: ${formatSigned(profitDeg, 2)}` : null
+        profitDeg !== null && profitDeg !== undefined ? `Profit Deg: ${formatSigned(profitDeg, 2)}` : null,
+        `Max DD: ${formatSigned(maxDdChange || 0, 2, '%')}`,
+        `ROMAD: ${formatSigned(romadChange || 0, 2)}`,
+        `Sharpe: ${formatSigned(sharpeChange || 0, 2)}`,
+        `PF: ${formatSigned(pfChange || 0, 2)}`
       ].filter(Boolean).join(' | ');
       setComparisonLine(line);
 
@@ -1467,9 +1489,6 @@ function renderManualTestTable(results) {
 
       const comparison = entry.comparison || {};
       const line = [
-        comparison.rank_change !== undefined && comparison.rank_change !== null
-          ? `Rank: ${formatSigned(comparison.rank_change, 0)}`
-          : null,
         `Profit Deg: ${formatSigned(comparison.profit_degradation || 0, 2)}`,
         `Max DD: ${formatSigned(comparison.max_dd_change || 0, 2, '%')}`,
         `ROMAD: ${formatSigned(comparison.romad_change || 0, 2)}`,

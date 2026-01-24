@@ -734,7 +734,7 @@
               <div class="form-group vertical" style="align-items: flex-start;">
                 <label style="margin-bottom: 8px;">
                   <input type="checkbox" id="enableOosTest" />
-                  <strong>Enable Out-of-Sample Test</strong>
+                  <strong id="oosEnableLabel">Enable Out-of-Sample Test</strong>
                 </label>
                 <p style="font-size: 12px; color: #666; margin: 0;">
                   Runs an automatic holdout test on the final period after optimization.
@@ -761,7 +761,7 @@
               <div class="form-group vertical" style="align-items: flex-start;">
                 <label style="margin-bottom: 8px;">
                   <input type="checkbox" id="enableWF" onchange="toggleWFSettings()" />
-                  <strong>Enable Walk-Forward Optimization</strong>
+                  <strong id="wfEnableLabel">Enable Walk-Forward Optimization</strong>
                 </label>
                 <p style="font-size: 12px; color: #666; margin: 0;">
                   Splits data into multiple training/testing windows to find robust parameters.

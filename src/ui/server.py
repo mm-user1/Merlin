@@ -2743,12 +2743,15 @@ def run_optimization_endpoint() -> object:
             dsr_results=dsr_results,
             ft_results=ft_results,
             st_results=st_results,
+            st_ran=bool(st_enabled),
         )
 
         if oos_top_k:
             candidates = candidates[: int(oos_top_k)]
 
         if not candidates:
+            if source_module == "stress_test":
+                raise ValueError("Stress Test produced no OK candidates; OOS Test skipped.")
             raise ValueError("No candidates available for OOS Test.")
 
         study_data = load_study_from_db(study_id) or {}
@@ -2811,10 +2814,10 @@ def run_optimization_endpoint() -> object:
             original_metrics_resolver=resolve_original_metrics,
         )
 
-        for item in oos_results_payload:
+        for idx, item in enumerate(oos_results_payload, 1):
             trial_number = int(item.get("trial_number") or 0)
             item["oos_test_source"] = source_module
-            item["oos_test_source_rank"] = source_rank_map.get(trial_number) or 0
+            item["oos_test_source_rank"] = source_rank_map.get(trial_number) or idx
 
         save_oos_test_results(
             study_id,

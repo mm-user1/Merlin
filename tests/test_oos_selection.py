@@ -17,6 +17,7 @@ def test_select_oos_source_prefers_stress_test():
         dsr_results=[],
         ft_results=ft_results,
         st_results=st_results,
+        st_ran=True,
     )
     assert source == "stress_test"
     assert [c["trial_number"] for c in candidates] == [11, 7]
@@ -34,10 +35,10 @@ def test_select_oos_source_skips_failed_stress():
         dsr_results=[],
         ft_results=ft_results,
         st_results=st_results,
+        st_ran=True,
     )
-    assert source == "forward_test"
-    assert [c["trial_number"] for c in candidates] == [5]
-    assert [c["source_rank"] for c in candidates] == [3]
+    assert source == "stress_test"
+    assert candidates == []
 
 
 def test_select_oos_source_preserves_optuna_order():
