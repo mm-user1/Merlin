@@ -50,6 +50,7 @@ from core.storage import (
     list_studies,
     load_manual_test_results,
     load_study_from_db,
+    load_wfa_window_trials,
     save_dsr_results,
     save_forward_test_results,
     save_stress_test_results,
@@ -143,6 +144,57 @@ def _run_trade_export(
         return None, str(exc)
 
     return result.trades, None
+
+
+def _run_equity_export(
+    *,
+    strategy_id: str,
+    csv_path: str,
+    params: Dict[str, Any],
+    warmup_bars: int,
+) -> Tuple[Optional[List[float]], Optional[List[str]], Optional[str]]:
+    from strategies import get_strategy
+
+    try:
+        strategy_class = get_strategy(strategy_id)
+    except ValueError as exc:
+        return None, None, str(exc)
+
+    try:
+        df = load_data(csv_path)
+    except Exception as exc:
+        return None, None, str(exc)
+
+    trade_start_idx = 0
+    payload = dict(params or {})
+    if payload.get("dateFilter"):
+        start_raw = payload.get("start")
+        end_raw = payload.get("end")
+        start, end = align_date_bounds(df.index, start_raw, end_raw)
+        if start_raw not in (None, "") and start is None:
+            return None, None, "Invalid start date."
+        if end_raw not in (None, "") and end is None:
+            return None, None, "Invalid end date."
+        payload["start"] = start
+        payload["end"] = end
+        try:
+            df, trade_start_idx = prepare_dataset_with_warmup(
+                df, start, end, int(warmup_bars)
+            )
+        except Exception:
+            return None, None, "Failed to prepare dataset with warmup."
+
+    try:
+        result = strategy_class.run(df, payload, trade_start_idx)
+    except Exception as exc:
+        return None, None, str(exc)
+
+    # Match /api/backtest preference: use equity_curve first, then balance_curve.
+    equity_curve = list(result.equity_curve or result.balance_curve or [])
+    timestamps = [
+        ts.isoformat() if hasattr(ts, "isoformat") else ts for ts in (result.timestamps or [])
+    ]
+    return equity_curve, timestamps, None
 
 
 def _send_trades_csv(
@@ -860,6 +912,38 @@ def _build_trial_metrics(trial: Dict[str, Any], prefix: str = "") -> Dict[str, A
     }
 
 
+def _find_wfa_window(study_data: Dict[str, Any], window_number: int) -> Optional[Dict[str, Any]]:
+    for window in study_data.get("windows") or []:
+        if int(window.get("window_number") or 0) == int(window_number):
+            return window
+    return None
+
+
+def _resolve_wfa_period(window: Dict[str, Any], period: str) -> Tuple[Optional[str], Optional[str], Optional[str]]:
+    period = (period or "").lower()
+    if period == "optuna_is":
+        start = window.get("optimization_start_date") or window.get("is_start_date")
+        end = window.get("optimization_end_date") or window.get("is_end_date")
+    elif period == "is":
+        start = window.get("is_start_date")
+        end = window.get("is_end_date")
+    elif period == "ft":
+        start = window.get("ft_start_date")
+        end = window.get("ft_end_date")
+    elif period == "oos":
+        start = window.get("oos_start_date")
+        end = window.get("oos_end_date")
+    elif period == "both":
+        start = window.get("is_start_date")
+        end = window.get("oos_end_date")
+    else:
+        return None, None, "Invalid period."
+
+    if not start or not end:
+        return None, None, "Missing period date range."
+    return start, end, None
+
+
 @app.post("/api/studies/<string:study_id>/test")
 def run_manual_test_endpoint(study_id: str) -> object:
     payload = request.get_json(silent=True) if request.is_json else None
@@ -1275,6 +1359,195 @@ def download_manual_test_trades(study_id: str, test_id: int, trial_number: int) 
         return jsonify({"error": error}), HTTPStatus.BAD_REQUEST
 
     filename = f"{study.get('study_name', 'study')}_test_{test_id}_trial_{trial_number}_mt_trades.csv"
+    return _send_trades_csv(
+        trades=trades or [],
+        csv_path=csv_path,
+        study=study,
+        filename=filename,
+    )
+
+
+@app.get("/api/studies/<string:study_id>/wfa/windows/<int:window_number>")
+def get_wfa_window_details(study_id: str, window_number: int) -> object:
+    study_data = load_study_from_db(study_id)
+    if not study_data:
+        return jsonify({"error": "Study not found."}), HTTPStatus.NOT_FOUND
+
+    study = study_data["study"]
+    if study.get("optimization_mode") != "wfa":
+        return jsonify({"error": "Window details only available for WFA studies."}), HTTPStatus.BAD_REQUEST
+
+    window = _find_wfa_window(study_data, window_number)
+    if not window:
+        return jsonify({"error": "WFA window not found."}), HTTPStatus.NOT_FOUND
+
+    window_id = window.get("window_id") or f"{study_id}_w{window_number}"
+    modules = load_wfa_window_trials(window_id)
+
+    available_modules = window.get("available_modules")
+    if not isinstance(available_modules, list):
+        available_modules = list(modules.keys()) if modules else ["optuna_is"]
+
+    window_payload = {
+        "window_number": window.get("window_number"),
+        "window_id": window_id,
+        "is_start_date": window.get("is_start_date"),
+        "is_end_date": window.get("is_end_date"),
+        "oos_start_date": window.get("oos_start_date"),
+        "oos_end_date": window.get("oos_end_date"),
+        "optimization_start_date": window.get("optimization_start_date"),
+        "optimization_end_date": window.get("optimization_end_date"),
+        "ft_start_date": window.get("ft_start_date"),
+        "ft_end_date": window.get("ft_end_date"),
+        "best_params": window.get("best_params") or {},
+        "param_id": window.get("param_id"),
+        "best_params_source": window.get("best_params_source") or "optuna_is",
+        "is_pareto_optimal": window.get("is_pareto_optimal"),
+        "constraints_satisfied": window.get("constraints_satisfied"),
+        "available_modules": available_modules,
+        "module_status": window.get("module_status") or {},
+        "selection_chain": window.get("selection_chain") or {},
+        "is_metrics": _build_trial_metrics(window, "is_"),
+        "oos_metrics": _build_trial_metrics(window, "oos_"),
+    }
+
+    return jsonify({"window": _json_safe(window_payload), "modules": _json_safe(modules)})
+
+
+@app.post("/api/studies/<string:study_id>/wfa/windows/<int:window_number>/equity")
+def generate_wfa_window_equity(study_id: str, window_number: int) -> object:
+    if not request.is_json:
+        return jsonify({"error": "Expected JSON payload."}), HTTPStatus.BAD_REQUEST
+    payload = request.get_json(silent=True) or {}
+
+    module_type = payload.get("moduleType")
+    trial_number = payload.get("trialNumber")
+    period = payload.get("period") or "is"
+
+    study_data = load_study_from_db(study_id)
+    if not study_data:
+        return jsonify({"error": "Study not found."}), HTTPStatus.NOT_FOUND
+
+    study = study_data["study"]
+    if study.get("optimization_mode") != "wfa":
+        return jsonify({"error": "Equity export is only supported for WFA studies."}), HTTPStatus.BAD_REQUEST
+
+    window = _find_wfa_window(study_data, window_number)
+    if not window:
+        return jsonify({"error": "WFA window not found."}), HTTPStatus.NOT_FOUND
+
+    window_id = window.get("window_id") or f"{study_id}_w{window_number}"
+    fixed_params = (study.get("config_json") or {}).get("fixed_params") or {}
+    params = window.get("best_params") or {}
+
+    if module_type and module_type != "oos_result":
+        modules = load_wfa_window_trials(window_id)
+        module_trials = modules.get(module_type) or []
+        if trial_number is None:
+            return jsonify({"error": "trialNumber is required for module equity."}), HTTPStatus.BAD_REQUEST
+        match = next(
+            (trial for trial in module_trials if int(trial.get("trial_number") or -1) == int(trial_number)),
+            None,
+        )
+        if not match:
+            return jsonify({"error": "Trial not found for module."}), HTTPStatus.NOT_FOUND
+        params = match.get("params") or {}
+
+    start, end, error = _resolve_wfa_period(window, period)
+    if error:
+        return jsonify({"error": error}), HTTPStatus.BAD_REQUEST
+
+    csv_path = study.get("csv_file_path")
+    if not csv_path or not Path(csv_path).exists():
+        return jsonify({"error": "CSV file is missing for this study."}), HTTPStatus.BAD_REQUEST
+
+    warmup_bars = study.get("warmup_bars") or (study.get("config_json") or {}).get("warmup_bars") or 1000
+
+    merged_params = {**fixed_params, **params}
+    merged_params["dateFilter"] = True
+    merged_params["start"] = start
+    merged_params["end"] = end
+
+    equity_curve, timestamps, error = _run_equity_export(
+        strategy_id=study.get("strategy_id"),
+        csv_path=csv_path,
+        params=merged_params,
+        warmup_bars=int(warmup_bars),
+    )
+    if error:
+        return jsonify({"error": error}), HTTPStatus.BAD_REQUEST
+
+    return jsonify({"equity_curve": equity_curve or [], "timestamps": timestamps or []})
+
+
+@app.post("/api/studies/<string:study_id>/wfa/windows/<int:window_number>/trades")
+def download_wfa_window_trades(study_id: str, window_number: int) -> object:
+    if not request.is_json:
+        return jsonify({"error": "Expected JSON payload."}), HTTPStatus.BAD_REQUEST
+    payload = request.get_json(silent=True) or {}
+
+    module_type = payload.get("moduleType")
+    trial_number = payload.get("trialNumber")
+    period = payload.get("period") or "oos"
+
+    study_data = load_study_from_db(study_id)
+    if not study_data:
+        return jsonify({"error": "Study not found."}), HTTPStatus.NOT_FOUND
+
+    study = study_data["study"]
+    if study.get("optimization_mode") != "wfa":
+        return jsonify({"error": "Trade export is only supported for WFA studies."}), HTTPStatus.BAD_REQUEST
+
+    window = _find_wfa_window(study_data, window_number)
+    if not window:
+        return jsonify({"error": "WFA window not found."}), HTTPStatus.NOT_FOUND
+
+    window_id = window.get("window_id") or f"{study_id}_w{window_number}"
+    fixed_params = (study.get("config_json") or {}).get("fixed_params") or {}
+    params = window.get("best_params") or {}
+
+    if module_type and module_type != "oos_result":
+        modules = load_wfa_window_trials(window_id)
+        module_trials = modules.get(module_type) or []
+        if trial_number is None:
+            return jsonify({"error": "trialNumber is required for module trades."}), HTTPStatus.BAD_REQUEST
+        match = next(
+            (trial for trial in module_trials if int(trial.get("trial_number") or -1) == int(trial_number)),
+            None,
+        )
+        if not match:
+            return jsonify({"error": "Trial not found for module."}), HTTPStatus.NOT_FOUND
+        params = match.get("params") or {}
+
+    start, end, error = _resolve_wfa_period(window, period)
+    if error:
+        return jsonify({"error": error}), HTTPStatus.BAD_REQUEST
+
+    csv_path = study.get("csv_file_path")
+    if not csv_path or not Path(csv_path).exists():
+        return jsonify({"error": "CSV file is missing for this study."}), HTTPStatus.BAD_REQUEST
+
+    warmup_bars = study.get("warmup_bars") or (study.get("config_json") or {}).get("warmup_bars") or 1000
+
+    merged_params = {**fixed_params, **params}
+    merged_params["dateFilter"] = True
+    merged_params["start"] = start
+    merged_params["end"] = end
+
+    trades, error = _run_trade_export(
+        strategy_id=study.get("strategy_id"),
+        csv_path=csv_path,
+        params=merged_params,
+        warmup_bars=int(warmup_bars),
+    )
+    if error:
+        return jsonify({"error": error}), HTTPStatus.BAD_REQUEST
+
+    module_label = module_type or "window"
+    filename = (
+        f"{study.get('study_name', 'study')}_wfa_window_{window_number}_"
+        f"{module_label}_{period}_trades.csv"
+    )
     return _send_trades_csv(
         trades=trades or [],
         csv_path=csv_path,
@@ -1714,6 +1987,12 @@ def run_walkforward_optimization() -> object:
     is_period_days = max(1, min(3650, is_period_days))
     oos_period_days = max(1, min(3650, oos_period_days))
 
+    try:
+        store_top_n_trials = int(data.get("wf_store_top_n_trials", 100))
+    except (TypeError, ValueError):
+        store_top_n_trials = 100
+    store_top_n_trials = max(10, min(500, store_top_n_trials))
+
     from core.walkforward_engine import WFConfig, WalkForwardEngine
 
     post_process_config = None
@@ -1766,6 +2045,7 @@ def run_walkforward_optimization() -> object:
         post_process=post_process_config,
         dsr_config=dsr_config,
         stress_test_config=st_config,
+        store_top_n_trials=store_top_n_trials,
     )
     engine = WalkForwardEngine(wf_config, base_template, optuna_settings, csv_file_path=data_path)
 
@@ -1779,6 +2059,7 @@ def run_walkforward_optimization() -> object:
             "wfa": {
                 "is_period_days": is_period_days,
                 "oos_period_days": oos_period_days,
+                "store_top_n_trials": store_top_n_trials,
             },
         }
     )

@@ -910,6 +910,7 @@ async function runWalkForward({ sources, state }) {
 
   const wfIsPeriodDays = document.getElementById('wfIsPeriodDays').value;
   const wfOosPeriodDays = document.getElementById('wfOosPeriodDays').value;
+  const wfStoreTopNTrials = document.getElementById('wfStoreTopNTrials')?.value || '100';
   const warmupValue = document.getElementById('warmupBars')?.value || '1000';
   const strategySummary = getStrategySummary();
 
@@ -939,7 +940,8 @@ async function runWalkForward({ sources, state }) {
     },
     wfa: {
       isPeriodDays: Number(wfIsPeriodDays),
-      oosPeriodDays: Number(wfOosPeriodDays)
+      oosPeriodDays: Number(wfOosPeriodDays),
+      storeTopNTrials: Number(wfStoreTopNTrials)
     },
     fixedParams: clonePreset(config.fixed_params || {}),
     strategyConfig: clonePreset(window.currentStrategyConfig || {})
@@ -984,6 +986,7 @@ async function runWalkForward({ sources, state }) {
     formData.append('config', JSON.stringify(config));
     formData.append('wf_is_period_days', wfIsPeriodDays);
     formData.append('wf_oos_period_days', wfOosPeriodDays);
+    formData.append('wf_store_top_n_trials', wfStoreTopNTrials);
     try {
       const data = await runWalkForwardRequest(formData, optimizationAbortController.signal);
 

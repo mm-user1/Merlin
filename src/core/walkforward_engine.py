@@ -2,7 +2,7 @@
 Walk-Forward Analysis Engine - Rolling WFA (Phase 2)
 """
 
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import Any, Dict, List, Optional, Tuple
 from copy import deepcopy
 import hashlib
@@ -43,6 +43,7 @@ class WFConfig:
     post_process: Optional[PostProcessConfig] = None
     dsr_config: Optional[DSRConfig] = None
     stress_test_config: Optional[StressTestConfig] = None
+    store_top_n_trials: int = 100
 
 
 @dataclass
@@ -88,6 +89,56 @@ class WindowResult:
     # Optional IS details
     is_best_trial_number: Optional[int] = None
     is_equity_curve: Optional[List[float]] = None
+
+    # P/C badges for selected trial
+    is_pareto_optimal: Optional[bool] = None
+    constraints_satisfied: Optional[bool] = None
+
+    # Source of selected params
+    best_params_source: str = "optuna_is"
+
+    # Available modules for this window
+    available_modules: List[str] = field(default_factory=list)
+
+    # Intermediate results for storage
+    optuna_is_trials: Optional[List[Dict[str, Any]]] = None
+    dsr_trials: Optional[List[Dict[str, Any]]] = None
+    forward_test_trials: Optional[List[Dict[str, Any]]] = None
+    stress_test_trials: Optional[List[Dict[str, Any]]] = None
+
+    # Module status and selection chain
+    module_status: Optional[Dict[str, Any]] = None
+    selection_chain: Optional[Dict[str, Any]] = None
+
+    # Optimization/FT slice dates for equity/trade generation
+    optimization_start: Optional[pd.Timestamp] = None
+    optimization_end: Optional[pd.Timestamp] = None
+    ft_start: Optional[pd.Timestamp] = None
+    ft_end: Optional[pd.Timestamp] = None
+
+    # Optional timestamps for IS equity curves
+    is_timestamps: Optional[List[pd.Timestamp]] = None
+
+    # Additional IS metrics
+    is_win_rate: Optional[float] = None
+    is_max_consecutive_losses: Optional[int] = None
+    is_romad: Optional[float] = None
+    is_sharpe_ratio: Optional[float] = None
+    is_profit_factor: Optional[float] = None
+    is_sqn: Optional[float] = None
+    is_ulcer_index: Optional[float] = None
+    is_consistency_score: Optional[float] = None
+    is_composite_score: Optional[float] = None
+
+    # Additional OOS metrics
+    oos_win_rate: Optional[float] = None
+    oos_max_consecutive_losses: Optional[int] = None
+    oos_romad: Optional[float] = None
+    oos_sharpe_ratio: Optional[float] = None
+    oos_profit_factor: Optional[float] = None
+    oos_sqn: Optional[float] = None
+    oos_ulcer_index: Optional[float] = None
+    oos_consistency_score: Optional[float] = None
 
 
 @dataclass
@@ -337,19 +388,38 @@ class WalkForwardEngine:
                 f"{window.is_start.date()} to {window.is_end.date()}"
             )
 
+            available_modules = ["optuna_is"]
+            module_status: Dict[str, Any] = {
+                "optuna_is": {"enabled": True, "ran": True, "reason": None}
+            }
+            selection_chain: Dict[str, Any] = {}
+
             ft_config = self.config.post_process
             optimization_start = window.is_start
             optimization_end = window.is_end
             training_end = None
+            ft_start = None
+            ft_end = None
 
             if ft_config and ft_config.enabled:
+                available_modules.append("forward_test")
+                module_status["forward_test"] = {
+                    "enabled": True,
+                    "ran": False,
+                    "reason": None,
+                }
                 is_days = (window.is_end - window.is_start).days
                 ft_days = int(ft_config.ft_period_days)
                 if ft_days > 0 and ft_days < is_days and self.csv_file_path:
                     training_end = window.is_end - pd.Timedelta(days=ft_days)
                     if training_end > window.is_start:
                         optimization_end = training_end
+                        ft_start = training_end
+                        ft_end = window.is_end
+                    else:
+                        module_status["forward_test"]["reason"] = "insufficient_is_period"
                 else:
+                    module_status["forward_test"]["reason"] = "insufficient_is_period_or_missing_csv"
                     logger.warning(
                         "Skipping FT for window %s: insufficient IS period or missing CSV path.",
                         window.window_id,
@@ -358,11 +428,34 @@ class WalkForwardEngine:
             optimization_results, optimization_all_results = self._run_optuna_on_window(
                 df, optimization_start, optimization_end
             )
-            best_result = optimization_results[0] if optimization_results else None
+            if not optimization_results:
+                raise ValueError(f"No optimization results for window {window.window_id}.")
+
+            best_result = optimization_results[0]
+            best_params_source = "optuna_is"
+
+            optuna_map: Dict[int, Any] = {}
+            for result in (optimization_all_results or optimization_results):
+                trial_num = getattr(result, "optuna_trial_number", None)
+                if trial_num is not None:
+                    optuna_map[int(trial_num)] = result
+
+            optuna_is_trials = self._convert_optuna_results_for_storage(
+                optimization_results, int(self.config.store_top_n_trials)
+            )
+            if optuna_is_trials:
+                optuna_is_trials[0]["is_selected"] = True
+                selection_chain["optuna_is"] = optuna_is_trials[0].get("trial_number")
+
+            is_pareto_optimal = getattr(best_result, "is_pareto_optimal", None)
+            constraints_satisfied = getattr(best_result, "constraints_satisfied", None)
 
             dsr_results = []
+            dsr_trials = None
             dsr_config = self.config.dsr_config
             if dsr_config and dsr_config.enabled and optimization_results:
+                available_modules.append("dsr")
+                module_status["dsr"] = {"enabled": True, "ran": False, "reason": None}
                 fixed_params = {
                     "dateFilter": True,
                     "start": optimization_start.isoformat(),
@@ -385,13 +478,26 @@ class WalkForwardEngine:
                         ),
                         df=df,
                     )
+                    module_status["dsr"]["ran"] = True
                 except Exception as exc:
+                    module_status["dsr"]["reason"] = str(exc)
                     logger.warning("DSR analysis failed for window %s: %s", window.window_id, exc)
 
+                dsr_trials = self._convert_dsr_results_for_storage(
+                    dsr_results, int(self.config.store_top_n_trials)
+                )
+
+                if dsr_trials:
+                    dsr_trials[0]["is_selected"] = True
+                    selection_chain["dsr"] = dsr_trials[0].get("trial_number")
                 if dsr_results:
                     best_result = dsr_results[0].original_result
+                    best_params_source = "dsr"
+                    is_pareto_optimal = getattr(best_result, "is_pareto_optimal", None)
+                    constraints_satisfied = getattr(best_result, "constraints_satisfied", None)
 
             ft_results = []
+            ft_trials = None
             if ft_config and ft_config.enabled and training_end and best_result:
                 worker_count = int(self.base_config_template.get("worker_processes", 1))
                 ft_candidates = optimization_results
@@ -408,12 +514,23 @@ class WalkForwardEngine:
                     ft_end_date=window.is_end.strftime("%Y-%m-%d"),
                     n_workers=worker_count,
                 )
+                module_status["forward_test"]["ran"] = True
                 if ft_results:
                     best_result = ft_results[0]
+                    best_params_source = "forward_test"
+                    selection_chain["forward_test"] = ft_results[0].trial_number
+                ft_trials = self._convert_ft_results_for_storage(
+                    ft_results, int(self.config.store_top_n_trials), optuna_map
+                )
+                if ft_trials:
+                    ft_trials[0]["is_selected"] = True
 
             st_results = []
+            st_trials = None
             st_config = self.config.stress_test_config
             if st_config and st_config.enabled and best_result:
+                available_modules.append("stress_test")
+                module_status["stress_test"] = {"enabled": True, "ran": False, "reason": None}
                 worker_count = int(self.base_config_template.get("worker_processes", 1))
                 fixed_params = {
                     "dateFilter": True,
@@ -446,24 +563,42 @@ class WalkForwardEngine:
                         config_json=strategy_config_json,
                         n_workers=worker_count,
                     )
+                    module_status["stress_test"]["ran"] = True
                 except Exception as exc:
+                    module_status["stress_test"]["reason"] = str(exc)
                     logger.warning("Stress test failed for window %s: %s", window.window_id, exc)
 
-                if st_results:
-                    candidate_map = {}
-                    for candidate in st_candidates:
-                        trial_num = getattr(candidate, "trial_number", None)
-                        if trial_num is None:
-                            trial_num = getattr(candidate, "optuna_trial_number", None)
-                        if trial_num is not None:
-                            candidate_map[int(trial_num)] = candidate
+                candidate_map: Dict[int, Any] = {}
+                trial_to_params: Dict[int, Dict[str, Any]] = {}
+                for candidate in st_candidates:
+                    trial_num = getattr(candidate, "trial_number", None)
+                    if trial_num is None:
+                        trial_num = getattr(candidate, "optuna_trial_number", None)
+                    if trial_num is None:
+                        continue
+                    trial_num = int(trial_num)
+                    candidate_map[trial_num] = candidate
+                    trial_to_params[trial_num] = getattr(candidate, "params", {}) or {}
 
+                if st_results:
                     selected = candidate_map.get(st_results[0].trial_number)
                     if selected is not None:
                         best_result = selected
+                        best_params_source = "stress_test"
+                        selection_chain["stress_test"] = st_results[0].trial_number
 
-            if not best_result:
-                raise ValueError(f"No optimization results for window {window.window_id}.")
+                st_trials = self._convert_st_results_for_storage(
+                    st_results, int(self.config.store_top_n_trials), trial_to_params, optuna_map
+                )
+                if st_trials:
+                    st_trials[0]["is_selected"] = True
+
+            if best_params_source in {"forward_test", "stress_test"}:
+                best_trial_number = getattr(best_result, "trial_number", None)
+                optuna_result = optuna_map.get(best_trial_number)
+                if optuna_result:
+                    is_pareto_optimal = getattr(optuna_result, "is_pareto_optimal", None)
+                    constraints_satisfied = getattr(optuna_result, "constraints_satisfied", None)
 
             best_params = self._result_to_params(best_result)
             param_id = self._create_param_id(best_params)
@@ -486,7 +621,8 @@ class WalkForwardEngine:
                 is_df_prepared, is_params, is_trade_start_idx
             )
 
-            is_metrics = metrics.calculate_basic(is_result, initial_balance=100.0)
+            is_basic = metrics.calculate_basic(is_result, initial_balance=100.0)
+            is_adv = metrics.calculate_advanced(is_result, initial_balance=100.0)
 
             print(
                 "OOS validation: dates "
@@ -506,9 +642,10 @@ class WalkForwardEngine:
                 oos_df_prepared, oos_params, oos_trade_start_idx
             )
 
-            oos_metrics = metrics.calculate_basic(oos_result, initial_balance=100.0)
+            oos_basic = metrics.calculate_basic(oos_result, initial_balance=100.0)
+            oos_adv = metrics.calculate_advanced(oos_result, initial_balance=100.0)
 
-            if oos_metrics.total_trades == 0:
+            if oos_basic.total_trades == 0:
                 print(
                     "Warning: Window "
                     f"{window.window_id} produced no OOS trades. "
@@ -524,17 +661,49 @@ class WalkForwardEngine:
                     oos_end=window.oos_end,
                     best_params=best_params,
                     param_id=param_id,
-                    is_net_profit_pct=is_metrics.net_profit_pct,
-                    is_max_drawdown_pct=is_metrics.max_drawdown_pct,
-                    is_total_trades=is_metrics.total_trades,
+                    is_net_profit_pct=is_basic.net_profit_pct,
+                    is_max_drawdown_pct=is_basic.max_drawdown_pct,
+                    is_total_trades=is_basic.total_trades,
                     is_best_trial_number=best_trial_number,
                     is_equity_curve=list(is_result.balance_curve or []),
-                    oos_net_profit_pct=oos_metrics.net_profit_pct,
-                    oos_max_drawdown_pct=oos_metrics.max_drawdown_pct,
-                    oos_total_trades=oos_metrics.total_trades,
+                    is_timestamps=list(is_result.timestamps or []),
+                    oos_net_profit_pct=oos_basic.net_profit_pct,
+                    oos_max_drawdown_pct=oos_basic.max_drawdown_pct,
+                    oos_total_trades=oos_basic.total_trades,
                     # Use realized balance curve so stitched net profit matches per-window net profit.
                     oos_equity_curve=list(oos_result.balance_curve or []),
                     oos_timestamps=list(oos_result.timestamps or []),
+                    is_pareto_optimal=is_pareto_optimal,
+                    constraints_satisfied=constraints_satisfied,
+                    best_params_source=best_params_source,
+                    available_modules=available_modules,
+                    optuna_is_trials=optuna_is_trials,
+                    dsr_trials=dsr_trials,
+                    forward_test_trials=ft_trials,
+                    stress_test_trials=st_trials,
+                    module_status=module_status,
+                    selection_chain=selection_chain,
+                    optimization_start=optimization_start,
+                    optimization_end=optimization_end,
+                    ft_start=ft_start,
+                    ft_end=ft_end,
+                    is_win_rate=is_basic.win_rate,
+                    is_max_consecutive_losses=is_basic.max_consecutive_losses,
+                    is_romad=is_adv.romad,
+                    is_sharpe_ratio=is_adv.sharpe_ratio,
+                    is_profit_factor=is_adv.profit_factor,
+                    is_sqn=is_adv.sqn,
+                    is_ulcer_index=is_adv.ulcer_index,
+                    is_consistency_score=is_adv.consistency_score,
+                    is_composite_score=getattr(best_result, "score", None),
+                    oos_win_rate=oos_basic.win_rate,
+                    oos_max_consecutive_losses=oos_basic.max_consecutive_losses,
+                    oos_romad=oos_adv.romad,
+                    oos_sharpe_ratio=oos_adv.sharpe_ratio,
+                    oos_profit_factor=oos_adv.profit_factor,
+                    oos_sqn=oos_adv.sqn,
+                    oos_ulcer_index=oos_adv.ulcer_index,
+                    oos_consistency_score=oos_adv.consistency_score,
                 )
             )
 
@@ -654,6 +823,195 @@ class WalkForwardEngine:
             timestamps=stitched_timestamps,
             window_ids=stitched_window_ids,
         )
+
+    def _convert_optuna_results_for_storage(
+        self, results: List[Any], limit: int
+    ) -> List[Dict[str, Any]]:
+        trials: List[Dict[str, Any]] = []
+        for index, result in enumerate(results[:limit]):
+            trial_number = getattr(result, "optuna_trial_number", None)
+            if trial_number is None:
+                trial_number = index
+
+            params = getattr(result, "params", {}) or {}
+            trials.append(
+                {
+                    "trial_number": trial_number,
+                    "params": params,
+                    "param_id": self._create_param_id(params),
+                    "source_rank": None,
+                    "module_rank": index + 1,
+                    "net_profit_pct": getattr(result, "net_profit_pct", None),
+                    "max_drawdown_pct": getattr(result, "max_drawdown_pct", None),
+                    "total_trades": getattr(result, "total_trades", None),
+                    "win_rate": getattr(result, "win_rate", None),
+                    "profit_factor": getattr(result, "profit_factor", None),
+                    "romad": getattr(result, "romad", None),
+                    "sharpe_ratio": getattr(result, "sharpe_ratio", None),
+                    "sortino_ratio": getattr(result, "sortino_ratio", None),
+                    "sqn": getattr(result, "sqn", None),
+                    "ulcer_index": getattr(result, "ulcer_index", None),
+                    "consistency_score": getattr(result, "consistency_score", None),
+                    "max_consecutive_losses": getattr(result, "max_consecutive_losses", None),
+                    "composite_score": getattr(result, "score", None),
+                    "objective_values": getattr(result, "objective_values", []) or [],
+                    "constraint_values": getattr(result, "constraint_values", []) or [],
+                    "constraints_satisfied": getattr(result, "constraints_satisfied", None),
+                    "is_pareto_optimal": getattr(result, "is_pareto_optimal", None),
+                    "dominance_rank": getattr(result, "dominance_rank", None),
+                }
+            )
+        return trials
+
+    def _convert_dsr_results_for_storage(
+        self, results: List[Any], limit: int
+    ) -> List[Dict[str, Any]]:
+        trials: List[Dict[str, Any]] = []
+        for result in results[:limit]:
+            original = getattr(result, "original_result", None)
+            params = getattr(result, "params", {}) or {}
+            trials.append(
+                {
+                    "trial_number": getattr(result, "trial_number", None),
+                    "params": params,
+                    "param_id": self._create_param_id(params),
+                    "source_rank": getattr(result, "optuna_rank", None),
+                    "module_rank": getattr(result, "dsr_rank", None),
+                    "net_profit_pct": getattr(original, "net_profit_pct", None),
+                    "max_drawdown_pct": getattr(original, "max_drawdown_pct", None),
+                    "total_trades": getattr(original, "total_trades", None),
+                    "win_rate": getattr(original, "win_rate", None),
+                    "profit_factor": getattr(original, "profit_factor", None),
+                    "romad": getattr(original, "romad", None),
+                    "sharpe_ratio": getattr(original, "sharpe_ratio", None),
+                    "sortino_ratio": getattr(original, "sortino_ratio", None),
+                    "sqn": getattr(original, "sqn", None),
+                    "ulcer_index": getattr(original, "ulcer_index", None),
+                    "consistency_score": getattr(original, "consistency_score", None),
+                    "max_consecutive_losses": getattr(original, "max_consecutive_losses", None),
+                    "composite_score": getattr(original, "score", None),
+                    "objective_values": getattr(original, "objective_values", []) or [],
+                    "constraint_values": getattr(original, "constraint_values", []) or [],
+                    "constraints_satisfied": getattr(original, "constraints_satisfied", None),
+                    "is_pareto_optimal": getattr(original, "is_pareto_optimal", None),
+                    "dominance_rank": getattr(original, "dominance_rank", None),
+                    "module_metrics": {
+                        "dsr_probability": getattr(result, "dsr_probability", None),
+                        "dsr_rank": getattr(result, "dsr_rank", None),
+                        "dsr_skewness": getattr(result, "dsr_skewness", None),
+                        "dsr_kurtosis": getattr(result, "dsr_kurtosis", None),
+                        "dsr_track_length": getattr(result, "dsr_track_length", None),
+                        "dsr_luck_share_pct": getattr(result, "dsr_luck_share_pct", None),
+                    },
+                }
+            )
+        return trials
+
+    def _convert_ft_results_for_storage(
+        self,
+        results: List[Any],
+        limit: int,
+        optuna_map: Dict[int, Any],
+    ) -> List[Dict[str, Any]]:
+        trials: List[Dict[str, Any]] = []
+        for result in results[:limit]:
+            params = getattr(result, "params", {}) or {}
+            trial_number = getattr(result, "trial_number", None)
+            optuna_result = optuna_map.get(trial_number)
+            trials.append(
+                {
+                    "trial_number": trial_number,
+                    "params": params,
+                    "param_id": self._create_param_id(params),
+                    "source_rank": getattr(result, "source_rank", None),
+                    "module_rank": getattr(result, "ft_rank", None),
+                    "net_profit_pct": getattr(result, "ft_net_profit_pct", None),
+                    "max_drawdown_pct": getattr(result, "ft_max_drawdown_pct", None),
+                    "total_trades": getattr(result, "ft_total_trades", None),
+                    "win_rate": getattr(result, "ft_win_rate", None),
+                    "profit_factor": getattr(result, "ft_profit_factor", None),
+                    "romad": getattr(result, "ft_romad", None),
+                    "sharpe_ratio": getattr(result, "ft_sharpe_ratio", None),
+                    "sortino_ratio": getattr(result, "ft_sortino_ratio", None),
+                    "sqn": getattr(result, "ft_sqn", None),
+                    "ulcer_index": getattr(result, "ft_ulcer_index", None),
+                    "consistency_score": getattr(result, "ft_consistency_score", None),
+                    "max_consecutive_losses": getattr(result, "ft_max_consecutive_losses", None),
+                    "composite_score": getattr(optuna_result, "score", None),
+                    "objective_values": getattr(optuna_result, "objective_values", []) or [],
+                    "constraint_values": getattr(optuna_result, "constraint_values", []) or [],
+                    "constraints_satisfied": getattr(optuna_result, "constraints_satisfied", None),
+                    "is_pareto_optimal": getattr(optuna_result, "is_pareto_optimal", None),
+                    "dominance_rank": getattr(optuna_result, "dominance_rank", None),
+                    "module_metrics": {
+                        "is_net_profit_pct": getattr(result, "is_net_profit_pct", None),
+                        "is_max_drawdown_pct": getattr(result, "is_max_drawdown_pct", None),
+                        "is_total_trades": getattr(result, "is_total_trades", None),
+                        "is_win_rate": getattr(result, "is_win_rate", None),
+                        "profit_degradation": getattr(result, "profit_degradation", None),
+                        "max_dd_change": getattr(result, "max_dd_change", None),
+                        "romad_change": getattr(result, "romad_change", None),
+                        "sharpe_change": getattr(result, "sharpe_change", None),
+                        "pf_change": getattr(result, "pf_change", None),
+                    },
+                }
+            )
+        return trials
+
+    def _convert_st_results_for_storage(
+        self,
+        results: List[Any],
+        limit: int,
+        trial_to_params: Dict[int, Dict[str, Any]],
+        optuna_map: Dict[int, Any],
+    ) -> List[Dict[str, Any]]:
+        trials: List[Dict[str, Any]] = []
+        for result in results[:limit]:
+            trial_number = getattr(result, "trial_number", None)
+            params = trial_to_params.get(trial_number) or {}
+            optuna_result = optuna_map.get(trial_number)
+            trials.append(
+                {
+                    "trial_number": trial_number,
+                    "params": params,
+                    "param_id": self._create_param_id(params),
+                    "source_rank": getattr(result, "source_rank", None),
+                    "module_rank": getattr(result, "st_rank", None),
+                    "net_profit_pct": getattr(result, "base_net_profit_pct", None),
+                    "max_drawdown_pct": getattr(result, "base_max_drawdown_pct", None),
+                    "total_trades": None,
+                    "win_rate": None,
+                    "profit_factor": None,
+                    "romad": getattr(result, "base_romad", None),
+                    "sharpe_ratio": getattr(result, "base_sharpe_ratio", None),
+                    "sortino_ratio": None,
+                    "sqn": None,
+                    "ulcer_index": None,
+                    "consistency_score": None,
+                    "max_consecutive_losses": None,
+                    "composite_score": getattr(optuna_result, "score", None),
+                    "objective_values": getattr(optuna_result, "objective_values", []) or [],
+                    "constraint_values": getattr(optuna_result, "constraint_values", []) or [],
+                    "constraints_satisfied": getattr(optuna_result, "constraints_satisfied", None),
+                    "is_pareto_optimal": getattr(optuna_result, "is_pareto_optimal", None),
+                    "dominance_rank": getattr(optuna_result, "dominance_rank", None),
+                    "status": getattr(result, "status", None),
+                    "module_metrics": {
+                        "profit_retention": getattr(result, "profit_retention", None),
+                        "romad_retention": getattr(result, "romad_retention", None),
+                        "profit_worst": getattr(result, "profit_worst", None),
+                        "profit_lower_tail": getattr(result, "profit_lower_tail", None),
+                        "profit_median": getattr(result, "profit_median", None),
+                        "romad_worst": getattr(result, "romad_worst", None),
+                        "romad_lower_tail": getattr(result, "romad_lower_tail", None),
+                        "romad_median": getattr(result, "romad_median", None),
+                        "profit_failure_rate": getattr(result, "profit_failure_rate", None),
+                        "romad_failure_rate": getattr(result, "romad_failure_rate", None),
+                        "combined_failure_rate": getattr(result, "combined_failure_rate", None),
+                    },
+                }
+            )
+        return trials
 
     def _run_optuna_on_window(
         self, df: pd.DataFrame, start_time: pd.Timestamp, end_time: pd.Timestamp

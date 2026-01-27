@@ -16,6 +16,9 @@ from core.walkforward_engine import (
     WalkForwardEngine,
     WindowResult,
 )
+from core.optuna_engine import OptimizationResult
+from core.post_process import DSRConfig, DSRResult
+from core.backtest_engine import StrategyResult
 from core.backtest_engine import load_data
 from strategies import get_strategy_config
 
@@ -235,6 +238,93 @@ def test_wfe_is_annualized():
     stitched = engine._build_stitched_oos_equity(windows)
 
     assert pytest.approx(stitched.wfe, rel=1e-3) == 120.0
+
+
+def test_store_top_n_trials_limit():
+    engine = WalkForwardEngine(WFConfig(strategy_id="s01_trailing_ma"), {}, {})
+    results = []
+    for i in range(5):
+        results.append(
+            OptimizationResult(
+                params={"maType": "EMA", "maLength": 10 + i, "closeCountLong": 7},
+                net_profit_pct=1.0 + i,
+                max_drawdown_pct=0.5,
+                total_trades=5,
+                optuna_trial_number=i,
+            )
+        )
+    stored = engine._convert_optuna_results_for_storage(results, limit=2)
+    assert len(stored) == 2
+    assert stored[0]["trial_number"] == 0
+
+
+def test_best_params_source_tracked(monkeypatch):
+    index = pd.date_range("2025-01-01", periods=40, freq="D", tz="UTC")
+    base_row = {"Open": 1.0, "High": 1.1, "Low": 0.9, "Close": 1.0, "Volume": 100}
+    df = pd.DataFrame([base_row for _ in range(len(index))], index=index)
+
+    optuna_result = OptimizationResult(
+        params={"maType": "EMA", "maLength": 20, "closeCountLong": 7},
+        net_profit_pct=5.0,
+        max_drawdown_pct=1.0,
+        total_trades=4,
+        optuna_trial_number=12,
+        constraints_satisfied=False,
+        is_pareto_optimal=True,
+    )
+
+    def fake_optuna(self, df_slice, start_time, end_time):  # noqa: ARG001
+        return [optuna_result], [optuna_result]
+
+    def fake_dsr(*args, **kwargs):  # noqa: ARG001
+        dsr = DSRResult(
+            trial_number=12,
+            optuna_rank=1,
+            params=optuna_result.params,
+            original_result=optuna_result,
+            dsr_probability=0.5,
+            dsr_rank=1,
+        )
+        return [dsr], {}
+
+    monkeypatch.setattr(WalkForwardEngine, "_run_optuna_on_window", fake_optuna)
+    monkeypatch.setattr("core.walkforward_engine.run_dsr_analysis", fake_dsr)
+
+    wf_config = WFConfig(
+        strategy_id="s01_trailing_ma",
+        is_period_days=10,
+        oos_period_days=5,
+        warmup_bars=5,
+        dsr_config=DSRConfig(enabled=True, top_k=1),
+    )
+    base_template = {
+        "fixed_params": {"dateFilter": False},
+        "risk_per_trade_pct": 2.0,
+        "contract_size": 0.01,
+        "commission_rate": 0.0005,
+        "worker_processes": 1,
+        "filter_min_profit": False,
+        "min_profit_threshold": 0.0,
+        "score_config": {},
+    }
+    engine = WalkForwardEngine(wf_config, base_template, {})
+
+    class FakeStrategy:
+        @staticmethod
+        def run(df_slice, params, trade_start_idx):  # noqa: ARG001
+            return StrategyResult(
+                trades=[],
+                equity_curve=[100.0],
+                balance_curve=[100.0],
+                timestamps=[df_slice.index[min(trade_start_idx, len(df_slice) - 1)]],
+            )
+
+    engine.strategy_class = FakeStrategy
+    result, _study_id = engine.run_wf_optimization(df)
+
+    assert result.windows[0].best_params_source == "dsr"
+    assert result.windows[0].is_pareto_optimal is True
+    assert result.windows[0].constraints_satisfied is False
 def test_walkforward_integration_with_sample_data(monkeypatch):
     data_path = Path(__file__).parent.parent / "data" / "raw" / "OKX_LINKUSDT.P, 15 2025.05.01-2025.11.20.csv"
     if not data_path.exists():

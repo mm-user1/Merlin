@@ -338,6 +338,7 @@ def _create_schema(conn: sqlite3.Connection) -> None:
         """
     )
     _ensure_columns(conn)
+    _ensure_wfa_schema_updated(conn)
 
 
 def _ensure_columns(conn: sqlite3.Connection) -> None:
@@ -414,6 +415,104 @@ def _ensure_columns(conn: sqlite3.Connection) -> None:
     ensure("trials", "oos_test_profit_degradation", "REAL")
     ensure("trials", "oos_test_source", "TEXT")
     ensure("trials", "oos_test_source_rank", "INTEGER")
+
+
+def _ensure_wfa_schema_updated(conn: sqlite3.Connection) -> None:
+    cur = conn.cursor()
+
+    cur.execute(
+        """
+        CREATE TABLE IF NOT EXISTS wfa_window_trials (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            window_id TEXT NOT NULL,
+            module_type TEXT NOT NULL,
+            trial_number INTEGER NOT NULL,
+            params_json TEXT NOT NULL,
+            param_id TEXT,
+            source_rank INTEGER,
+            module_rank INTEGER,
+            net_profit_pct REAL,
+            max_drawdown_pct REAL,
+            total_trades INTEGER,
+            win_rate REAL,
+            profit_factor REAL,
+            romad REAL,
+            sharpe_ratio REAL,
+            sortino_ratio REAL,
+            sqn REAL,
+            ulcer_index REAL,
+            consistency_score REAL,
+            max_consecutive_losses INTEGER,
+            composite_score REAL,
+            objective_values_json TEXT,
+            constraint_values_json TEXT,
+            constraints_satisfied INTEGER,
+            is_pareto_optimal INTEGER,
+            dominance_rank INTEGER,
+            status TEXT,
+            is_selected INTEGER DEFAULT 0,
+            module_metrics_json TEXT,
+            created_at TEXT DEFAULT (datetime('now')),
+            FOREIGN KEY (window_id) REFERENCES wfa_windows(window_id) ON DELETE CASCADE
+        );
+        """
+    )
+
+    cur.execute(
+        "CREATE INDEX IF NOT EXISTS idx_wfa_window_trials_window ON wfa_window_trials(window_id);"
+    )
+    cur.execute(
+        "CREATE INDEX IF NOT EXISTS idx_wfa_window_trials_module ON wfa_window_trials(window_id, module_type);"
+    )
+    cur.execute(
+        "CREATE INDEX IF NOT EXISTS idx_wfa_window_trials_trial ON wfa_window_trials(window_id, trial_number);"
+    )
+    cur.execute(
+        "CREATE INDEX IF NOT EXISTS idx_wfa_window_trials_selected ON wfa_window_trials(window_id, module_type, is_selected);"
+    )
+
+    cur.execute("PRAGMA table_info(wfa_windows);")
+    existing = {row[1] for row in cur.fetchall()}
+
+    def add_col(col_sql: str, col_name: str) -> None:
+        if col_name not in existing:
+            cur.execute(col_sql)
+
+    add_col("ALTER TABLE wfa_windows ADD COLUMN best_params_source TEXT;", "best_params_source")
+    add_col("ALTER TABLE wfa_windows ADD COLUMN available_modules TEXT;", "available_modules")
+    add_col("ALTER TABLE wfa_windows ADD COLUMN module_status_json TEXT;", "module_status_json")
+    add_col("ALTER TABLE wfa_windows ADD COLUMN selection_chain_json TEXT;", "selection_chain_json")
+    add_col("ALTER TABLE wfa_windows ADD COLUMN store_top_n_trials INTEGER;", "store_top_n_trials")
+    add_col("ALTER TABLE wfa_windows ADD COLUMN is_pareto_optimal INTEGER;", "is_pareto_optimal")
+    add_col("ALTER TABLE wfa_windows ADD COLUMN constraints_satisfied INTEGER;", "constraints_satisfied")
+
+    add_col("ALTER TABLE wfa_windows ADD COLUMN optimization_start_date TEXT;", "optimization_start_date")
+    add_col("ALTER TABLE wfa_windows ADD COLUMN optimization_end_date TEXT;", "optimization_end_date")
+    add_col("ALTER TABLE wfa_windows ADD COLUMN ft_start_date TEXT;", "ft_start_date")
+    add_col("ALTER TABLE wfa_windows ADD COLUMN ft_end_date TEXT;", "ft_end_date")
+    add_col("ALTER TABLE wfa_windows ADD COLUMN is_timestamps_json TEXT;", "is_timestamps_json")
+    add_col("ALTER TABLE wfa_windows ADD COLUMN oos_timestamps_json TEXT;", "oos_timestamps_json")
+
+    add_col("ALTER TABLE wfa_windows ADD COLUMN is_win_rate REAL;", "is_win_rate")
+    add_col("ALTER TABLE wfa_windows ADD COLUMN is_max_consecutive_losses INTEGER;", "is_max_consecutive_losses")
+    add_col("ALTER TABLE wfa_windows ADD COLUMN is_romad REAL;", "is_romad")
+    add_col("ALTER TABLE wfa_windows ADD COLUMN is_sharpe_ratio REAL;", "is_sharpe_ratio")
+    add_col("ALTER TABLE wfa_windows ADD COLUMN is_profit_factor REAL;", "is_profit_factor")
+    add_col("ALTER TABLE wfa_windows ADD COLUMN is_sqn REAL;", "is_sqn")
+    add_col("ALTER TABLE wfa_windows ADD COLUMN is_ulcer_index REAL;", "is_ulcer_index")
+    add_col("ALTER TABLE wfa_windows ADD COLUMN is_consistency_score REAL;", "is_consistency_score")
+    add_col("ALTER TABLE wfa_windows ADD COLUMN is_composite_score REAL;", "is_composite_score")
+
+    add_col("ALTER TABLE wfa_windows ADD COLUMN oos_win_rate REAL;", "oos_win_rate")
+    add_col("ALTER TABLE wfa_windows ADD COLUMN oos_max_consecutive_losses INTEGER;", "oos_max_consecutive_losses")
+    add_col("ALTER TABLE wfa_windows ADD COLUMN oos_romad REAL;", "oos_romad")
+    add_col("ALTER TABLE wfa_windows ADD COLUMN oos_sharpe_ratio REAL;", "oos_sharpe_ratio")
+    add_col("ALTER TABLE wfa_windows ADD COLUMN oos_profit_factor REAL;", "oos_profit_factor")
+    add_col("ALTER TABLE wfa_windows ADD COLUMN oos_sqn REAL;", "oos_sqn")
+    add_col("ALTER TABLE wfa_windows ADD COLUMN oos_ulcer_index REAL;", "oos_ulcer_index")
+    add_col("ALTER TABLE wfa_windows ADD COLUMN oos_consistency_score REAL;", "oos_consistency_score")
+
+    conn.commit()
 
 
 @contextmanager
@@ -646,6 +745,7 @@ def save_optuna_study_to_db(
     with get_db_connection() as conn:
         try:
             conn.execute("BEGIN TRANSACTION")
+            _ensure_wfa_schema_updated(conn)
             conn.execute(
                 """
                 INSERT INTO studies (
@@ -901,6 +1001,21 @@ def save_wfa_study_to_db(
                 ),
             )
 
+            def _tri_state(value: Optional[bool]) -> Optional[int]:
+                if value is None:
+                    return None
+                return 1 if value else 0
+
+            def _serialize_timestamps(values: Optional[List[Any]]) -> Optional[str]:
+                if not values:
+                    return None
+                return json.dumps(
+                    [
+                        value.isoformat() if hasattr(value, "isoformat") else value
+                        for value in values
+                    ]
+                )
+
             window_rows = []
             for window in wf_result.windows:
                 is_equity = (
@@ -913,6 +1028,9 @@ def save_wfa_study_to_db(
                     if window.oos_equity_curve
                     else None
                 )
+                oos_timestamps = _serialize_timestamps(getattr(window, "oos_timestamps", None))
+                is_timestamps = _serialize_timestamps(getattr(window, "is_timestamps", None))
+                available_modules = getattr(window, "available_modules", None)
                 window_rows.append(
                     (
                         f"{study_id}_w{window.window_id}",
@@ -920,6 +1038,22 @@ def save_wfa_study_to_db(
                         window.window_id,
                         json.dumps(window.best_params),
                         window.param_id,
+                        getattr(window, "best_params_source", None),
+                        _tri_state(getattr(window, "is_pareto_optimal", None)),
+                        _tri_state(getattr(window, "constraints_satisfied", None)),
+                        json.dumps(available_modules) if available_modules is not None else None,
+                        getattr(wf_result.config, "store_top_n_trials", None),
+                        json.dumps(getattr(window, "module_status", None))
+                        if getattr(window, "module_status", None) is not None
+                        else None,
+                        json.dumps(getattr(window, "selection_chain", None))
+                        if getattr(window, "selection_chain", None) is not None
+                        else None,
+                        _format_date(getattr(window, "optimization_start", None)),
+                        _format_date(getattr(window, "optimization_end", None)),
+                        _format_date(getattr(window, "ft_start", None)),
+                        _format_date(getattr(window, "ft_end", None)),
+                        is_timestamps,
                         _format_date(window.is_start),
                         _format_date(window.is_end),
                         window.is_net_profit_pct,
@@ -927,12 +1061,30 @@ def save_wfa_study_to_db(
                         window.is_total_trades,
                         getattr(window, "is_best_trial_number", None),
                         is_equity,
+                        getattr(window, "is_win_rate", None),
+                        getattr(window, "is_max_consecutive_losses", None),
+                        getattr(window, "is_romad", None),
+                        getattr(window, "is_sharpe_ratio", None),
+                        getattr(window, "is_profit_factor", None),
+                        getattr(window, "is_sqn", None),
+                        getattr(window, "is_ulcer_index", None),
+                        getattr(window, "is_consistency_score", None),
+                        getattr(window, "is_composite_score", None),
                         _format_date(window.oos_start),
                         _format_date(window.oos_end),
                         window.oos_net_profit_pct,
                         window.oos_max_drawdown_pct,
                         window.oos_total_trades,
                         oos_equity,
+                        oos_timestamps,
+                        getattr(window, "oos_win_rate", None),
+                        getattr(window, "oos_max_consecutive_losses", None),
+                        getattr(window, "oos_romad", None),
+                        getattr(window, "oos_sharpe_ratio", None),
+                        getattr(window, "oos_profit_factor", None),
+                        getattr(window, "oos_sqn", None),
+                        getattr(window, "oos_ulcer_index", None),
+                        getattr(window, "oos_consistency_score", None),
                         getattr(window, "wfe", None),
                     )
                 )
@@ -942,17 +1094,35 @@ def save_wfa_study_to_db(
                     """
                     INSERT INTO wfa_windows (
                         window_id, study_id, window_number,
-                        best_params_json, param_id,
+                        best_params_json, param_id, best_params_source,
+                        is_pareto_optimal, constraints_satisfied,
+                        available_modules, store_top_n_trials,
+                        module_status_json, selection_chain_json,
+                        optimization_start_date, optimization_end_date,
+                        ft_start_date, ft_end_date,
+                        is_timestamps_json,
                         is_start_date, is_end_date,
                         is_net_profit_pct, is_max_drawdown_pct, is_total_trades, is_best_trial_number,
                         is_equity_curve,
+                        is_win_rate, is_max_consecutive_losses, is_romad, is_sharpe_ratio,
+                        is_profit_factor, is_sqn, is_ulcer_index, is_consistency_score, is_composite_score,
                         oos_start_date, oos_end_date,
                         oos_net_profit_pct, oos_max_drawdown_pct, oos_total_trades,
-                        oos_equity_curve, wfe
-                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                        oos_equity_curve, oos_timestamps_json,
+                        oos_win_rate, oos_max_consecutive_losses, oos_romad, oos_sharpe_ratio,
+                        oos_profit_factor, oos_sqn, oos_ulcer_index, oos_consistency_score,
+                        wfe
+                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                     """,
                     window_rows,
                 )
+
+            for window in wf_result.windows:
+                window_key = f"{study_id}_w{window.window_id}"
+                _save_window_trials(conn, window_key, "optuna_is", window.optuna_is_trials)
+                _save_window_trials(conn, window_key, "dsr", window.dsr_trials)
+                _save_window_trials(conn, window_key, "forward_test", window.forward_test_trials)
+                _save_window_trials(conn, window_key, "stress_test", window.stress_test_trials)
 
             conn.execute("COMMIT")
         except Exception as exc:
@@ -960,6 +1130,145 @@ def save_wfa_study_to_db(
             raise RuntimeError(f"Failed to save WFA study to database: {exc}")
 
     return study_id
+
+
+def _save_window_trials(
+    conn: sqlite3.Connection,
+    window_id: str,
+    module_type: str,
+    trials: Optional[List[Dict[str, Any]]],
+) -> None:
+    if not trials:
+        return
+
+    def _tri_state(value: Optional[bool]) -> Optional[int]:
+        if value is None:
+            return None
+        return 1 if value else 0
+
+    rows = []
+    for trial in trials:
+        params = trial.get("params") or {}
+        rows.append(
+            (
+                window_id,
+                module_type,
+                trial.get("trial_number"),
+                json.dumps(params),
+                trial.get("param_id"),
+                trial.get("source_rank"),
+                trial.get("module_rank"),
+                trial.get("net_profit_pct"),
+                trial.get("max_drawdown_pct"),
+                trial.get("total_trades"),
+                trial.get("win_rate"),
+                trial.get("profit_factor"),
+                trial.get("romad"),
+                trial.get("sharpe_ratio"),
+                trial.get("sortino_ratio"),
+                trial.get("sqn"),
+                trial.get("ulcer_index"),
+                trial.get("consistency_score"),
+                trial.get("max_consecutive_losses"),
+                trial.get("composite_score"),
+                json.dumps(trial.get("objective_values") or []),
+                json.dumps(trial.get("constraint_values") or []),
+                _tri_state(trial.get("constraints_satisfied")),
+                _tri_state(trial.get("is_pareto_optimal")),
+                trial.get("dominance_rank"),
+                trial.get("status"),
+                1 if trial.get("is_selected") else 0,
+                json.dumps(trial.get("module_metrics") or {}),
+            )
+        )
+
+    conn.executemany(
+        """
+        INSERT INTO wfa_window_trials (
+            window_id, module_type, trial_number,
+            params_json, param_id,
+            source_rank, module_rank,
+            net_profit_pct, max_drawdown_pct, total_trades, win_rate, profit_factor,
+            romad, sharpe_ratio, sortino_ratio, sqn, ulcer_index, consistency_score,
+            max_consecutive_losses,
+            composite_score, objective_values_json, constraint_values_json,
+            constraints_satisfied, is_pareto_optimal, dominance_rank,
+            status, is_selected, module_metrics_json
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        """,
+        rows,
+    )
+
+
+def load_wfa_window_trials(window_id: str) -> Dict[str, List[Dict[str, Any]]]:
+    def _parse_json(value: Optional[str], default):
+        if not value:
+            return default
+        try:
+            return json.loads(value)
+        except json.JSONDecodeError:
+            return default
+
+    grouped: Dict[str, List[Dict[str, Any]]] = {}
+    with get_db_connection() as conn:
+        cursor = conn.execute(
+            """
+            SELECT
+                module_type,
+                trial_number,
+                params_json,
+                param_id,
+                source_rank,
+                module_rank,
+                net_profit_pct,
+                max_drawdown_pct,
+                total_trades,
+                win_rate,
+                profit_factor,
+                romad,
+                sharpe_ratio,
+                sortino_ratio,
+                sqn,
+                ulcer_index,
+                consistency_score,
+                max_consecutive_losses,
+                composite_score,
+                objective_values_json,
+                constraint_values_json,
+                constraints_satisfied,
+                is_pareto_optimal,
+                dominance_rank,
+                status,
+                is_selected,
+                module_metrics_json
+            FROM wfa_window_trials
+            WHERE window_id = ?
+            ORDER BY
+                CASE WHEN module_type IS NULL THEN 1 ELSE 0 END,
+                module_type ASC,
+                module_rank ASC,
+                source_rank ASC,
+                trial_number ASC
+            """,
+            (window_id,),
+        )
+        for row in cursor.fetchall():
+            trial = dict(row)
+            trial["params"] = _parse_json(trial.pop("params_json", None), {})
+            trial["objective_values"] = _parse_json(trial.pop("objective_values_json", None), [])
+            trial["constraint_values"] = _parse_json(trial.pop("constraint_values_json", None), [])
+            trial["module_metrics"] = _parse_json(trial.pop("module_metrics_json", None), {})
+            trial["constraints_satisfied"] = (
+                None if trial.get("constraints_satisfied") is None else bool(trial.get("constraints_satisfied"))
+            )
+            trial["is_pareto_optimal"] = (
+                None if trial.get("is_pareto_optimal") is None else bool(trial.get("is_pareto_optimal"))
+            )
+            trial["is_selected"] = bool(trial.get("is_selected"))
+            if trial.get("composite_score") is not None and trial.get("score") is None:
+                trial["score"] = trial.get("composite_score")
+            grouped.setdefault(trial.get("module_type") or "optuna_is", []).append(trial)
+    return grouped
 
 
 def list_studies() -> List[Dict]:
@@ -1110,6 +1419,35 @@ def load_study_from_db(study_id: str) -> Optional[Dict]:
                     window["oos_equity_curve"] = json.loads(window["oos_equity_curve"])
                 if window.get("is_equity_curve"):
                     window["is_equity_curve"] = json.loads(window["is_equity_curve"])
+                if window.get("available_modules"):
+                    try:
+                        window["available_modules"] = json.loads(window["available_modules"])
+                    except json.JSONDecodeError:
+                        pass
+                if window.get("module_status_json"):
+                    try:
+                        window["module_status"] = json.loads(window["module_status_json"])
+                    except json.JSONDecodeError:
+                        pass
+                if window.get("selection_chain_json"):
+                    try:
+                        window["selection_chain"] = json.loads(window["selection_chain_json"])
+                    except json.JSONDecodeError:
+                        pass
+                if window.get("is_timestamps_json"):
+                    try:
+                        window["is_timestamps"] = json.loads(window["is_timestamps_json"])
+                    except json.JSONDecodeError:
+                        pass
+                if window.get("oos_timestamps_json"):
+                    try:
+                        window["oos_timestamps"] = json.loads(window["oos_timestamps_json"])
+                    except json.JSONDecodeError:
+                        pass
+                if window.get("is_pareto_optimal") is not None:
+                    window["is_pareto_optimal"] = bool(window.get("is_pareto_optimal"))
+                if window.get("constraints_satisfied") is not None:
+                    window["constraints_satisfied"] = bool(window.get("constraints_satisfied"))
                 windows.append(window)
 
         cursor = conn.execute(

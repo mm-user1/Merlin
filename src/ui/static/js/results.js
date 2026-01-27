@@ -71,6 +71,10 @@ const ResultsState = {
   selectedStudies: []
 };
 
+if (typeof window !== 'undefined') {
+  window.ResultsState = ResultsState;
+}
+
 const OBJECTIVE_LABELS = {
   net_profit_pct: 'Net Profit %',
   max_drawdown_pct: 'Max DD %',
@@ -388,10 +392,14 @@ function setTableExpanded(expanded) {
 
 function setTableExpandVisibility() {
   const wrapper = document.querySelector('.table-expand');
+  const scroll = document.querySelector('.table-scroll');
   if (!wrapper) return;
   const show = ResultsState.mode !== 'wfa';
   wrapper.style.display = show ? 'flex' : 'none';
   if (!show) setTableExpanded(false);
+  if (scroll) {
+    scroll.classList.toggle('wfa-tall', ResultsState.mode === 'wfa');
+  }
 }
 
 function bindTableExpandToggle() {
@@ -2085,7 +2093,15 @@ function refreshResultsView() {
     setComparisonLine('');
     const summary = ResultsState.stitched_oos || ResultsState.summary || {};
     displaySummaryCards(summary);
-    renderWFATable(ResultsState.results || []);
+    if (window.WFAResultsUI) {
+      WFAResultsUI.resetState();
+      WFAResultsUI.renderWFAResultsTable(
+        ResultsState.results || [],
+        summary
+      );
+    } else {
+      renderWFATable(ResultsState.results || []);
+    }
     const boundaries = calculateWindowBoundaries(ResultsState.results || [], summary);
     renderEquityChart(summary.equity_curve || [], boundaries);
     renderWindowIndicators(ResultsState.summary?.total_windows || ResultsState.results?.length || 0);
@@ -2342,8 +2358,23 @@ function bindEventHandlers() {
         return;
       }
       let endpoint = null;
+      let requestOptions = { method: 'POST' };
       if (ResultsState.mode === 'wfa') {
-        endpoint = `/api/studies/${encodeURIComponent(ResultsState.studyId)}/wfa/trades`;
+        const selection = ResultsState.wfaSelection || {};
+        if (selection.windowNumber) {
+          endpoint = `/api/studies/${encodeURIComponent(ResultsState.studyId)}/wfa/windows/${selection.windowNumber}/trades`;
+          requestOptions = {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({
+              moduleType: selection.moduleType,
+              trialNumber: selection.trialNumber,
+              period: selection.period
+            })
+          };
+        } else {
+          endpoint = `/api/studies/${encodeURIComponent(ResultsState.studyId)}/wfa/trades`;
+        }
       } else {
         const activeTab = ResultsState.activeTab || 'optuna';
         if (activeTab === 'forward_test') {
@@ -2377,9 +2408,7 @@ function bindEventHandlers() {
         }
       }
       try {
-        const response = await fetch(endpoint, {
-          method: 'POST'
-        });
+        const response = await fetch(endpoint, requestOptions);
         if (!response.ok) {
           const message = await response.text();
           throw new Error(message || 'Trade export failed.');

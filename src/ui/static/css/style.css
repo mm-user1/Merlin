@@ -416,10 +416,144 @@
       border-color: #1e8a4c;
     }
 
-    .dot-fail {
-      background: #e74c3c;
-      border-color: #c0392b;
-    }
+.dot-fail {
+  background: #e74c3c;
+  border-color: #c0392b;
+}
+
+/* ============================================================================
+   WFA Results Table Styles
+   ============================================================================ */
+
+.wfa-section-header {
+  background: #e8f4fc;
+  font-weight: 600;
+}
+
+.wfa-stitched-row {
+  background: #f0f8ff;
+}
+
+.wfa-stitched-row:hover {
+  background: #e0f0ff;
+}
+
+.wfa-window-header {
+  background: #f5f5f5;
+  cursor: default;
+}
+
+.wfa-window-header td {
+  padding: 8px 12px;
+  border-top: 1px solid #ddd;
+  font-size: 13px;
+}
+
+.wfa-window-row {
+  background: #fff;
+}
+
+.wfa-window-row:hover {
+  background: #f8f8f8;
+}
+
+.wfa-window-expand.hidden {
+  display: none;
+}
+
+.wfa-window-expand > td {
+  padding: 0;
+}
+
+.col-expand {
+  width: 30px;
+  text-align: center;
+}
+
+.expand-toggle {
+  cursor: pointer;
+  font-size: 12px;
+  padding: 4px 8px;
+  color: #666;
+  user-select: none;
+}
+
+.expand-toggle:hover {
+  color: #333;
+  background: #eee;
+  border-radius: 3px;
+}
+
+.wfa-modules-container {
+  padding: 12px 16px;
+  border-top: 1px solid #e0e0e0;
+}
+
+.wfa-module-tabs {
+  display: flex;
+  gap: 4px;
+  margin-bottom: 12px;
+  border-bottom: 1px solid #ddd;
+  padding-bottom: 8px;
+}
+
+.wfa-tab-btn {
+  padding: 6px 16px;
+  border: 1px solid #bbbbbb;
+  background: #e8e8e8;
+  cursor: pointer;
+  font-size: 13px;
+  border-radius: 4px 4px 0 0;
+  transition: all 0.15s ease;
+  color: #2a2a2a;
+}
+
+.wfa-tab-btn:hover {
+  background: #dcdcdc;
+}
+
+.wfa-tab-btn.active {
+  background: #d4e9ff;
+  border-color: #4a90e2;
+  font-weight: 600;
+  color: #1e5ea8;
+}
+
+.wfa-tab-content {
+  min-height: 100px;
+}
+
+.wfa-module-table {
+  width: 100%;
+  font-size: 12px;
+  margin-top: 8px;
+}
+
+.wfa-module-table th,
+.wfa-module-table td {
+  padding: 6px 8px;
+}
+
+.loading-spinner {
+  text-align: center;
+  padding: 20px;
+  color: #666;
+}
+
+.no-data {
+  text-align: center;
+  padding: 20px;
+  color: #888;
+  font-style: italic;
+}
+
+.error {
+  color: #c53030;
+  padding: 12px;
+  background: #fff5f5;
+  border: 1px solid #feb2b2;
+  border-radius: 4px;
+}
 
     .date-input {
       width: 150px;
@@ -1631,6 +1765,10 @@
       max-height: 520px;
     }
 
+    .table-scroll.wfa-tall {
+      max-height: 560px;
+    }
+
     .table-expand {
       display: flex;
       justify-content: center;
@@ -1711,6 +1849,19 @@
     .data-table tr.selected {
       background: #d4e9ff;
       border-left: 3px solid #4a90e2;
+    }
+
+    .data-table tr.wfa-window-expand,
+    .data-table tr.wfa-window-expand:hover {
+      background: #ffffff;
+    }
+
+    .data-table tr.wfa-window-expand > td {
+      background: #ffffff;
+    }
+
+    .wfa-module-table tr:hover {
+      background: #e8f4ff;
     }
 
     .rank {
