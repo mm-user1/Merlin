@@ -754,7 +754,9 @@ def run_dsr_analysis(
         except Exception as exc:
             logger.warning("DSR re-run failed for trial %s: %s", idx, exc)
 
-        trial_number = getattr(optuna_result, "optuna_trial_number", None) or idx
+        trial_number = getattr(optuna_result, "optuna_trial_number", None)
+        if trial_number is None:
+            trial_number = idx
         analysis_results.append(
             DSRResult(
                 trial_number=int(trial_number),

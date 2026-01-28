@@ -310,6 +310,31 @@ function buildPeriodLabel(startDate, endDate) {
   return 'Period: N/A';
 }
 
+function getWfaStitchedPeriodLabel(windows) {
+  let minTime = null;
+  let maxTime = null;
+  let minLabel = '';
+  let maxLabel = '';
+  (windows || []).forEach((window) => {
+    const start = window?.oos_start_date;
+    const end = window?.oos_end_date;
+    const startTime = Date.parse(start);
+    const endTime = Date.parse(end);
+    if (Number.isFinite(startTime) && (minTime === null || startTime < minTime)) {
+      minTime = startTime;
+      minLabel = start || '';
+    }
+    if (Number.isFinite(endTime) && (maxTime === null || endTime > maxTime)) {
+      maxTime = endTime;
+      maxLabel = end || '';
+    }
+  });
+  if (minLabel && maxLabel) {
+    return buildPeriodLabel(minLabel, maxLabel);
+  }
+  return 'Period: N/A';
+}
+
 function getActivePeriodLabel() {
   if (ResultsState.activeTab === 'forward_test') {
     return buildPeriodLabel(ResultsState.forwardTest.startDate, ResultsState.forwardTest.endDate);
@@ -478,21 +503,34 @@ async function loadStudiesList() {
 
 function buildStitchedFromWindows(windows) {
   const stitched = [];
+  const stitchedTimestamps = [];
   const windowIds = [];
   let currentBalance = 100.0;
+  let timestampsValid = true;
 
   (windows || []).forEach((window, index) => {
     const equity = window.oos_equity_curve || [];
     if (!equity.length) return;
 
+    const timestamps = Array.isArray(window.oos_timestamps) ? window.oos_timestamps : [];
+    const hasTimestamps = timestamps.length >= equity.length;
+
     const startEquity = equity[0] || 100.0;
     const startIdx = index === 0 ? 0 : 1;
+    const windowId = window.window_number || window.window_id || index + 1;
 
     for (let i = startIdx; i < equity.length; i += 1) {
       const pctChange = (equity[i] / startEquity) - 1.0;
       const newBalance = currentBalance * (1.0 + pctChange);
       stitched.push(newBalance);
-      windowIds.push(window.window_number || window.window_id || index + 1);
+      windowIds.push(windowId);
+      if (timestampsValid) {
+        if (hasTimestamps) {
+          stitchedTimestamps.push(timestamps[i]);
+        } else {
+          timestampsValid = false;
+        }
+      }
     }
 
     if (stitched.length) {
@@ -500,7 +538,10 @@ function buildStitchedFromWindows(windows) {
     }
   });
 
-  return { equity_curve: stitched, window_ids: windowIds };
+  const timestamps = timestampsValid && stitchedTimestamps.length === stitched.length
+    ? stitchedTimestamps
+    : [];
+  return { equity_curve: stitched, window_ids: windowIds, timestamps };
 }
 
 function calculateSummaryFromEquity(equityCurve) {
@@ -535,6 +576,10 @@ async function applyStudyPayload(data) {
   ResultsState.dataPath = study.csv_file_path || ResultsState.dataPath;
 
   const config = study.config_json || {};
+  ResultsState.wfa = {
+    ...(ResultsState.wfa || {}),
+    postProcess: config.postProcess || {}
+  };
   ResultsState.fixedParams = config.fixed_params || ResultsState.fixedParams;
   ResultsState.dateFilter = Boolean(ResultsState.fixedParams.dateFilter ?? ResultsState.dateFilter);
   ResultsState.start = ResultsState.fixedParams.start || ResultsState.start;
@@ -648,7 +693,7 @@ async function applyStudyPayload(data) {
       wfe: study.best_value || 0,
       oos_win_rate: winRate,
       equity_curve: stitched.equity_curve,
-      timestamps: [],
+      timestamps: stitched.timestamps || [],
       window_ids: stitched.window_ids
     };
   }
@@ -667,6 +712,10 @@ async function applyStudyPayload(data) {
   }
 
   const optunaConfig = config.optuna_config || {};
+  const primaryObjective = study.primary_objective
+    ?? optunaConfig.primary_objective
+    ?? config.primary_objective
+    ?? null;
   const objectives = study.objectives || optunaConfig.objectives || study.objectives_json || [];
   const constraints = study.constraints || optunaConfig.constraints || study.constraints_json || [];
   const sanitizeEnabledRaw = optunaConfig.sanitize_enabled ?? study.sanitize_enabled;
@@ -696,7 +745,7 @@ async function applyStudyPayload(data) {
     : scoreThresholdRaw;
   ResultsState.optuna = {
     objectives,
-    primaryObjective: study.primary_objective || optunaConfig.primary_objective || null,
+    primaryObjective,
     constraints,
     budgetMode: optunaConfig.budget_mode || study.budget_mode || ResultsState.optuna.budgetMode,
     nTrials: optunaConfig.n_trials || study.n_trials || ResultsState.optuna.nTrials,
@@ -1836,23 +1885,25 @@ function renderEquityChart(equityData, windowBoundaries = null, timestamps = nul
       line.setAttribute('y1', 0);
       line.setAttribute('x2', x);
       line.setAttribute('y2', height);
-      line.setAttribute('stroke', '#e0e0e0');
-      line.setAttribute('stroke-width', '1');
-      line.setAttribute('stroke-dasharray', '4');
+      line.setAttribute('stroke', '#a9c9ff');
+      line.setAttribute('stroke-width', '2');
+      line.setAttribute('stroke-dasharray', '6 4');
       svg.appendChild(line);
 
-      const labelX = index < windowBoundaries.length - 1
-        ? (x + (windowBoundaries[index + 1].index / (equityData.length - 1)) * width) / 2
-        : x + 40;
+      if (boundary.windowId !== undefined && boundary.windowId !== null) {
+        const labelX = index < windowBoundaries.length - 1
+          ? (x + (windowBoundaries[index + 1].index / (equityData.length - 1)) * width) / 2
+          : x + 40;
 
-      const text = document.createElementNS('http://www.w3.org/2000/svg', 'text');
-      text.setAttribute('x', labelX);
-      text.setAttribute('y', 20);
-      text.setAttribute('font-size', '10');
-      text.setAttribute('fill', '#999');
-      text.setAttribute('text-anchor', 'middle');
-      text.textContent = `W${index + 1}`;
-      svg.appendChild(text);
+        const text = document.createElementNS('http://www.w3.org/2000/svg', 'text');
+        text.setAttribute('x', labelX);
+        text.setAttribute('y', 20);
+        text.setAttribute('font-size', '10');
+        text.setAttribute('fill', '#999');
+        text.setAttribute('text-anchor', 'middle');
+        text.textContent = `W${index + 1}`;
+        svg.appendChild(text);
+      }
     });
   }
 
@@ -2091,6 +2142,7 @@ function refreshResultsView() {
 
   if (ResultsState.mode === 'wfa') {
     setComparisonLine('');
+    updateTableHeader('Stitched OOS', '', getWfaStitchedPeriodLabel(ResultsState.results || []));
     const summary = ResultsState.stitched_oos || ResultsState.summary || {};
     displaySummaryCards(summary);
     if (window.WFAResultsUI) {
@@ -2103,7 +2155,7 @@ function refreshResultsView() {
       renderWFATable(ResultsState.results || []);
     }
     const boundaries = calculateWindowBoundaries(ResultsState.results || [], summary);
-    renderEquityChart(summary.equity_curve || [], boundaries);
+    renderEquityChart(summary.equity_curve || [], boundaries, summary.timestamps || []);
     renderWindowIndicators(ResultsState.summary?.total_windows || ResultsState.results?.length || 0);
   } else {
     setComparisonLine('');

@@ -7,7 +7,7 @@ import sqlite3
 import threading
 import time
 import uuid
-from datetime import datetime
+from datetime import datetime, timezone
 from contextlib import contextmanager
 from dataclasses import asdict
 from pathlib import Path
@@ -34,6 +34,10 @@ BASE_DIR = Path(__file__).resolve().parent.parent
 STORAGE_DIR = BASE_DIR / "storage"
 JOURNAL_DIR = STORAGE_DIR / "journals"
 DB_PATH = STORAGE_DIR / "studies.db"
+
+
+def _utc_now_iso() -> str:
+    return datetime.now(timezone.utc).isoformat().replace("+00:00", "Z")
 
 
 def init_database() -> None:
@@ -809,7 +813,7 @@ def save_optuna_study_to_db(
                     _format_date(ft_end_date),
                     is_period_days,
                     optimization_time_seconds,
-                    datetime.utcnow().isoformat() + "Z",
+                    _utc_now_iso(),
                     1 if getattr(config, "filter_min_profit", False) else 0,
                     getattr(config, "min_profit_threshold", None)
                     if getattr(config, "filter_min_profit", False)
@@ -936,9 +940,11 @@ def save_wfa_study_to_db(
         pass
 
     objectives = []
+    primary_objective = None
     constraints_payload: List[Dict[str, Any]] = []
     if isinstance(config, dict):
         objectives = list(config.get("objectives") or [])
+        primary_objective = config.get("primary_objective")
         constraints_payload = list(config.get("constraints") or [])
 
     with get_db_connection() as conn:
@@ -971,7 +977,7 @@ def save_wfa_study_to_db(
                     json.dumps(objectives) if objectives else None,
                     len(objectives) if objectives else 1,
                     None,
-                    None,
+                    primary_objective,
                     json.dumps(constraints_payload) if constraints_payload else None,
                     None,
                     None,
@@ -995,7 +1001,7 @@ def save_wfa_study_to_db(
                     _format_date(wf_result.trading_start_date),
                     _format_date(wf_result.trading_end_date),
                     wf_result.warmup_bars,
-                    datetime.utcnow().isoformat() + "Z",
+                    _utc_now_iso(),
                     1 if isinstance(config, dict) and config.get("filter_min_profit") else 0,
                     config.get("min_profit_threshold") if isinstance(config, dict) else None,
                 ),
@@ -1246,6 +1252,7 @@ def load_wfa_window_trials(window_id: str) -> Dict[str, List[Dict[str, Any]]]:
             ORDER BY
                 CASE WHEN module_type IS NULL THEN 1 ELSE 0 END,
                 module_type ASC,
+                (module_rank IS NULL) ASC,
                 module_rank ASC,
                 source_rank ASC,
                 trial_number ASC

@@ -80,9 +80,9 @@
     const objectiveSet = new Set(objectiveList);
     const hasConstraints = Boolean(flags && flags.hasConstraints);
     const isPareto = Boolean(trial.is_pareto_optimal);
-    const feasible = trial.constraints_satisfied !== undefined
-      ? Boolean(trial.constraints_satisfied)
-      : true;
+    const rawConstraint = trial.constraints_satisfied;
+    const hasConstraintValue = rawConstraint !== null && rawConstraint !== undefined;
+    const constraintState = hasConstraintValue ? Boolean(rawConstraint) : null;
 
     const paretoBadge = isPareto
       ? '<span class="dot dot-pareto"></span>'
@@ -90,9 +90,11 @@
 
     let constraintBadge = '';
     if (hasConstraints) {
-      constraintBadge = feasible
-        ? '<span class="dot dot-ok"></span>'
-        : '<span class="dot dot-fail"></span>';
+      if (constraintState === true) {
+        constraintBadge = '<span class="dot dot-ok"></span>';
+      } else if (constraintState === false) {
+        constraintBadge = '<span class="dot dot-fail"></span>';
+      }
     }
 
     const objectiveValues = Array.isArray(trial.objective_values) ? trial.objective_values : [];

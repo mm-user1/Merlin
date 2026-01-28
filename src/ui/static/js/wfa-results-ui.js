@@ -92,7 +92,7 @@
     const boundaries = typeof calculateWindowBoundaries === 'function'
       ? calculateWindowBoundaries(window.ResultsState?.results || [], stitched)
       : [];
-    renderEquityChart(stitched.equity_curve, boundaries);
+    renderEquityChart(stitched.equity_curve, boundaries, stitched.timestamps || []);
   }
 
   function setWfaSelection(selection) {
@@ -107,6 +107,41 @@
       if (node !== row) node.classList.remove('selected');
     });
     row.classList.add('selected');
+  }
+
+  function getWindowData(windowNumber) {
+    const windows = window.ResultsState?.results || [];
+    const target = Number(windowNumber);
+    if (!Number.isFinite(target)) return null;
+    return windows.find((item, idx) => {
+      const value = item?.window_number ?? item?.window_id ?? (idx + 1);
+      return Number(value) === target;
+    }) || null;
+  }
+
+  function findBoundaryIndex(timestamps, boundaryDate) {
+    if (!Array.isArray(timestamps) || !boundaryDate) return null;
+    const boundaryTime = Date.parse(boundaryDate);
+    if (!Number.isFinite(boundaryTime)) return null;
+    for (let i = 0; i < timestamps.length; i += 1) {
+      const t = Date.parse(timestamps[i]);
+      if (Number.isFinite(t) && t >= boundaryTime) {
+        return i;
+      }
+    }
+    return null;
+  }
+
+  function getIsOosBoundary(windowNumber, timestamps) {
+    if (!Array.isArray(timestamps) || timestamps.length < 2) return [];
+    const windowData = getWindowData(windowNumber);
+    if (!windowData) return [];
+    const boundaryDate = windowData.oos_start_date || windowData.is_end_date;
+    const index = findBoundaryIndex(timestamps, boundaryDate);
+    if (!Number.isFinite(index) || index <= 0 || index >= timestamps.length - 1) {
+      return [];
+    }
+    return [{ index }];
   }
 
   async function generateWindowEquity(windowNumber, period) {
@@ -126,7 +161,11 @@
 
       const data = await response.json();
       if (typeof renderEquityChart === 'function') {
-        renderEquityChart(data.equity_curve || [], [], data.timestamps || []);
+        const timestamps = data.timestamps || [];
+        const boundaries = period === 'both'
+          ? getIsOosBoundary(windowNumber, timestamps)
+          : [];
+        renderEquityChart(data.equity_curve || [], boundaries, timestamps);
       }
     } catch (error) {
       console.error('Error generating window equity:', error);
@@ -170,6 +209,165 @@
     }
   }
 
+  function formatWfaRankCell(rank, sourceRank) {
+    const baseRank = Number(rank);
+    if (!Number.isFinite(baseRank)) return '';
+    if (sourceRank === null || sourceRank === undefined) {
+      return typeof formatRankCell === 'function'
+        ? formatRankCell(baseRank, null)
+        : String(baseRank);
+    }
+    const source = Number(sourceRank);
+    const delta = Number.isFinite(source) ? source - baseRank : null;
+    if (typeof formatRankCell === 'function') {
+      return formatRankCell(baseRank, delta);
+    }
+    return String(baseRank);
+  }
+
+  function getRankDelta(trial) {
+    const baseRank = Number(trial?.module_rank);
+    const sourceRank = Number(trial?.source_rank);
+    if (!Number.isFinite(baseRank) || !Number.isFinite(sourceRank)) return null;
+    return sourceRank - baseRank;
+  }
+
+  function getModuleSourceLabel(windowNumber, moduleType) {
+    const cached = WFAState.windowTrials[windowNumber];
+    const modules = cached?.modules || {};
+    if (moduleType === 'forward_test') {
+      return (modules.dsr && modules.dsr.length) ? 'DSR' : 'Optuna';
+    }
+    if (moduleType === 'stress_test') {
+      if (modules.forward_test && modules.forward_test.length) return 'FT';
+      if (modules.dsr && modules.dsr.length) return 'DSR';
+      return 'Optuna';
+    }
+    return '';
+  }
+
+  function buildWfaComparisonLine(trial, moduleType, windowNumber) {
+    if (typeof formatSigned !== 'function') return '';
+    const metrics = trial?.module_metrics || {};
+    if (moduleType === 'dsr') {
+      const rankDelta = getRankDelta(trial);
+      const rankLine = rankDelta !== null ? `Rank: ${formatSigned(rankDelta, 0)}` : null;
+      const dsrValue = Number(metrics.dsr_probability);
+      const dsrLabel = Number.isFinite(dsrValue) ? dsrValue.toFixed(3) : 'N/A';
+      const luckValue = Number(metrics.dsr_luck_share_pct);
+      const luckLabel = Number.isFinite(luckValue) ? `${luckValue.toFixed(1)}%` : 'N/A';
+      return [rankLine, `DSR: ${dsrLabel}`, `Luck: ${luckLabel}`].filter(Boolean).join(' | ');
+    }
+    if (moduleType === 'forward_test') {
+      const rankDelta = getRankDelta(trial);
+      const sourceLabel = getModuleSourceLabel(windowNumber, moduleType) || 'Optuna';
+      const rankLine = rankDelta !== null
+        ? `Rank: ${formatSigned(rankDelta, 0)} (vs ${sourceLabel})`
+        : null;
+      const line = [
+        rankLine,
+        `Profit Deg: ${formatSigned(metrics.profit_degradation || 0, 2)}`,
+        `Max DD: ${formatSigned(metrics.max_dd_change || 0, 2, '%')}`,
+        `ROMAD: ${formatSigned(metrics.romad_change || 0, 2)}`,
+        `Sharpe: ${formatSigned(metrics.sharpe_change || 0, 2)}`,
+        `PF: ${formatSigned(metrics.pf_change || 0, 2)}`
+      ].filter(Boolean).join(' | ');
+      return line;
+    }
+    if (moduleType === 'stress_test') {
+      const status = trial?.status;
+      if (status === 'skipped_bad_base') {
+        const baseProfit = Number(trial?.net_profit_pct || 0);
+        return `Status: Bad Base (profit <= 0%) | Base Profit: ${baseProfit.toFixed(1)}%`;
+      }
+      if (status === 'insufficient_data') {
+        const totalPerturbations = Number(metrics.total_perturbations || 0);
+        const combinedFailures = Number(metrics.combined_failure_count || 0);
+        const validNeighbors = totalPerturbations - combinedFailures;
+        return `Status: Insufficient Data (${validNeighbors} valid neighbors, minimum 4 required) | Profit Ret: N/A | RoMaD Ret: N/A`;
+      }
+      if (status === 'skipped_no_params') {
+        return 'Status: No Testable Parameters (strategy has only categorical params)';
+      }
+      const rankDelta = getRankDelta(trial);
+      const sourceLabel = getModuleSourceLabel(windowNumber, moduleType) || 'Optuna';
+      const rankLine = rankDelta !== null
+        ? `Rank: ${formatSigned(rankDelta, 0)} (vs ${sourceLabel})`
+        : null;
+      const profitRet = metrics.profit_retention;
+      const profitRetLabel = profitRet !== null && profitRet !== undefined
+        ? `${(profitRet * 100).toFixed(1)}%`
+        : 'N/A';
+      const romadRet = metrics.romad_retention;
+      const romadRetLabel = romadRet !== null && romadRet !== undefined
+        ? `${(romadRet * 100).toFixed(1)}%`
+        : 'N/A';
+      const failRate = metrics.combined_failure_rate;
+      const failRateLabel = failRate !== null && failRate !== undefined
+        ? `${(failRate * 100).toFixed(1)}%`
+        : 'N/A';
+      const romadValid = metrics.romad_failure_rate !== null && metrics.romad_failure_rate !== undefined;
+      const failRateType = romadValid ? 'Fail' : 'Fail (profit)';
+      const sensParam = metrics.most_sensitive_param || null;
+      const sensLine = sensParam ? `Sens: ${sensParam}` : null;
+      return [
+        rankLine,
+        `Profit Ret: ${profitRetLabel}`,
+        `RoMaD Ret: ${romadRetLabel}`,
+        `${failRateType}: ${failRateLabel}`,
+        sensLine
+      ].filter(Boolean).join(' | ');
+    }
+    return '';
+  }
+
+  function getWfaModulePeriodLabel(windowData, moduleType) {
+    if (typeof buildPeriodLabel !== 'function') return 'Period: N/A';
+    if (!windowData) return 'Period: N/A';
+    if (moduleType === 'forward_test') {
+      return buildPeriodLabel(windowData.ft_start_date, windowData.ft_end_date);
+    }
+    const start = windowData.optimization_start_date || windowData.is_start_date;
+    const end = windowData.optimization_end_date || windowData.is_end_date;
+    return buildPeriodLabel(start, end);
+  }
+
+  function getWfaModuleSortSubtitle(moduleType) {
+    if (moduleType === 'optuna_is') {
+      return typeof getOptunaSortSubtitle === 'function' ? getOptunaSortSubtitle() : 'Sorted by objectives';
+    }
+    if (moduleType === 'dsr') {
+      return 'Sorted by DSR probability';
+    }
+    if (moduleType === 'forward_test') {
+      const sortMetric = window.ResultsState?.wfa?.postProcess?.sortMetric
+        || window.ResultsState?.forwardTest?.sortMetric
+        || 'profit_degradation';
+      const label = typeof formatSortMetricLabel === 'function'
+        ? formatSortMetricLabel(sortMetric)
+        : '';
+      return `Sorted by ${label || 'FT results'}`;
+    }
+    if (moduleType === 'stress_test') {
+      const sortMetric = window.ResultsState?.wfa?.postProcess?.stressTest?.sortMetric
+        || window.ResultsState?.stressTest?.sortMetric
+        || 'profit_retention';
+      const label = typeof formatSortMetricLabel === 'function'
+        ? formatSortMetricLabel(sortMetric)
+        : '';
+      return `Sorted by ${label || 'retention'}`;
+    }
+    return '';
+  }
+
+  function updateWfaTableHeader(windowData, moduleType) {
+    if (typeof updateTableHeader !== 'function') return;
+    const title = MODULE_LABELS[moduleType] || moduleType || '';
+    const periodLabel = getWfaModulePeriodLabel(windowData, moduleType);
+    const subtitle = getWfaModuleSortSubtitle(moduleType);
+    updateTableHeader(title, subtitle, periodLabel);
+  }
+
   function renderModuleTrialsTable(trials, moduleType, windowNumber) {
     if (!trials || !trials.length) {
       return '<div class="no-data">No trials available for this module.</div>';
@@ -178,13 +376,19 @@
     const { objectives, hasConstraints } = getOptunaMeta({ trials });
 
     const rows = trials.map((trial, idx) => {
+      const moduleRank = trial.module_rank || idx + 1;
+      const supportsRankDelta = moduleType === 'dsr'
+        || moduleType === 'forward_test'
+        || moduleType === 'stress_test';
+      const sourceRank = supportsRankDelta ? trial.source_rank : null;
+      const rankHtml = formatWfaRankCell(moduleRank, sourceRank);
       if (!window.OptunaResultsUI) {
         const netClass = Number(trial.net_profit_pct || 0) >= 0 ? 'val-positive' : 'val-negative';
         const ddClass = Number(trial.max_drawdown_pct || 0) >= 0 ? 'val-negative' : 'val-positive';
         const score = trial.composite_score ?? trial.score;
         return `
           <tr data-trial-number="${trial.trial_number}" data-module-type="${moduleType}" data-window-number="${windowNumber}">
-            <td>${trial.module_rank || idx + 1}</td>
+            <td>${rankHtml}</td>
             <td class="param-hash">${trial.param_id || '-'}</td>
             <td>${renderBadge('pareto', trial.is_pareto_optimal)}</td>
             ${hasConstraints ? `<td>${renderBadge('constraints', trial.constraints_satisfied)}</td>` : ''}
@@ -212,7 +416,7 @@
 
       const rankCell = row.querySelector('.rank');
       if (rankCell) {
-        rankCell.textContent = trial.module_rank || idx + 1;
+        rankCell.innerHTML = rankHtml;
       }
       const hashCell = row.querySelector('.param-hash');
       if (hashCell) {
@@ -275,22 +479,26 @@
 
     const trials = cached.modules[moduleType] || [];
     const contentContainer = document.getElementById(`wfa-tab-content-${windowNumber}`);
-    if (contentContainer) {
-      contentContainer.innerHTML = renderModuleTrialsTable(trials, moduleType, windowNumber);
-      contentContainer.querySelectorAll('tbody tr').forEach((row) => {
-        row.addEventListener('click', async () => {
-          selectRow(row);
-          const trialNumber = parseInt(row.dataset.trialNumber, 10);
-          const period = defaultPeriodForModule(moduleType);
-          const trial = trials.find((item) => Number(item.trial_number) === trialNumber);
-          if (trial) {
-            showParameterDetails({ ...trial, param_id: trial.param_id });
-          }
-          setWfaSelection({ windowNumber, moduleType, trialNumber, period });
-          await generateTrialEquity(windowNumber, moduleType, trialNumber, period);
+      if (contentContainer) {
+        contentContainer.innerHTML = renderModuleTrialsTable(trials, moduleType, windowNumber);
+        contentContainer.querySelectorAll('tbody tr').forEach((row) => {
+          row.addEventListener('click', async () => {
+            selectRow(row);
+            const trialNumber = parseInt(row.dataset.trialNumber, 10);
+            const period = defaultPeriodForModule(moduleType);
+            const trial = trials.find((item) => Number(item.trial_number) === trialNumber);
+            if (trial) {
+              showParameterDetails({ ...trial, param_id: trial.param_id });
+            }
+            if (typeof setComparisonLine === 'function') {
+              const line = trial ? buildWfaComparisonLine(trial, moduleType, windowNumber) : '';
+              setComparisonLine(line);
+            }
+            setWfaSelection({ windowNumber, moduleType, trialNumber, period });
+            await generateTrialEquity(windowNumber, moduleType, trialNumber, period);
+          });
         });
-      });
-    }
+      }
   }
 
   async function loadWindowTrials(windowNumber, windowId, availableModules) {
@@ -340,6 +548,10 @@
             container.querySelectorAll('.wfa-tab-btn').forEach((node) => {
               node.classList.toggle('active', node.dataset.module === moduleType);
             });
+            if (typeof setComparisonLine === 'function') {
+              setComparisonLine('');
+            }
+            updateWfaTableHeader(WFAState.windowTrials[windowNumber]?.window || {}, moduleType);
             renderActiveModuleTable(windowNumber, moduleType);
           });
         });
@@ -437,6 +649,12 @@
     stitchedRow.addEventListener('click', () => {
       selectRow(stitchedRow);
       setWfaSelection({ type: 'stitched' });
+      if (typeof setComparisonLine === 'function') {
+        setComparisonLine('');
+      }
+      if (typeof updateTableHeader === 'function' && typeof getWfaStitchedPeriodLabel === 'function') {
+        updateTableHeader('Stitched OOS', '', getWfaStitchedPeriodLabel(window.ResultsState?.results || []));
+      }
       displayStitchedEquity();
     });
     tbody.appendChild(stitchedRow);
@@ -456,6 +674,9 @@
       `;
       headerRow.addEventListener('click', () => {
         setWfaSelection({ windowNumber, period: 'both' });
+        if (typeof setComparisonLine === 'function') {
+          setComparisonLine('');
+        }
         generateWindowEquity(windowNumber, 'both');
       });
       tbody.appendChild(headerRow);
@@ -492,6 +713,9 @@
         selectRow(isRow);
         showParameterDetails(window);
         setWfaSelection({ windowNumber, period: 'is' });
+        if (typeof setComparisonLine === 'function') {
+          setComparisonLine('');
+        }
         await generateWindowEquity(windowNumber, 'is');
       });
       tbody.appendChild(isRow);
@@ -528,6 +752,9 @@
         selectRow(oosRow);
         showParameterDetails(window);
         setWfaSelection({ windowNumber, period: 'oos' });
+        if (typeof setComparisonLine === 'function') {
+          setComparisonLine('');
+        }
         await generateWindowEquity(windowNumber, 'oos');
       });
       tbody.appendChild(oosRow);

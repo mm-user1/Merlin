@@ -532,10 +532,12 @@ class WalkForwardEngine:
                 available_modules.append("stress_test")
                 module_status["stress_test"] = {"enabled": True, "ran": False, "reason": None}
                 worker_count = int(self.base_config_template.get("worker_processes", 1))
+                stress_start = optimization_start or window.is_start
+                stress_end = optimization_end or window.is_end
                 fixed_params = {
                     "dateFilter": True,
-                    "start": window.is_start.isoformat(),
-                    "end": window.is_end.isoformat(),
+                    "start": stress_start.isoformat(),
+                    "end": stress_end.isoformat(),
                 }
                 st_candidates: List[Any] = optimization_results
                 if ft_results:
@@ -557,8 +559,8 @@ class WalkForwardEngine:
                         strategy_id=self.config.strategy_id,
                         source_results=st_candidates,
                         config=st_config,
-                        is_start_date=window.is_start.isoformat(),
-                        is_end_date=window.is_end.isoformat(),
+                        is_start_date=stress_start.isoformat() if stress_start else None,
+                        is_end_date=stress_end.isoformat() if stress_end else None,
                         fixed_params=fixed_params,
                         config_json=strategy_config_json,
                         n_workers=worker_count,
@@ -977,18 +979,42 @@ class WalkForwardEngine:
                     "param_id": self._create_param_id(params),
                     "source_rank": getattr(result, "source_rank", None),
                     "module_rank": getattr(result, "st_rank", None),
-                    "net_profit_pct": getattr(result, "base_net_profit_pct", None),
-                    "max_drawdown_pct": getattr(result, "base_max_drawdown_pct", None),
-                    "total_trades": None,
-                    "win_rate": None,
-                    "profit_factor": None,
-                    "romad": getattr(result, "base_romad", None),
-                    "sharpe_ratio": getattr(result, "base_sharpe_ratio", None),
-                    "sortino_ratio": None,
-                    "sqn": None,
-                    "ulcer_index": None,
-                    "consistency_score": None,
-                    "max_consecutive_losses": None,
+                    "net_profit_pct": getattr(optuna_result, "net_profit_pct", None)
+                    if optuna_result is not None
+                    else getattr(result, "base_net_profit_pct", None),
+                    "max_drawdown_pct": getattr(optuna_result, "max_drawdown_pct", None)
+                    if optuna_result is not None
+                    else getattr(result, "base_max_drawdown_pct", None),
+                    "total_trades": getattr(optuna_result, "total_trades", None)
+                    if optuna_result is not None
+                    else None,
+                    "win_rate": getattr(optuna_result, "win_rate", None)
+                    if optuna_result is not None
+                    else None,
+                    "profit_factor": getattr(optuna_result, "profit_factor", None)
+                    if optuna_result is not None
+                    else None,
+                    "romad": getattr(optuna_result, "romad", None)
+                    if optuna_result is not None
+                    else getattr(result, "base_romad", None),
+                    "sharpe_ratio": getattr(optuna_result, "sharpe_ratio", None)
+                    if optuna_result is not None
+                    else getattr(result, "base_sharpe_ratio", None),
+                    "sortino_ratio": getattr(optuna_result, "sortino_ratio", None)
+                    if optuna_result is not None
+                    else None,
+                    "sqn": getattr(optuna_result, "sqn", None)
+                    if optuna_result is not None
+                    else None,
+                    "ulcer_index": getattr(optuna_result, "ulcer_index", None)
+                    if optuna_result is not None
+                    else None,
+                    "consistency_score": getattr(optuna_result, "consistency_score", None)
+                    if optuna_result is not None
+                    else None,
+                    "max_consecutive_losses": getattr(optuna_result, "max_consecutive_losses", None)
+                    if optuna_result is not None
+                    else None,
                     "composite_score": getattr(optuna_result, "score", None),
                     "objective_values": getattr(optuna_result, "objective_values", []) or [],
                     "constraint_values": getattr(optuna_result, "constraint_values", []) or [],
@@ -1005,12 +1031,15 @@ class WalkForwardEngine:
                         "romad_worst": getattr(result, "romad_worst", None),
                         "romad_lower_tail": getattr(result, "romad_lower_tail", None),
                         "romad_median": getattr(result, "romad_median", None),
-                        "profit_failure_rate": getattr(result, "profit_failure_rate", None),
-                        "romad_failure_rate": getattr(result, "romad_failure_rate", None),
-                        "combined_failure_rate": getattr(result, "combined_failure_rate", None),
-                    },
-                }
-            )
+                    "profit_failure_rate": getattr(result, "profit_failure_rate", None),
+                    "romad_failure_rate": getattr(result, "romad_failure_rate", None),
+                    "combined_failure_rate": getattr(result, "combined_failure_rate", None),
+                    "combined_failure_count": getattr(result, "combined_failure_count", None),
+                    "total_perturbations": getattr(result, "total_perturbations", None),
+                    "most_sensitive_param": getattr(result, "most_sensitive_param", None),
+                },
+            }
+        )
         return trials
 
     def _run_optuna_on_window(

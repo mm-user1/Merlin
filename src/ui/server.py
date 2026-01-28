@@ -6,7 +6,7 @@ import sys
 import tempfile
 import threading
 import time
-from datetime import datetime
+from datetime import datetime, timezone
 from http import HTTPStatus
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
@@ -74,10 +74,14 @@ LAST_OPTIMIZATION_STATE: Dict[str, Any] = {
 }
 
 
+def _utc_now_iso() -> str:
+    return datetime.now(timezone.utc).isoformat().replace("+00:00", "Z")
+
+
 def _set_optimization_state(payload: Dict[str, Any]) -> None:
     with OPTIMIZATION_STATE_LOCK:
         normalized = json.loads(json.dumps(payload))
-        normalized["updated_at"] = datetime.utcnow().isoformat() + "Z"
+        normalized["updated_at"] = _utc_now_iso()
         LAST_OPTIMIZATION_STATE.clear()
         LAST_OPTIMIZATION_STATE.update(normalized)
 
