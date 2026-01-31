@@ -67,15 +67,21 @@ src/
 |   |-- studies.db            # SQLite database (WAL mode)
 |   `-- journals/             # SQLite journal files
 `-- ui/                       # Web interface
-    |-- server.py             # Flask API
+    |-- server.py             # Thin entrypoint + app creation + route registration
+    |-- server_services.py    # Helpers/shared logic (no route decorators)
+    |-- server_routes_data.py # Pages + studies/tests/trades + presets + strategies endpoints
+    |-- server_routes_run.py  # Optimization status/cancel + optimize/walkforward/backtest
     |-- templates/
     |   |-- index.html        # Start page (configuration)
     |   `-- results.html      # Results page (studies browser)
     `-- static/
         |-- js/
-        |   |-- main.js       # Start page logic
-        |   |-- results.js    # Results page logic
-        |   `-- api.js        # API client
+        |   |-- main.js           # Start page logic
+        |   |-- results-state.js      # Results state + localStorage/sessionStorage + URL helpers
+        |   |-- results-format.js     # Results formatters + labels + MD5
+        |   |-- results-tables.js     # Results table/chart renderers + row selection
+        |   |-- results-controller.js # Results orchestration + API calls + event binding
+        |   `-- api.js            # API client
         `-- css/
 ```
 
@@ -256,7 +262,10 @@ python tools/generate_baseline_s01.py
 ### Frontend Architecture
 
 - **main.js**: Start page logic, form handling, optimization launch
-- **results.js**: Results page logic, studies browser, data visualization
+- **results-state.js**: Results page state management, localStorage/sessionStorage, URL query helpers
+- **results-format.js**: Results page formatters, labels, stableStringify, MD5 hashing
+- **results-tables.js**: Results page table/chart renderers, row selection, parameter details
+- **results-controller.js**: Results page orchestration, API calls, event binding, modals
 - **api.js**: Centralized API calls for both pages
 - **strategy-config.js**: Dynamic form generation from `config.json`
 - **ui-handlers.js**: Shared UI event handlers
@@ -264,9 +273,17 @@ python tools/generate_baseline_s01.py
 - **optuna-results-ui.js**: Optuna Results-page UI helpers (dynamic columns/badges)
 - **post-process-ui.js**: Post process UI helpers (Forward Test, DSR panels)
 - **oos-test-ui.js**: OOS test UI helpers
+- **wfa-results-ui.js**: WFA Results-page UI helpers
 - Forms generated dynamically from `config.json`
 - Strategy dropdown auto-populated from discovered strategies
 - No hardcoded parameters in frontend
+
+### Backend Architecture (server split)
+
+- **server.py**: Thin entrypoint, Flask app creation, route registration, test re-exports
+- **server_services.py**: All helper/utility functions (no route decorators), safe logging via `_get_logger()`
+- **server_routes_data.py**: Pages + studies/tests/trades + presets + strategies + WFA detail endpoints
+- **server_routes_run.py**: Optimization status/cancel + optimize/walkforward/backtest (run endpoints)
 
 ## API Endpoints Reference
 
@@ -330,8 +347,11 @@ python tools/generate_baseline_s01.py
 | Adding strategies | `docs/ADDING_NEW_STRATEGY.md` |
 | Database operations | `src/core/storage.py` |
 | Start page logic | `src/ui/static/js/main.js` |
-| Results page logic | `src/ui/static/js/results.js` |
-| Flask API endpoints | `src/ui/server.py` |
+| Results page logic | `src/ui/static/js/results-controller.js` (orchestration) |
+| Flask API entrypoint | `src/ui/server.py` |
+| Flask services/helpers | `src/ui/server_services.py` |
+| Flask data routes | `src/ui/server_routes_data.py` |
+| Flask run routes | `src/ui/server_routes_run.py` |
 | S04 example | `src/strategies/s04_stochrsi/strategy.py` |
 | config.json example | `src/strategies/s04_stochrsi/config.json` |
 | Test baseline | `data/baseline/` |

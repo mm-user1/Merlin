@@ -61,14 +61,20 @@ project-root/
     |   |-- studies.db         # SQLite database (WAL mode)
     |   `-- journals/          # SQLite journal files
     |-- ui/                   # Web interface
-    |   |-- server.py         # Flask HTTP API
+    |   |-- server.py             # Flask entrypoint + app creation + route registration
+    |   |-- server_services.py    # Helpers/shared logic (no route decorators)
+    |   |-- server_routes_data.py # Pages + studies/tests/trades + presets + strategies endpoints
+    |   |-- server_routes_run.py  # Optimization status/cancel + optimize/walkforward/backtest
     |   |-- templates/
     |   |   |-- index.html    # Start page (configuration)
     |   |   `-- results.html  # Results page (studies browser)
     |   `-- static/
     |       |-- js/           # Frontend JavaScript
-    |       |   |-- main.js   # Start page logic
-    |       |   |-- results.js # Results page logic
+    |       |   |-- main.js       # Start page logic
+    |       |   |-- results-state.js      # Results state + localStorage/sessionStorage
+    |       |   |-- results-format.js     # Results formatters + labels + MD5
+    |       |   |-- results-tables.js     # Results table/chart renderers
+    |       |   |-- results-controller.js # Results orchestration + API + events
     |       |   |-- api.js    # API client functions
     |       |   |-- strategy-config.js
     |       |   |-- ui-handlers.js
@@ -76,6 +82,7 @@ project-root/
     |       |   |-- optuna-results-ui.js # Optuna Results-page render helpers
     |       |   |-- post-process-ui.js   # Post process UI helpers
     |       |   |-- oos-test-ui.js       # OOS test UI helpers
+    |       |   |-- wfa-results-ui.js    # WFA Results-page UI helpers
     |       |   |-- presets.js
     |       |   `-- utils.js
     |       `-- css/
@@ -156,11 +163,20 @@ Strategies auto-discovered by `strategies/__init__.py` if both files exist.
 
 #### UI (`src/ui/`)
 
-- `server.py` - Flask API endpoints for backtest, optimization, studies management, presets
+**Backend (Flask):**
+- `server.py` - Thin entrypoint: Flask app creation, route registration, test re-exports
+- `server_services.py` - Helpers/shared logic (no route decorators), safe logging via `_get_logger()`
+- `server_routes_data.py` - Pages + studies/tests/trades + presets + strategies + WFA detail endpoints
+- `server_routes_run.py` - Optimization status/cancel + optimize/walkforward/backtest (run endpoints)
+
+**Frontend (JavaScript):**
 - `templates/index.html` - Start page: strategy configuration and optimization launch
 - `templates/results.html` - Results page: studies browser, trials/windows display, trade downloads
 - `static/js/main.js` - Start page logic and form handling
-- `static/js/results.js` - Results page logic and studies management
+- `static/js/results-state.js` - Results page state management, localStorage/sessionStorage, URL helpers
+- `static/js/results-format.js` - Results page formatters, labels, stableStringify, MD5 hashing
+- `static/js/results-tables.js` - Results page table/chart renderers, row selection, parameter details
+- `static/js/results-controller.js` - Results page orchestration, API calls, event binding, modals
 - `static/js/api.js` - API client functions for both pages
 - `static/css/style.css` - Light theme styling for both pages
 
