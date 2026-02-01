@@ -4,3 +4,4 @@ src/storage/*.db
 src/storage/*.db-wal
 src/storage/*.db-shm
 src/storage/journals/
+.DS_Store
