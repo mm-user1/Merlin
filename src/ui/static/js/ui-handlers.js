@@ -212,6 +212,10 @@ function toggleWFSettings() {
   if (!wfToggle || !wfSettings) {
     return;
   }
+  if (wfToggle.disabled) {
+    wfSettings.style.display = 'none';
+    return;
+  }
   wfSettings.style.display = wfToggle.checked ? 'block' : 'none';
 }
 
@@ -830,6 +834,12 @@ function buildOptunaConfig(state) {
     ? window.OptunaUI.collectSanitizeConfig()
     : { sanitize_enabled: true, sanitize_trades_threshold: 0 };
   const selectedObjectives = objectiveConfig.objectives || [];
+  const postProcessConfig = window.PostProcessUI
+    ? window.PostProcessUI.collectConfig()
+    : { enabled: false, ftPeriodDays: 30, topK: 20, sortMetric: 'profit_degradation' };
+  const oosTestConfig = window.OosTestUI
+    ? window.OosTestUI.collectConfig()
+    : { enabled: false, periodDays: 30, topK: 20 };
 
   return {
     ...baseConfig,
@@ -851,7 +861,9 @@ function buildOptunaConfig(state) {
     population_size: normalizedPopulation,
     crossover_prob: normalizedCrossover,
     mutation_prob: normalizedMutation,
-    swapping_prob: normalizedSwapping
+    swapping_prob: normalizedSwapping,
+    postProcess: postProcessConfig,
+    oosTest: oosTestConfig
   };
 }
 function clearWFResults() {
@@ -898,6 +910,7 @@ async function runWalkForward({ sources, state }) {
 
   const wfIsPeriodDays = document.getElementById('wfIsPeriodDays').value;
   const wfOosPeriodDays = document.getElementById('wfOosPeriodDays').value;
+  const wfStoreTopNTrials = document.getElementById('wfStoreTopNTrials')?.value || '100';
   const warmupValue = document.getElementById('warmupBars')?.value || '1000';
   const strategySummary = getStrategySummary();
 
@@ -927,7 +940,8 @@ async function runWalkForward({ sources, state }) {
     },
     wfa: {
       isPeriodDays: Number(wfIsPeriodDays),
-      oosPeriodDays: Number(wfOosPeriodDays)
+      oosPeriodDays: Number(wfOosPeriodDays),
+      storeTopNTrials: Number(wfStoreTopNTrials)
     },
     fixedParams: clonePreset(config.fixed_params || {}),
     strategyConfig: clonePreset(window.currentStrategyConfig || {})
@@ -972,6 +986,7 @@ async function runWalkForward({ sources, state }) {
     formData.append('config', JSON.stringify(config));
     formData.append('wf_is_period_days', wfIsPeriodDays);
     formData.append('wf_oos_period_days', wfOosPeriodDays);
+    formData.append('wf_store_top_n_trials', wfStoreTopNTrials);
     try {
       const data = await runWalkForwardRequest(formData, optimizationAbortController.signal);
 
@@ -1165,7 +1180,8 @@ async function submitOptimization(event) {
     return;
   }
 
-  const wfEnabled = Boolean(document.getElementById('enableWF')?.checked);
+  const wfToggle = document.getElementById('enableWF');
+  const wfEnabled = Boolean(wfToggle && wfToggle.checked && !wfToggle.disabled);
 
   if (!state.start || !state.end) {
     optimizerResultsEl.textContent = 'Please specify both start and end dates before optimization.';

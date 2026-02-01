@@ -593,6 +593,14 @@
                       </div>
                       <div class="constraint-row">
                         <label class="constraint-label">
+                          <input type="checkbox" class="constraint-checkbox" data-constraint-metric="max_consecutive_losses" />
+                          Max Consecutive Losses
+                        </label>
+                        <span class="constraint-operator">&le;</span>
+                        <input type="number" class="constraint-input" data-constraint-threshold="max_consecutive_losses" value="5" min="0" step="1" />
+                      </div>
+                      <div class="constraint-row">
+                        <label class="constraint-label">
                           <input type="checkbox" class="constraint-checkbox" data-constraint-metric="sqn" />
                           SQN
                         </label>
@@ -646,14 +654,114 @@
             <h2>Optimizer Run</h2>
           </div>
           <div class="content">
+            <div class="wf-section" style="margin-top: 0; margin-bottom: 16px; padding: 20px; border: 2px solid #3498db; border-radius: 8px; background-color: #f8f9fa;">
+              <h3 style="color: #3498db; margin-bottom: 12px;">Post Process</h3>
+
+              <div class="form-group vertical" style="align-items: flex-start;">
+                <label style="margin-bottom: 8px;">
+                  <input type="checkbox" id="enableDSR" />
+                  <strong>Enable DSR Analysis</strong>
+                </label>
+              </div>
+
+              <div class="form-group" id="dsrSettings" style="display: none;">
+                <label for="dsrTopK">Top Candidates:</label>
+                <input type="number" id="dsrTopK" value="20" min="1" max="10000" style="width: 100px;" />
+              </div>
+
+              <div class="form-group vertical" style="align-items: flex-start; margin-top: 10px;">
+                <label style="margin-bottom: 8px;">
+                  <input type="checkbox" id="enablePostProcess" />
+                  <strong>Enable Forward Test</strong>
+                </label>
+              </div>
+
+              <div id="ftSettings" style="display: none;">
+                <div class="form-group">
+                  <label for="ftPeriodDays">Test Period (days):</label>
+                  <input type="number" id="ftPeriodDays" value="30" min="1" max="3650" style="width: 100px;" />
+                </div>
+
+                <div class="form-group">
+                  <label for="ftTopK">Top Candidates:</label>
+                  <input type="number" id="ftTopK" value="20" min="1" max="10000" style="width: 100px;" />
+                </div>
+
+                <div class="form-group">
+                  <label for="ftSortMetric">Sort FT Results By:</label>
+                  <select id="ftSortMetric" style="width: 200px;">
+                    <option value="profit_degradation" selected>Profit Degradation</option>
+                    <option value="ft_romad">FT RoMaD</option>
+                  </select>
+                </div>
+              </div>
+
+              <div class="form-group vertical" style="align-items: flex-start; margin-top: 10px;">
+                <label style="margin-bottom: 8px;">
+                  <input type="checkbox" id="enableStressTest" />
+                  <strong>Enable Stress Test</strong>
+                </label>
+              </div>
+
+              <div id="stressTestSettings" style="display: none;">
+                <div class="form-group">
+                  <label for="stTopK">Top Candidates:</label>
+                  <input type="number" id="stTopK" value="5" min="1" max="100" style="width: 100px;" />
+                  <span style="font-size: 12px; color: #666; margin-left: 10px;">Number of candidates to stress test</span>
+                </div>
+
+                <div class="form-group">
+                  <label for="stFailureThreshold">Failure Threshold (%):</label>
+                  <input type="number" id="stFailureThreshold" value="70" min="0" max="100" step="5" style="width: 100px;" />
+                  <span style="font-size: 12px; color: #666; margin-left: 10px;">
+                    Perturbations below this % of base (profit OR RoMaD) = failed
+                  </span>
+                </div>
+
+                <div class="form-group">
+                  <label for="stSortMetric">Sort Results By:</label>
+                  <select id="stSortMetric" style="width: 200px;">
+                    <option value="profit_retention" selected>Profit Retention</option>
+                    <option value="romad_retention">RoMaD Retention</option>
+                  </select>
+                </div>
+              </div>
+            </div>
+
+            <div class="wf-section" style="margin-top: 0; margin-bottom: 16px; padding: 20px; border: 2px solid #3498db; border-radius: 8px; background-color: #f8f9fa;">
+              <h3 style="color: #3498db; margin-bottom: 12px;">OOS Test</h3>
+
+              <div class="form-group vertical" style="align-items: flex-start;">
+                <label style="margin-bottom: 8px;">
+                  <input type="checkbox" id="enableOosTest" />
+                  <strong id="oosEnableLabel">Enable Out-of-Sample Test</strong>
+                </label>
+                <p style="font-size: 12px; color: #666; margin: 0;">
+                  Runs an automatic holdout test on the final period after optimization.
+                </p>
+              </div>
+
+              <div id="oosTestSettings" style="display: none; margin-top: 12px;">
+                <div class="form-group">
+                  <label for="oosPeriodDays">OOS Period (days):</label>
+                  <input type="number" id="oosPeriodDays" value="30" min="1" max="3650" style="width: 100px;" />
+                </div>
+
+                <div class="form-group">
+                  <label for="oosTopK">Top Candidates:</label>
+                  <input type="number" id="oosTopK" value="20" min="1" max="10000" style="width: 100px;" />
+                </div>
+              </div>
+            </div>
+
             <!-- Walk-Forward Analysis Section -->
-            <div class="wf-section" style="margin-top: 0; padding: 20px; border: 2px solid #3498db; border-radius: 8px; background-color: #f8f9fa;">
-              <h3 style="color: #3498db; margin-bottom: 12px;">? Walk-Forward Analysis</h3>
+            <div class="wf-section" style="margin-top: 0; margin-bottom: 16px; padding: 20px; border: 2px solid #3498db; border-radius: 8px; background-color: #f8f9fa;">
+              <h3 style="color: #3498db; margin-bottom: 12px;">Walk-Forward Analysis</h3>
 
               <div class="form-group vertical" style="align-items: flex-start;">
                 <label style="margin-bottom: 8px;">
                   <input type="checkbox" id="enableWF" onchange="toggleWFSettings()" />
-                  <strong>Enable Walk-Forward Optimization</strong>
+                  <strong id="wfEnableLabel">Enable Walk-Forward Optimization</strong>
                 </label>
                 <p style="font-size: 12px; color: #666; margin: 0;">
                   Splits data into multiple training/testing windows to find robust parameters.
@@ -671,6 +779,12 @@
                   <label style="min-width: 150px;">Out-of-Sample (days):</label>
                   <input type="number" id="wfOosPeriodDays" value="30" min="15" max="3650" style="width: 100px;" />
                   <span style="font-size: 12px; color: #666; margin-left: 10px;">(Testing window length)</span>
+                </div>
+
+                <div class="form-group" style="margin-bottom: 12px;">
+                  <label style="min-width: 150px;">Store Top N Trials:</label>
+                  <input type="number" id="wfStoreTopNTrials" value="100" min="10" max="500" step="10" style="width: 100px;" />
+                  <span style="font-size: 12px; color: #666; margin-left: 10px;">(Per module per window)</span>
                 </div>
 
                 <div style="background-color: #e8f4f8; padding: 15px; border-radius: 5px;">
@@ -728,6 +842,8 @@
   <script src="/static/js/optuna-ui.js"></script>
   <script src="/static/js/ui-handlers.js"></script>
   <script src="/static/js/presets.js"></script>
+  <script src="/static/js/post-process-ui.js"></script>
+  <script src="/static/js/oos-test-ui.js"></script>
   <script src="/static/js/main.js"></script>
 </body>
 </html>

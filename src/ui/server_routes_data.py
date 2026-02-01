@@ -1,0 +1,1152 @@
+import io
+import json
+import math
+import re
+import tempfile
+import threading
+import time
+from datetime import datetime, timezone
+from http import HTTPStatus
+from pathlib import Path
+from typing import Any, Dict, List, Optional, Tuple
+
+import pandas as pd
+from flask import jsonify, render_template, request, send_file
+
+from core.backtest_engine import (
+    align_date_bounds,
+    load_data,
+    parse_timestamp_utc,
+    prepare_dataset_with_warmup,
+)
+from core.export import export_trades_csv
+from core.optuna_engine import (
+    CONSTRAINT_OPERATORS,
+    OBJECTIVE_DIRECTIONS,
+    OBJECTIVE_DISPLAY_NAMES,
+    OptimizationConfig,
+    OptimizationResult,
+    run_optimization,
+)
+from core.post_process import (
+    DSRConfig,
+    PostProcessConfig,
+    StressTestConfig,
+    calculate_period_dates,
+    calculate_is_period_days,
+    run_dsr_analysis,
+    run_forward_test,
+    run_stress_test,
+)
+from core.testing import run_period_test_for_trials, select_oos_source_candidates
+from core.storage import (
+    delete_manual_test,
+    delete_study,
+    get_study_trial,
+    list_manual_tests,
+    list_studies,
+    load_manual_test_results,
+    load_study_from_db,
+    load_wfa_window_trials,
+    save_dsr_results,
+    save_forward_test_results,
+    save_stress_test_results,
+    save_manual_test_to_db,
+    save_oos_test_results,
+    update_csv_path,
+    update_study_config_json,
+)
+
+try:
+    from .server_services import (
+        DEFAULT_PRESET_NAME,
+        _build_optimization_config,
+        _build_trial_metrics,
+        _find_wfa_window,
+        _get_optimization_state,
+        _get_parameter_types,
+        _json_safe,
+        _list_presets,
+        _load_preset,
+        _normalize_preset_payload,
+        _parse_csv_parameter_block,
+        _persist_csv_upload,
+        _preset_path,
+        _resolve_csv_path,
+        _resolve_strategy_id_from_request,
+        _resolve_wfa_period,
+        _run_equity_export,
+        _run_trade_export,
+        _send_trades_csv,
+        _set_optimization_state,
+        _validate_csv_for_study,
+        _validate_preset_name,
+        _validate_strategy_params,
+        _write_preset,
+        validate_constraints_config,
+        validate_objectives_config,
+        validate_sampler_config,
+    )
+except ImportError:
+    from server_services import (
+        DEFAULT_PRESET_NAME,
+        _build_optimization_config,
+        _build_trial_metrics,
+        _find_wfa_window,
+        _get_optimization_state,
+        _get_parameter_types,
+        _json_safe,
+        _list_presets,
+        _load_preset,
+        _normalize_preset_payload,
+        _parse_csv_parameter_block,
+        _persist_csv_upload,
+        _preset_path,
+        _resolve_csv_path,
+        _resolve_strategy_id_from_request,
+        _resolve_wfa_period,
+        _run_equity_export,
+        _run_trade_export,
+        _send_trades_csv,
+        _set_optimization_state,
+        _validate_csv_for_study,
+        _validate_preset_name,
+        _validate_strategy_params,
+        _write_preset,
+        validate_constraints_config,
+        validate_objectives_config,
+        validate_sampler_config,
+    )
+
+
+def register_routes(app):
+
+    @app.route("/")
+    def index() -> object:
+        return render_template("index.html")
+
+
+
+    @app.route("/results")
+    def results_page() -> object:
+        return render_template("results.html")
+
+
+
+    @app.get("/api/studies")
+    def list_studies_endpoint() -> object:
+        return jsonify({"studies": list_studies()})
+
+
+
+    @app.get("/api/studies/<string:study_id>")
+    def get_study_endpoint(study_id: str) -> object:
+        study_data = load_study_from_db(study_id)
+        if not study_data:
+            return jsonify({"error": "Study not found."}), HTTPStatus.NOT_FOUND
+        return jsonify(_json_safe(study_data))
+
+
+
+    @app.delete("/api/studies/<string:study_id>")
+    def delete_study_endpoint(study_id: str) -> object:
+        deleted = delete_study(study_id)
+        if not deleted:
+            return jsonify({"error": "Study not found."}), HTTPStatus.NOT_FOUND
+        return ("", HTTPStatus.NO_CONTENT)
+
+
+
+    @app.post("/api/studies/<string:study_id>/update-csv-path")
+    def update_study_csv_path_endpoint(study_id: str) -> object:
+        study_data = load_study_from_db(study_id)
+        if not study_data:
+            return jsonify({"error": "Study not found."}), HTTPStatus.NOT_FOUND
+
+        csv_file = request.files.get("file")
+        csv_path_raw = None
+        if request.is_json:
+            payload = request.get_json(silent=True) or {}
+            if isinstance(payload, dict):
+                csv_path_raw = payload.get("csvPath") or payload.get("csv_file_path")
+        if csv_path_raw is None:
+            csv_path_raw = request.form.get("csvPath")
+
+        if csv_file and csv_file.filename:
+            new_path = _persist_csv_upload(csv_file)
+        elif csv_path_raw:
+            try:
+                new_path = str(_resolve_csv_path(csv_path_raw))
+            except (FileNotFoundError, IsADirectoryError, ValueError, OSError) as exc:
+                return jsonify({"error": str(exc)}), HTTPStatus.BAD_REQUEST
+        else:
+            return jsonify({"error": "CSV file or path is required."}), HTTPStatus.BAD_REQUEST
+
+        is_valid, warnings, error = _validate_csv_for_study(new_path, study_data["study"])
+        if not is_valid:
+            return jsonify({"error": error or "CSV validation failed."}), HTTPStatus.BAD_REQUEST
+
+        updated = update_csv_path(study_id, new_path)
+        if not updated:
+            return jsonify({"error": "Failed to update CSV path."}), HTTPStatus.INTERNAL_SERVER_ERROR
+
+        return jsonify({"status": "updated", "warnings": warnings, "csv_file_path": new_path})
+
+
+    @app.post("/api/studies/<string:study_id>/test")
+    def run_manual_test_endpoint(study_id: str) -> object:
+        payload = request.get_json(silent=True) if request.is_json else None
+        if not isinstance(payload, dict):
+            return jsonify({"error": "Invalid manual test payload."}), HTTPStatus.BAD_REQUEST
+
+        data_source = payload.get("dataSource")
+        csv_path = payload.get("csvPath")
+        start_date = payload.get("startDate")
+        end_date = payload.get("endDate")
+        trial_numbers = payload.get("trialNumbers") or []
+        source_tab = payload.get("sourceTab")
+        test_name = payload.get("testName")
+
+        if data_source not in {"original_csv", "new_csv"}:
+            return jsonify({"error": "dataSource must be 'original_csv' or 'new_csv'."}), HTTPStatus.BAD_REQUEST
+        if source_tab not in {"optuna", "forward_test", "dsr", "stress_test"}:
+            return (
+                jsonify({"error": "sourceTab must be 'optuna', 'forward_test', 'dsr', or 'stress_test'."}),
+                HTTPStatus.BAD_REQUEST,
+            )
+        if not start_date or not end_date:
+            return jsonify({"error": "startDate and endDate are required."}), HTTPStatus.BAD_REQUEST
+        if not isinstance(trial_numbers, list) or not trial_numbers:
+            return jsonify({"error": "trialNumbers must be a non-empty array."}), HTTPStatus.BAD_REQUEST
+
+        study_data = load_study_from_db(study_id)
+        if not study_data:
+            return jsonify({"error": "Study not found."}), HTTPStatus.NOT_FOUND
+        study = study_data["study"]
+        if study.get("optimization_mode") != "optuna":
+            return jsonify({"error": "Manual tests are supported only for Optuna studies."}), HTTPStatus.BAD_REQUEST
+
+        if data_source == "original_csv":
+            csv_path = study.get("csv_file_path")
+            if not csv_path:
+                return jsonify({"error": "Original CSV path is missing."}), HTTPStatus.BAD_REQUEST
+        elif not csv_path:
+            return jsonify({"error": "csvPath is required when dataSource is 'new_csv'."}), HTTPStatus.BAD_REQUEST
+
+        if not csv_path or not Path(csv_path).exists():
+            return jsonify({"error": "CSV file not found."}), HTTPStatus.BAD_REQUEST
+
+        start_ts = parse_timestamp_utc(start_date)
+        end_ts = parse_timestamp_utc(end_date)
+        if start_ts is None or end_ts is None:
+            return jsonify({"error": "Invalid startDate/endDate."}), HTTPStatus.BAD_REQUEST
+
+        test_period_days = max(0, (end_ts - start_ts).days)
+        if test_period_days <= 0:
+            return jsonify({"error": "Test period must be at least 1 day."}), HTTPStatus.BAD_REQUEST
+
+        config = study.get("config_json") or {}
+        fixed_params = config.get("fixed_params") or {}
+        warmup_bars = study.get("warmup_bars") or config.get("warmup_bars") or 1000
+
+        trials = study_data.get("trials") or []
+        trial_map = {int(t.get("trial_number")): t for t in trials}
+        missing = [n for n in trial_numbers if int(n) not in trial_map]
+        if missing:
+            return jsonify({"error": f"Trials not found: {', '.join(map(str, missing))}."}), HTTPStatus.BAD_REQUEST
+
+        baseline_rank_map: Dict[int, int] = {}
+        if source_tab == "optuna":
+            for idx, trial in enumerate(trials, 1):
+                number = int(trial.get("trial_number") or 0)
+                if number:
+                    baseline_rank_map[number] = idx
+        elif source_tab == "forward_test":
+            for trial in trials:
+                number = int(trial.get("trial_number") or 0)
+                rank = trial.get("ft_rank")
+                if number and rank:
+                    baseline_rank_map[number] = int(rank)
+        elif source_tab == "dsr":
+            for trial in trials:
+                number = int(trial.get("trial_number") or 0)
+                rank = trial.get("dsr_rank")
+                if number and rank:
+                    baseline_rank_map[number] = int(rank)
+        else:
+            for trial in trials:
+                number = int(trial.get("trial_number") or 0)
+                rank = trial.get("st_rank")
+                if number and rank:
+                    baseline_rank_map[number] = int(rank)
+
+        if not baseline_rank_map:
+            for idx, trial in enumerate(trials, 1):
+                number = int(trial.get("trial_number") or 0)
+                if number:
+                    baseline_rank_map[number] = idx
+
+        try:
+            df = load_data(csv_path)
+        except Exception as exc:
+            return jsonify({"error": str(exc)}), HTTPStatus.BAD_REQUEST
+
+        aligned_start, aligned_end = align_date_bounds(df.index, start_date, end_date)
+        if aligned_start is None or aligned_end is None:
+            return jsonify({"error": "Invalid startDate/endDate."}), HTTPStatus.BAD_REQUEST
+        start_ts = aligned_start
+        end_ts = aligned_end
+        test_period_days = max(0, (end_ts - start_ts).days)
+        if test_period_days <= 0:
+            return jsonify({"error": "Test period must be at least 1 day."}), HTTPStatus.BAD_REQUEST
+
+        baseline_period_days = None
+        if source_tab == "forward_test":
+            baseline_period_days = study.get("ft_period_days")
+        if baseline_period_days is None:
+            baseline_period_days = study.get("is_period_days")
+        if baseline_period_days is None:
+            baseline_period_days = calculate_is_period_days(config) or 0
+
+        trials_to_test = [trial_map[int(number)] for number in trial_numbers]
+
+        def resolve_original_metrics(trial: Dict[str, Any]) -> Dict[str, Any]:
+            if source_tab == "forward_test":
+                return _build_trial_metrics(trial, prefix="ft_")
+            return _build_trial_metrics(trial)
+
+        try:
+            results_payload = run_period_test_for_trials(
+                df=df,
+                strategy_id=study.get("strategy_id"),
+                warmup_bars=int(warmup_bars),
+                fixed_params=fixed_params,
+                start_ts=start_ts,
+                end_ts=end_ts,
+                trials=trials_to_test,
+                baseline_period_days=int(baseline_period_days or 0),
+                test_period_days=int(test_period_days),
+                original_metrics_resolver=resolve_original_metrics,
+            )
+        except Exception as exc:
+            return jsonify({"error": str(exc)}), HTTPStatus.BAD_REQUEST
+
+        for idx, item in enumerate(results_payload, 1):
+            trial_number = item.get("trial_number")
+            baseline_rank = baseline_rank_map.get(trial_number)
+            if baseline_rank is not None:
+                item["comparison"]["rank_change"] = baseline_rank - idx
+            else:
+                item["comparison"]["rank_change"] = None
+
+        degradations = [item["comparison"].get("profit_degradation", 0.0) for item in results_payload]
+        best_deg = max(degradations) if degradations else None
+        worst_deg = min(degradations) if degradations else None
+
+        results_json = {
+            "config": {
+                "data_source": data_source,
+                "csv_path": csv_path,
+                "start_date": start_date,
+                "end_date": end_date,
+                "period_days": int(test_period_days),
+            },
+            "results": results_payload,
+        }
+
+        trials_tested_csv = ",".join(str(int(n)) for n in trial_numbers)
+        test_id = save_manual_test_to_db(
+            study_id=study_id,
+            test_name=test_name,
+            data_source=data_source,
+            csv_path=csv_path,
+            start_date=start_date,
+            end_date=end_date,
+            source_tab=source_tab,
+            trials_count=len(results_payload),
+            trials_tested_csv=trials_tested_csv,
+            best_profit_degradation=best_deg,
+            worst_profit_degradation=worst_deg,
+            results_json=results_json,
+        )
+
+        return jsonify(
+            {
+                "status": "success",
+                "test_id": test_id,
+                "summary": {
+                    "trials_count": len(results_payload),
+                    "best_profit_degradation": best_deg,
+                    "worst_profit_degradation": worst_deg,
+                },
+            }
+        )
+
+
+
+    @app.get("/api/studies/<string:study_id>/tests")
+    def list_manual_tests_endpoint(study_id: str) -> object:
+        if not study_id:
+            return jsonify({"error": "Study ID is required."}), HTTPStatus.BAD_REQUEST
+        return jsonify({"tests": list_manual_tests(study_id)})
+
+
+
+    @app.get("/api/studies/<string:study_id>/tests/<int:test_id>")
+    def get_manual_test_results_endpoint(study_id: str, test_id: int) -> object:
+        result = load_manual_test_results(study_id, test_id)
+        if not result:
+            return jsonify({"error": "Manual test not found."}), HTTPStatus.NOT_FOUND
+        return jsonify(result)
+
+
+
+    @app.delete("/api/studies/<string:study_id>/tests/<int:test_id>")
+    def delete_manual_test_endpoint(study_id: str, test_id: int) -> object:
+        deleted = delete_manual_test(study_id, test_id)
+        if not deleted:
+            return jsonify({"error": "Manual test not found."}), HTTPStatus.NOT_FOUND
+        return ("", HTTPStatus.NO_CONTENT)
+
+
+
+    @app.post("/api/studies/<string:study_id>/trials/<int:trial_number>/trades")
+    def download_trial_trades(study_id: str, trial_number: int) -> object:
+        study_data = load_study_from_db(study_id)
+        if not study_data:
+            return jsonify({"error": "Study not found."}), HTTPStatus.NOT_FOUND
+
+        study = study_data["study"]
+        if study.get("optimization_mode") != "optuna":
+            return jsonify({"error": "Trade export is only supported for Optuna studies."}), HTTPStatus.BAD_REQUEST
+
+        csv_path = study.get("csv_file_path")
+        if not csv_path or not Path(csv_path).exists():
+            return jsonify({"error": "CSV file is missing for this study."}), HTTPStatus.BAD_REQUEST
+
+        trial = get_study_trial(study_id, trial_number)
+        if not trial:
+            return jsonify({"error": "Trial not found."}), HTTPStatus.NOT_FOUND
+
+        config = study.get("config_json") or {}
+        fixed_params = config.get("fixed_params") or {}
+
+        params = {**fixed_params, **(trial.get("params") or {})}
+        warmup_bars = study.get("warmup_bars") or config.get("warmup_bars") or 1000
+
+        trades, error = _run_trade_export(
+            strategy_id=study.get("strategy_id"),
+            csv_path=csv_path,
+            params=params,
+            warmup_bars=warmup_bars,
+        )
+        if error:
+            return jsonify({"error": error}), HTTPStatus.BAD_REQUEST
+
+        filename = f"{study.get('study_name', 'study')}_trial_{trial_number}_trades.csv"
+        return _send_trades_csv(
+            trades=trades or [],
+            csv_path=csv_path,
+            study=study,
+            filename=filename,
+        )
+
+
+
+    @app.post("/api/studies/<string:study_id>/trials/<int:trial_number>/ft-trades")
+    def download_forward_test_trades(study_id: str, trial_number: int) -> object:
+        study_data = load_study_from_db(study_id)
+        if not study_data:
+            return jsonify({"error": "Study not found."}), HTTPStatus.NOT_FOUND
+
+        study = study_data["study"]
+        if study.get("optimization_mode") != "optuna":
+            return jsonify({"error": "Trade export is only supported for Optuna studies."}), HTTPStatus.BAD_REQUEST
+        if not study.get("ft_enabled"):
+            return jsonify({"error": "Forward test is not enabled for this study."}), HTTPStatus.BAD_REQUEST
+
+        csv_path = study.get("csv_file_path")
+        if not csv_path or not Path(csv_path).exists():
+            return jsonify({"error": "CSV file is missing for this study."}), HTTPStatus.BAD_REQUEST
+
+        trial = get_study_trial(study_id, trial_number)
+        if not trial:
+            return jsonify({"error": "Trial not found."}), HTTPStatus.NOT_FOUND
+
+        ft_start = study.get("ft_start_date")
+        ft_end = study.get("ft_end_date")
+        if not ft_start or not ft_end:
+            return jsonify({"error": "Forward test date range is missing."}), HTTPStatus.BAD_REQUEST
+
+        config = study.get("config_json") or {}
+        fixed_params = config.get("fixed_params") or {}
+        params = {**fixed_params, **(trial.get("params") or {})}
+        params["dateFilter"] = True
+        params["start"] = ft_start
+        params["end"] = ft_end
+
+        warmup_bars = study.get("warmup_bars") or config.get("warmup_bars") or 1000
+
+        trades, error = _run_trade_export(
+            strategy_id=study.get("strategy_id"),
+            csv_path=csv_path,
+            params=params,
+            warmup_bars=warmup_bars,
+        )
+        if error:
+            return jsonify({"error": error}), HTTPStatus.BAD_REQUEST
+
+        filename = f"{study.get('study_name', 'study')}_trial_{trial_number}_ft_trades.csv"
+        return _send_trades_csv(
+            trades=trades or [],
+            csv_path=csv_path,
+            study=study,
+            filename=filename,
+        )
+
+
+
+    @app.post("/api/studies/<string:study_id>/trials/<int:trial_number>/oos-trades")
+    def download_oos_test_trades(study_id: str, trial_number: int) -> object:
+        study_data = load_study_from_db(study_id)
+        if not study_data:
+            return jsonify({"error": "Study not found."}), HTTPStatus.NOT_FOUND
+
+        study = study_data["study"]
+        if study.get("optimization_mode") != "optuna":
+            return jsonify({"error": "Trade export is only supported for Optuna studies."}), HTTPStatus.BAD_REQUEST
+        if not study.get("oos_test_enabled"):
+            return jsonify({"error": "OOS Test is not enabled for this study."}), HTTPStatus.BAD_REQUEST
+
+        csv_path = study.get("csv_file_path")
+        if not csv_path or not Path(csv_path).exists():
+            return jsonify({"error": "CSV file is missing for this study."}), HTTPStatus.BAD_REQUEST
+
+        trial = get_study_trial(study_id, trial_number)
+        if not trial:
+            return jsonify({"error": "Trial not found."}), HTTPStatus.NOT_FOUND
+
+        oos_start = study.get("oos_test_start_date")
+        oos_end = study.get("oos_test_end_date")
+        if not oos_start or not oos_end:
+            return jsonify({"error": "OOS Test date range is missing."}), HTTPStatus.BAD_REQUEST
+
+        config = study.get("config_json") or {}
+        fixed_params = config.get("fixed_params") or {}
+        params = {**fixed_params, **(trial.get("params") or {})}
+        params["dateFilter"] = True
+        params["start"] = oos_start
+        params["end"] = oos_end
+
+        warmup_bars = study.get("warmup_bars") or config.get("warmup_bars") or 1000
+
+        trades, error = _run_trade_export(
+            strategy_id=study.get("strategy_id"),
+            csv_path=csv_path,
+            params=params,
+            warmup_bars=warmup_bars,
+        )
+        if error:
+            return jsonify({"error": error}), HTTPStatus.BAD_REQUEST
+
+        filename = f"{study.get('study_name', 'study')}_trial_{trial_number}_oos_trades.csv"
+        return _send_trades_csv(
+            trades=trades or [],
+            csv_path=csv_path,
+            study=study,
+            filename=filename,
+        )
+
+
+
+    @app.post("/api/studies/<string:study_id>/tests/<int:test_id>/trials/<int:trial_number>/mt-trades")
+    def download_manual_test_trades(study_id: str, test_id: int, trial_number: int) -> object:
+        study_data = load_study_from_db(study_id)
+        if not study_data:
+            return jsonify({"error": "Study not found."}), HTTPStatus.NOT_FOUND
+
+        study = study_data["study"]
+        if study.get("optimization_mode") != "optuna":
+            return jsonify({"error": "Manual trade export is only supported for Optuna studies."}), HTTPStatus.BAD_REQUEST
+
+        test = load_manual_test_results(study_id, test_id)
+        if not test:
+            return jsonify({"error": "Manual test not found."}), HTTPStatus.NOT_FOUND
+
+        csv_path = test.get("csv_path")
+        if not csv_path and test.get("data_source") == "original_csv":
+            csv_path = study.get("csv_file_path")
+        if not csv_path or not Path(csv_path).exists():
+            return jsonify({"error": "CSV file is missing for this manual test."}), HTTPStatus.BAD_REQUEST
+
+        trial = get_study_trial(study_id, trial_number)
+        if not trial:
+            return jsonify({"error": "Trial not found."}), HTTPStatus.NOT_FOUND
+        trials_tested_csv = test.get("trials_tested_csv") or ""
+        if trials_tested_csv:
+            try:
+                tested = {int(item.strip()) for item in trials_tested_csv.split(",") if item.strip()}
+            except ValueError:
+                tested = set()
+            if tested and int(trial_number) not in tested:
+                return jsonify({"error": "Trial not included in this manual test."}), HTTPStatus.BAD_REQUEST
+
+        start_date = test.get("start_date")
+        end_date = test.get("end_date")
+        if not start_date or not end_date:
+            return jsonify({"error": "Manual test date range is missing."}), HTTPStatus.BAD_REQUEST
+
+        config = study.get("config_json") or {}
+        fixed_params = config.get("fixed_params") or {}
+        params = {**fixed_params, **(trial.get("params") or {})}
+        params["dateFilter"] = True
+        params["start"] = start_date
+        params["end"] = end_date
+
+        warmup_bars = study.get("warmup_bars") or config.get("warmup_bars") or 1000
+
+        trades, error = _run_trade_export(
+            strategy_id=study.get("strategy_id"),
+            csv_path=csv_path,
+            params=params,
+            warmup_bars=warmup_bars,
+        )
+        if error:
+            return jsonify({"error": error}), HTTPStatus.BAD_REQUEST
+
+        filename = f"{study.get('study_name', 'study')}_test_{test_id}_trial_{trial_number}_mt_trades.csv"
+        return _send_trades_csv(
+            trades=trades or [],
+            csv_path=csv_path,
+            study=study,
+            filename=filename,
+        )
+
+
+
+    @app.get("/api/studies/<string:study_id>/wfa/windows/<int:window_number>")
+    def get_wfa_window_details(study_id: str, window_number: int) -> object:
+        study_data = load_study_from_db(study_id)
+        if not study_data:
+            return jsonify({"error": "Study not found."}), HTTPStatus.NOT_FOUND
+
+        study = study_data["study"]
+        if study.get("optimization_mode") != "wfa":
+            return jsonify({"error": "Window details only available for WFA studies."}), HTTPStatus.BAD_REQUEST
+
+        window = _find_wfa_window(study_data, window_number)
+        if not window:
+            return jsonify({"error": "WFA window not found."}), HTTPStatus.NOT_FOUND
+
+        window_id = window.get("window_id") or f"{study_id}_w{window_number}"
+        modules = load_wfa_window_trials(window_id)
+
+        available_modules = window.get("available_modules")
+        if not isinstance(available_modules, list):
+            available_modules = list(modules.keys()) if modules else ["optuna_is"]
+
+        window_payload = {
+            "window_number": window.get("window_number"),
+            "window_id": window_id,
+            "is_start_date": window.get("is_start_date"),
+            "is_end_date": window.get("is_end_date"),
+            "oos_start_date": window.get("oos_start_date"),
+            "oos_end_date": window.get("oos_end_date"),
+            "optimization_start_date": window.get("optimization_start_date"),
+            "optimization_end_date": window.get("optimization_end_date"),
+            "ft_start_date": window.get("ft_start_date"),
+            "ft_end_date": window.get("ft_end_date"),
+            "best_params": window.get("best_params") or {},
+            "param_id": window.get("param_id"),
+            "best_params_source": window.get("best_params_source") or "optuna_is",
+            "is_pareto_optimal": window.get("is_pareto_optimal"),
+            "constraints_satisfied": window.get("constraints_satisfied"),
+            "available_modules": available_modules,
+            "module_status": window.get("module_status") or {},
+            "selection_chain": window.get("selection_chain") or {},
+            "is_metrics": _build_trial_metrics(window, "is_"),
+            "oos_metrics": _build_trial_metrics(window, "oos_"),
+        }
+
+        return jsonify({"window": _json_safe(window_payload), "modules": _json_safe(modules)})
+
+
+
+    @app.post("/api/studies/<string:study_id>/wfa/windows/<int:window_number>/equity")
+    def generate_wfa_window_equity(study_id: str, window_number: int) -> object:
+        if not request.is_json:
+            return jsonify({"error": "Expected JSON payload."}), HTTPStatus.BAD_REQUEST
+        payload = request.get_json(silent=True) or {}
+
+        module_type = payload.get("moduleType")
+        trial_number = payload.get("trialNumber")
+        period = payload.get("period") or "is"
+
+        study_data = load_study_from_db(study_id)
+        if not study_data:
+            return jsonify({"error": "Study not found."}), HTTPStatus.NOT_FOUND
+
+        study = study_data["study"]
+        if study.get("optimization_mode") != "wfa":
+            return jsonify({"error": "Equity export is only supported for WFA studies."}), HTTPStatus.BAD_REQUEST
+
+        window = _find_wfa_window(study_data, window_number)
+        if not window:
+            return jsonify({"error": "WFA window not found."}), HTTPStatus.NOT_FOUND
+
+        window_id = window.get("window_id") or f"{study_id}_w{window_number}"
+        fixed_params = (study.get("config_json") or {}).get("fixed_params") or {}
+        params = window.get("best_params") or {}
+
+        if module_type and module_type != "oos_result":
+            modules = load_wfa_window_trials(window_id)
+            module_trials = modules.get(module_type) or []
+            if trial_number is None:
+                return jsonify({"error": "trialNumber is required for module equity."}), HTTPStatus.BAD_REQUEST
+            match = next(
+                (trial for trial in module_trials if int(trial.get("trial_number") or -1) == int(trial_number)),
+                None,
+            )
+            if not match:
+                return jsonify({"error": "Trial not found for module."}), HTTPStatus.NOT_FOUND
+            params = match.get("params") or {}
+
+        start, end, error = _resolve_wfa_period(window, period)
+        if error:
+            return jsonify({"error": error}), HTTPStatus.BAD_REQUEST
+
+        csv_path = study.get("csv_file_path")
+        if not csv_path or not Path(csv_path).exists():
+            return jsonify({"error": "CSV file is missing for this study."}), HTTPStatus.BAD_REQUEST
+
+        warmup_bars = study.get("warmup_bars") or (study.get("config_json") or {}).get("warmup_bars") or 1000
+
+        merged_params = {**fixed_params, **params}
+        merged_params["dateFilter"] = True
+        merged_params["start"] = start
+        merged_params["end"] = end
+
+        equity_curve, timestamps, error = _run_equity_export(
+            strategy_id=study.get("strategy_id"),
+            csv_path=csv_path,
+            params=merged_params,
+            warmup_bars=int(warmup_bars),
+        )
+        if error:
+            return jsonify({"error": error}), HTTPStatus.BAD_REQUEST
+
+        return jsonify({"equity_curve": equity_curve or [], "timestamps": timestamps or []})
+
+
+
+    @app.post("/api/studies/<string:study_id>/wfa/windows/<int:window_number>/trades")
+    def download_wfa_window_trades(study_id: str, window_number: int) -> object:
+        if not request.is_json:
+            return jsonify({"error": "Expected JSON payload."}), HTTPStatus.BAD_REQUEST
+        payload = request.get_json(silent=True) or {}
+
+        module_type = payload.get("moduleType")
+        trial_number = payload.get("trialNumber")
+        period = payload.get("period") or "oos"
+
+        study_data = load_study_from_db(study_id)
+        if not study_data:
+            return jsonify({"error": "Study not found."}), HTTPStatus.NOT_FOUND
+
+        study = study_data["study"]
+        if study.get("optimization_mode") != "wfa":
+            return jsonify({"error": "Trade export is only supported for WFA studies."}), HTTPStatus.BAD_REQUEST
+
+        window = _find_wfa_window(study_data, window_number)
+        if not window:
+            return jsonify({"error": "WFA window not found."}), HTTPStatus.NOT_FOUND
+
+        window_id = window.get("window_id") or f"{study_id}_w{window_number}"
+        fixed_params = (study.get("config_json") or {}).get("fixed_params") or {}
+        params = window.get("best_params") or {}
+
+        if module_type and module_type != "oos_result":
+            modules = load_wfa_window_trials(window_id)
+            module_trials = modules.get(module_type) or []
+            if trial_number is None:
+                return jsonify({"error": "trialNumber is required for module trades."}), HTTPStatus.BAD_REQUEST
+            match = next(
+                (trial for trial in module_trials if int(trial.get("trial_number") or -1) == int(trial_number)),
+                None,
+            )
+            if not match:
+                return jsonify({"error": "Trial not found for module."}), HTTPStatus.NOT_FOUND
+            params = match.get("params") or {}
+
+        start, end, error = _resolve_wfa_period(window, period)
+        if error:
+            return jsonify({"error": error}), HTTPStatus.BAD_REQUEST
+
+        csv_path = study.get("csv_file_path")
+        if not csv_path or not Path(csv_path).exists():
+            return jsonify({"error": "CSV file is missing for this study."}), HTTPStatus.BAD_REQUEST
+
+        warmup_bars = study.get("warmup_bars") or (study.get("config_json") or {}).get("warmup_bars") or 1000
+
+        merged_params = {**fixed_params, **params}
+        merged_params["dateFilter"] = True
+        merged_params["start"] = start
+        merged_params["end"] = end
+
+        trades, error = _run_trade_export(
+            strategy_id=study.get("strategy_id"),
+            csv_path=csv_path,
+            params=merged_params,
+            warmup_bars=int(warmup_bars),
+        )
+        if error:
+            return jsonify({"error": error}), HTTPStatus.BAD_REQUEST
+
+        module_label = module_type or "window"
+        filename = (
+            f"{study.get('study_name', 'study')}_wfa_window_{window_number}_"
+            f"{module_label}_{period}_trades.csv"
+        )
+        return _send_trades_csv(
+            trades=trades or [],
+            csv_path=csv_path,
+            study=study,
+            filename=filename,
+        )
+
+
+
+    @app.post("/api/studies/<string:study_id>/wfa/trades")
+    def download_wfa_trades(study_id: str) -> object:
+        study_data = load_study_from_db(study_id)
+        if not study_data:
+            return jsonify({"error": "Study not found."}), HTTPStatus.NOT_FOUND
+
+        study = study_data["study"]
+        if study.get("optimization_mode") != "wfa":
+            return jsonify({"error": "Trade export is only supported for WFA studies."}), HTTPStatus.BAD_REQUEST
+
+        csv_path = study.get("csv_file_path")
+        if not csv_path or not Path(csv_path).exists():
+            return jsonify({"error": "CSV file is missing for this study."}), HTTPStatus.BAD_REQUEST
+
+        windows = study_data.get("windows") or []
+        if not windows:
+            return jsonify({"error": "No WFA windows available for this study."}), HTTPStatus.BAD_REQUEST
+
+        config = study.get("config_json") or {}
+        fixed_params = config.get("fixed_params") or {}
+        warmup_bars = study.get("warmup_bars") or config.get("warmup_bars") or 1000
+
+        from strategies import get_strategy
+
+        try:
+            strategy_class = get_strategy(study.get("strategy_id"))
+        except ValueError as exc:
+            return jsonify({"error": str(exc)}), HTTPStatus.BAD_REQUEST
+
+        try:
+            df = load_data(csv_path)
+        except Exception as exc:
+            return jsonify({"error": str(exc)}), HTTPStatus.BAD_REQUEST
+
+        all_trades = []
+        for window in windows:
+            start_raw = window.get("oos_start_date") or window.get("oos_start")
+            end_raw = window.get("oos_end_date") or window.get("oos_end")
+            start, end = align_date_bounds(df.index, start_raw, end_raw)
+            if start is None or end is None:
+                continue
+
+            params = {**fixed_params, **(window.get("best_params") or {})}
+            params["dateFilter"] = True
+            params["start"] = start
+            params["end"] = end
+
+            try:
+                df_prepared, trade_start_idx = prepare_dataset_with_warmup(
+                    df, start, end, int(warmup_bars)
+                )
+            except Exception:
+                return jsonify({"error": "Failed to prepare dataset with warmup."}), HTTPStatus.BAD_REQUEST
+
+            try:
+                result = strategy_class.run(df_prepared, params, trade_start_idx)
+            except Exception as exc:
+                return jsonify({"error": str(exc)}), HTTPStatus.BAD_REQUEST
+
+            window_trades = [
+                trade
+                for trade in result.trades
+                if trade.entry_time and start <= trade.entry_time <= end
+            ]
+            all_trades.extend(window_trades)
+
+
+        all_trades.sort(key=lambda t: t.entry_time or pd.Timestamp.min)
+
+        from core.export import _extract_symbol_from_csv_filename
+
+        symbol = _extract_symbol_from_csv_filename(study.get("csv_file_name") or "")
+        csv_content = export_trades_csv(all_trades, symbol=symbol)
+        buffer = io.BytesIO(csv_content.encode("utf-8"))
+        buffer.seek(0)
+
+        filename = f"{study.get('study_name', 'study')}_wfa_oos_trades.csv"
+        return send_file(
+            buffer,
+            mimetype="text/csv",
+            as_attachment=True,
+            download_name=filename,
+        )
+
+
+
+    @app.get("/api/presets")
+    def list_presets_endpoint() -> object:
+        presets = _list_presets()
+        return jsonify({"presets": presets})
+
+
+
+    @app.get("/api/presets/<string:name>")
+    def load_preset_endpoint(name: str) -> object:
+        target = Path(name).stem
+        try:
+            values = _load_preset(target)
+        except FileNotFoundError:
+            return ("Preset not found.", HTTPStatus.NOT_FOUND)
+        except ValueError as exc:
+            app.logger.exception("Failed to load preset '%s'", name)
+            return (str(exc), HTTPStatus.INTERNAL_SERVER_ERROR)
+        return jsonify({"name": target, "values": values})
+
+
+
+    @app.post("/api/presets")
+    def create_preset_endpoint() -> object:
+        if not request.is_json:
+            return ("Expected JSON body.", HTTPStatus.BAD_REQUEST)
+        payload = request.get_json() or {}
+        try:
+            name = _validate_preset_name(payload.get("name"))
+        except ValueError as exc:
+            return (str(exc), HTTPStatus.BAD_REQUEST)
+
+        normalized_name_lower = name.lower()
+        for entry in _list_presets():
+            if entry["name"].lower() == normalized_name_lower:
+                return ("Preset with this name already exists.", HTTPStatus.CONFLICT)
+
+        try:
+            values = _normalize_preset_payload(payload.get("values", {}))
+        except ValueError as exc:
+            return (str(exc), HTTPStatus.BAD_REQUEST)
+
+        try:
+            _write_preset(name, values)
+        except Exception:  # pragma: no cover - defensive
+            app.logger.exception("Failed to save preset '%s'", name)
+            return ("Failed to save preset.", HTTPStatus.INTERNAL_SERVER_ERROR)
+
+        return jsonify({"name": name, "values": values}), HTTPStatus.CREATED
+
+
+
+    @app.put("/api/presets/<string:name>")
+    def overwrite_preset_endpoint(name: str) -> object:
+        if not request.is_json:
+            return ("Expected JSON body.", HTTPStatus.BAD_REQUEST)
+        try:
+            normalized_name = _validate_preset_name(name)
+        except ValueError as exc:
+            return (str(exc), HTTPStatus.BAD_REQUEST)
+
+        preset_path = _preset_path(normalized_name)
+        if not preset_path.exists():
+            return ("Preset not found.", HTTPStatus.NOT_FOUND)
+
+        payload = request.get_json() or {}
+        try:
+            values = _normalize_preset_payload(payload.get("values", {}))
+        except ValueError as exc:
+            return (str(exc), HTTPStatus.BAD_REQUEST)
+
+        try:
+            _write_preset(normalized_name, values)
+        except Exception:  # pragma: no cover - defensive
+            app.logger.exception("Failed to overwrite preset '%s'", name)
+            return ("Failed to save preset.", HTTPStatus.INTERNAL_SERVER_ERROR)
+
+        return jsonify({"name": normalized_name, "values": values})
+
+
+
+    @app.put("/api/presets/defaults")
+    def overwrite_defaults_endpoint() -> object:
+        if not request.is_json:
+            return ("Expected JSON body.", HTTPStatus.BAD_REQUEST)
+        payload = request.get_json() or {}
+        try:
+            values = _normalize_preset_payload(payload.get("values", {}))
+        except ValueError as exc:
+            return (str(exc), HTTPStatus.BAD_REQUEST)
+
+        try:
+            _write_preset(DEFAULT_PRESET_NAME, values)
+        except Exception:  # pragma: no cover - defensive
+            app.logger.exception("Failed to overwrite default preset")
+            return ("Failed to save default preset.", HTTPStatus.INTERNAL_SERVER_ERROR)
+
+        return jsonify({"name": DEFAULT_PRESET_NAME, "values": values})
+
+
+
+    @app.delete("/api/presets/<string:name>")
+    def delete_preset_endpoint(name: str) -> object:
+        target = Path(name).stem
+        if target.lower() == DEFAULT_PRESET_NAME:
+            return ("Default preset cannot be deleted.", HTTPStatus.BAD_REQUEST)
+        path = _preset_path(target)
+        if not path.exists():
+            return ("Preset not found.", HTTPStatus.NOT_FOUND)
+        try:
+            path.unlink()
+        except Exception:  # pragma: no cover - defensive
+            app.logger.exception("Failed to delete preset '%s'", name)
+            return ("Failed to delete preset.", HTTPStatus.INTERNAL_SERVER_ERROR)
+        return ("", HTTPStatus.NO_CONTENT)
+
+
+
+    @app.post("/api/presets/import-csv")
+    def import_preset_from_csv() -> object:
+        if "file" not in request.files:
+            return ("CSV file is required.", HTTPStatus.BAD_REQUEST)
+        csv_file = request.files["file"]
+        if not csv_file or csv_file.filename == "":
+            return ("CSV file is required.", HTTPStatus.BAD_REQUEST)
+        try:
+            updates, applied, errors = _parse_csv_parameter_block(csv_file)
+        except ValueError as exc:
+            return (str(exc), HTTPStatus.BAD_REQUEST)
+        except Exception:  # pragma: no cover - defensive
+            app.logger.exception("Failed to parse CSV for preset import")
+            return ("Failed to parse CSV file.", HTTPStatus.BAD_REQUEST)
+        if errors:
+            return (
+                jsonify({"error": "Invalid numeric values in CSV.", "details": errors}),
+                HTTPStatus.BAD_REQUEST,
+            )
+        if not updates:
+            return ("No fixed parameters found in CSV.", HTTPStatus.BAD_REQUEST)
+        return jsonify({"values": updates, "applied": applied})
+
+
+
+    @app.get("/api/strategies")
+    def list_strategies_endpoint() -> object:
+        """
+        List all available strategies.
+
+        Returns:
+            JSON: {
+                "strategies": [
+                    {
+                        "id": "s01_trailing_ma",
+                        "name": "S01 Trailing MA",
+                        "version": "v26",
+                        "description": "...",
+                        "author": "..."
+                    }
+                ]
+            }
+        """
+        from strategies import list_strategies
+
+        strategies = list_strategies()
+        return jsonify({"strategies": strategies})
+
+
+    @app.route("/api/strategy/<strategy_id>/config", methods=["GET"])
+    def get_strategy_config_single(strategy_id: str):
+        """Return strategy configuration for frontend rendering.
+
+        Args:
+            strategy_id: Strategy identifier (e.g., "s01_trailing_ma")
+
+        Returns:
+            JSON response with strategy configuration
+        """
+        try:
+            from strategies import get_strategy_config
+
+            config = get_strategy_config(strategy_id)
+            parameters = config.get("parameters", {}) if isinstance(config, dict) else {}
+            parameter_order = list(parameters.keys()) if isinstance(parameters, dict) else []
+            group_order = []
+            if isinstance(parameters, dict):
+                for key in parameter_order:
+                    definition = parameters.get(key, {})
+                    group = definition.get("group") if isinstance(definition, dict) else None
+                    group = group or "Other"
+                    if group not in group_order:
+                        group_order.append(group)
+
+            payload = dict(config or {})
+            payload["parameter_order"] = parameter_order
+            payload["group_order"] = group_order
+            return jsonify(payload), HTTPStatus.OK
+
+        except FileNotFoundError:
+            return (
+                jsonify({"error": f"Strategy '{strategy_id}' not found"}),
+                HTTPStatus.NOT_FOUND,
+            )
+        except Exception as exc:  # noqa: BLE001
+            logger.exception("Failed to load config for %s", strategy_id)
+            return (
+                jsonify({"error": f"Failed to load strategy config: {str(exc)}"}),
+                HTTPStatus.INTERNAL_SERVER_ERROR,
+            )
+
+
+
+    @app.get("/api/strategies/<string:strategy_id>")
+    def get_strategy_metadata_endpoint(strategy_id: str) -> object:
+        """
+        Get strategy metadata (lightweight version without full parameters).
+
+        Args:
+            strategy_id: Strategy identifier
+
+        Returns:
+            JSON: {
+                "id": "s01_trailing_ma",
+                "name": "S01 Trailing MA",
+                "version": "v26",
+                "description": "...",
+                "parameter_count": 25
+            }
+
+        Errors:
+            404: Strategy not found
+        """
+        from strategies import get_strategy_config
+
+        try:
+            config = get_strategy_config(strategy_id)
+            return jsonify({
+                "id": config.get('id'),
+                "name": config.get('name'),
+                "version": config.get('version'),
+                "description": config.get('description'),
+                "author": config.get('author', ''),
+                "parameter_count": len(config.get('parameters', {}))
+            })
+        except ValueError as e:
+            return (str(e), HTTPStatus.NOT_FOUND)
+
+
+    if __name__ == "__main__":
+        app.run(host="0.0.0.0", port=5000, debug=False)

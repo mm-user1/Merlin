@@ -116,8 +116,16 @@
               <span class="val" id="optuna-sanitize">-</span>
             </div>
             <div class="setting-item">
+              <span class="key">Filter</span>
+              <span class="val" id="optuna-filter">-</span>
+            </div>
+            <div class="setting-item">
               <span class="key">Workers</span>
               <span class="val" id="optuna-workers">-</span>
+            </div>
+            <div class="setting-item">
+              <span class="key">Optimization Time</span>
+              <span class="val" id="optuna-time">-</span>
             </div>
           </div>
         </div>
@@ -170,7 +178,8 @@
       <div class="results-header">
         <h2>Optimization Results</h2>
         <div class="header-actions">
-          <button class="btn btn-secondary">Download Trades</button>
+          <button class="btn btn-secondary" id="manualTestBtn">Manual Test</button>
+          <button class="btn btn-secondary" id="downloadTradesBtn">Download Trades</button>
         </div>
       </div>
 
@@ -179,20 +188,41 @@
           <h3>Equity Curve</h3>
         </div>
         <div class="chart-body">
-          <svg class="chart-svg" viewBox="0 0 800 260" preserveAspectRatio="none">
-            <text x="400" y="130" text-anchor="middle" fill="#999" font-size="14">
-              No data to display
-            </text>
-          </svg>
+          <div class="chart-canvas">
+            <svg class="chart-svg" viewBox="0 0 800 260" preserveAspectRatio="none">
+              <text x="400" y="130" text-anchor="middle" fill="#999" font-size="14">
+                No data to display
+              </text>
+            </svg>
+            <div class="comparison-line" id="comparisonLine" style="display: none;"></div>
+          </div>
+          <div class="chart-axis" id="equityAxis"></div>
         </div>
       </div>
 
       <div class="summary-row" style="display: none;"></div>
 
+      <div class="results-tabs" id="resultsTabs">
+        <button class="tab-btn active" data-tab="optuna">Optuna IS</button>
+        <button class="tab-btn" data-tab="dsr" style="display: none;">DSR</button>
+        <button class="tab-btn" data-tab="forward_test" style="display: none;">Forward Test</button>
+        <button class="tab-btn" data-tab="stress_test" style="display: none;">Stress Test</button>
+        <button class="tab-btn" data-tab="oos_test" style="display: none;">OOS Test</button>
+        <button class="tab-btn" data-tab="manual_tests" style="display: none;">Test Results</button>
+      </div>
+
       <div class="table-card">
       <div class="table-card-header">
-        <h3>Top Parameter Sets</h3>
-        <span style="font-size: 12px; color: #777;">Sorted by objectives</span>
+        <div class="table-header-left">
+          <h3 id="resultsTableTitle">Optuna IS</h3>
+          <span id="resultsTableSubtitle" style="font-size: 12px; color: #777;">Sorted by objectives</span>
+        </div>
+        <div class="test-results-controls" id="testResultsControls" style="display: none;">
+          <label for="manualTestSelect">Test:</label>
+          <select id="manualTestSelect"></select>
+          <button class="btn btn-secondary" id="manualTestDelete">Delete</button>
+          <span class="baseline-label" id="manualTestBaselineLabel"></span>
+        </div>
       </div>
         <div class="table-scroll">
           <table class="data-table">
@@ -215,6 +245,9 @@
             <tbody></tbody>
           </table>
         </div>
+        <div class="table-expand">
+          <button class="table-expand-toggle" id="tableExpandToggle" type="button" aria-label="Expand table"></button>
+        </div>
       </div>
 
       <div class="param-details-section" id="paramDetailsSection">
@@ -223,7 +256,7 @@
             Parameter Details
           </div>
           <div class="param-details-body">
-            <table class="param-details-table" id="paramDetailsContent"></table>
+            <div class="param-details-grid" id="paramDetailsContent"></div>
           </div>
         </div>
       </div>
@@ -233,7 +266,12 @@
   <script src="/static/js/utils.js"></script>
   <script src="/static/js/api.js"></script>
   <script src="/static/js/optuna-results-ui.js"></script>
-  <script src="/static/js/results.js"></script>
+  <script src="/static/js/wfa-results-ui.js"></script>
+  <script src="/static/js/post-process-ui.js"></script>
+  <script src="/static/js/results-state.js"></script>
+  <script src="/static/js/results-format.js"></script>
+  <script src="/static/js/results-tables.js"></script>
+  <script src="/static/js/results-controller.js"></script>
 
   <div class="modal-overlay" id="missingCsvModal">
     <div class="modal-card">
@@ -250,6 +288,62 @@
       <div class="modal-actions">
         <button class="btn btn-primary" id="missingCsvUpdate">Update</button>
         <button class="btn btn-secondary" id="missingCsvCancel">Cancel</button>
+      </div>
+    </div>
+  </div>
+
+  <div class="modal-overlay" id="manualTestModal">
+    <div class="modal-card">
+      <div class="modal-header">
+        <h3>Test Parameters on New Data</h3>
+      </div>
+      <div class="modal-body">
+        <div class="modal-section">
+          <strong>Data Source</strong>
+          <div class="radio-row">
+            <label>
+              <input type="radio" name="manualDataSource" id="manualDataOriginal" value="original_csv" checked />
+              Original CSV
+            </label>
+            <label>
+              <input type="radio" name="manualDataSource" id="manualDataNew" value="new_csv" />
+              New CSV
+            </label>
+          </div>
+          <input type="file" id="manualDataFile" accept=".csv" />
+        </div>
+
+        <div class="modal-section">
+          <strong>Date Range</strong>
+          <div class="form-group">
+            <label for="manualStartDate">Start:</label>
+            <input type="text" id="manualStartDate" class="date-input" autocomplete="off" value="2025-06-15" />
+            <label for="manualEndDate">End:</label>
+            <input type="text" id="manualEndDate" class="date-input" autocomplete="off" value="2025-11-15" />
+          </div>
+        </div>
+
+        <div class="modal-section">
+          <strong>Trials to Test</strong>
+          <div class="radio-row">
+            <label>
+              <input type="radio" name="manualTrialMode" id="manualTrialTop" value="top" checked />
+              Top Rank
+            </label>
+            <input type="number" id="manualTopK" value="10" min="1" max="10000" style="width: 80px;" />
+          </div>
+          <div class="radio-row">
+            <label>
+              <input type="radio" name="manualTrialMode" id="manualTrialSelected" value="selected" />
+              Use Selected
+            </label>
+            <span id="manualSelectedLabel">Trial # -</span>
+          </div>
+        </div>
+      </div>
+      <div class="modal-actions">
+        <button class="btn btn-secondary" id="manualTestCancel">Cancel</button>
+        <button class="btn btn-primary" id="manualTestRun">Run Test</button>
       </div>
     </div>
   </div>

@@ -3,10 +3,14 @@ import sys
 from pathlib import Path
 
 import pytest
+import pandas as pd
 
 sys.path.insert(0, str(Path(__file__).parent.parent / "src"))
 
 from ui.server import app
+from core.walkforward_engine import OOSStitchedResult, WFConfig, WFResult, WindowResult
+from core.storage import save_wfa_study_to_db
+from strategies import get_strategy_config
 
 
 @pytest.fixture
@@ -200,6 +204,123 @@ def test_optuna_sanitize_defaults():
     )
     assert config.sanitize_enabled is True
     assert config.sanitize_trades_threshold == 0
+
+
+def _build_params_from_config(strategy_id: str):
+    config = get_strategy_config(strategy_id)
+    parameters = config.get("parameters", {}) if isinstance(config, dict) else {}
+    params = {}
+    for name, spec in parameters.items():
+        if not isinstance(spec, dict):
+            continue
+        default_value = spec.get("default")
+        params[name] = default_value if default_value is not None else 0
+    return params
+
+
+def _create_wfa_study() -> str:
+    data_path = Path(__file__).parent.parent / "data" / "raw" / "OKX_LINKUSDT.P, 15 2025.05.01-2025.11.20.csv"
+    if not data_path.exists():
+        pytest.skip("Sample data file not available for WFA API tests.")
+
+    strategy_id = "s01_trailing_ma"
+    params = _build_params_from_config(strategy_id)
+    wf_config = WFConfig(strategy_id=strategy_id, is_period_days=30, oos_period_days=15, warmup_bars=10)
+
+    window = WindowResult(
+        window_id=1,
+        is_start=pd.Timestamp("2025-05-01", tz="UTC"),
+        is_end=pd.Timestamp("2025-05-30", tz="UTC"),
+        oos_start=pd.Timestamp("2025-05-31", tz="UTC"),
+        oos_end=pd.Timestamp("2025-06-14", tz="UTC"),
+        best_params=params,
+        param_id="test_params",
+        is_net_profit_pct=0.0,
+        is_max_drawdown_pct=0.0,
+        is_total_trades=0,
+        oos_net_profit_pct=0.0,
+        oos_max_drawdown_pct=0.0,
+        oos_total_trades=0,
+        oos_equity_curve=[100.0],
+        oos_timestamps=[pd.Timestamp("2025-05-31", tz="UTC")],
+        is_equity_curve=[100.0],
+        is_timestamps=[pd.Timestamp("2025-05-01", tz="UTC")],
+        best_params_source="optuna_is",
+        available_modules=["optuna_is"],
+        optuna_is_trials=[
+            {
+                "trial_number": 1,
+                "params": params,
+                "param_id": "test_params",
+                "net_profit_pct": 0.0,
+                "max_drawdown_pct": 0.0,
+                "total_trades": 0,
+                "win_rate": 0.0,
+                "is_selected": True,
+            }
+        ],
+    )
+
+    stitched = OOSStitchedResult(
+        final_net_profit_pct=0.0,
+        max_drawdown_pct=0.0,
+        total_trades=0,
+        wfe=0.0,
+        oos_win_rate=0.0,
+        equity_curve=[100.0],
+        timestamps=[pd.Timestamp("2025-05-31", tz="UTC")],
+        window_ids=[1],
+    )
+
+    wf_result = WFResult(
+        config=wf_config,
+        windows=[window],
+        stitched_oos=stitched,
+        strategy_id=strategy_id,
+        total_windows=1,
+        trading_start_date=window.is_start,
+        trading_end_date=window.oos_end,
+        warmup_bars=wf_config.warmup_bars,
+    )
+
+    study_id = save_wfa_study_to_db(
+        wf_result=wf_result,
+        config={"fixed_params": {}},
+        csv_file_path=str(data_path),
+        start_time=0.0,
+        score_config=None,
+    )
+    return study_id
+
+
+def test_get_wfa_window_details(client):
+    study_id = _create_wfa_study()
+    response = client.get(f"/api/studies/{study_id}/wfa/windows/1")
+    assert response.status_code == 200
+    payload = response.get_json()
+    assert payload["window"]["window_number"] == 1
+    assert "optuna_is" in payload["modules"]
+
+
+def test_generate_wfa_window_equity(client):
+    study_id = _create_wfa_study()
+    response = client.post(
+        f"/api/studies/{study_id}/wfa/windows/1/equity",
+        json={"period": "is"},
+    )
+    assert response.status_code == 200
+    payload = response.get_json()
+    assert "equity_curve" in payload
+
+
+def test_download_wfa_window_trades(client):
+    study_id = _create_wfa_study()
+    response = client.post(
+        f"/api/studies/{study_id}/wfa/windows/1/trades",
+        json={"period": "oos"},
+    )
+    assert response.status_code == 200
+    assert response.headers.get("Content-Type", "").startswith("text/csv")
 
 
 @pytest.mark.parametrize("threshold", [-1, "bad"])

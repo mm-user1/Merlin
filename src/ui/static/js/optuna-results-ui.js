@@ -7,6 +7,7 @@
     romad: 'RoMaD',
     profit_factor: 'Profit Factor',
     win_rate: 'Win Rate %',
+    max_consecutive_losses: 'Max CL',
     sqn: 'SQN',
     ulcer_index: 'Ulcer Index',
     consistency_score: 'Consistency %',
@@ -35,16 +36,18 @@
     const columns = [];
     columns.push('<th>#</th>');
     columns.push('<th>Param ID</th>');
-    columns.push('<th>Pareto</th>');
+    columns.push('<th>P</th>');
     if (hasConstraints) {
-      columns.push('<th>Constraints</th>');
+      columns.push('<th>C</th>');
     }
 
     const objectiveList = Array.isArray(objectives) ? objectives : [];
     const objectiveSet = new Set(objectiveList);
     const rawMetricColumns = new Set([
+      'win_rate',
       'net_profit_pct',
       'max_drawdown_pct',
+      'max_consecutive_losses',
       'romad',
       'sharpe_ratio',
       'profit_factor',
@@ -57,9 +60,11 @@
       columns.push(`<th>${formatObjectiveLabel(objective)}</th>`);
     });
 
+    columns.push('<th>WR %</th>');
     columns.push('<th>Net Profit %</th>');
     columns.push('<th>Max DD %</th>');
     columns.push('<th>Trades</th>');
+    columns.push('<th>Max CL</th>');
     columns.push('<th>Score</th>');
     columns.push('<th>RoMaD</th>');
     columns.push('<th>Sharpe</th>');
@@ -75,25 +80,29 @@
     const objectiveSet = new Set(objectiveList);
     const hasConstraints = Boolean(flags && flags.hasConstraints);
     const isPareto = Boolean(trial.is_pareto_optimal);
-    const feasible = trial.constraints_satisfied !== undefined
-      ? Boolean(trial.constraints_satisfied)
-      : true;
+    const rawConstraint = trial.constraints_satisfied;
+    const hasConstraintValue = rawConstraint !== null && rawConstraint !== undefined;
+    const constraintState = hasConstraintValue ? Boolean(rawConstraint) : null;
 
     const paretoBadge = isPareto
-      ? '<span class="badge badge-pareto">Pareto</span>'
+      ? '<span class="dot dot-pareto"></span>'
       : '';
 
     let constraintBadge = '';
     if (hasConstraints) {
-      constraintBadge = feasible
-        ? '<span class="badge badge-feasible">OK</span>'
-        : '<span class="badge badge-infeasible">Fail</span>';
+      if (constraintState === true) {
+        constraintBadge = '<span class="dot dot-ok"></span>';
+      } else if (constraintState === false) {
+        constraintBadge = '<span class="dot dot-fail"></span>';
+      }
     }
 
     const objectiveValues = Array.isArray(trial.objective_values) ? trial.objective_values : [];
     const rawMetricColumns = new Set([
+      'win_rate',
       'net_profit_pct',
       'max_drawdown_pct',
+      'max_consecutive_losses',
       'romad',
       'sharpe_ratio',
       'profit_factor',
@@ -111,10 +120,14 @@
         return `<td>${formatted}${isPercent && formatted !== 'N/A' ? '%' : ''}</td>`;
       });
 
+    const winRate = trial.win_rate;
+    const winRateFormatted = formatNumber(winRate, 2);
+    const winRateCell = `<td>${winRateFormatted}${winRateFormatted !== 'N/A' ? '%' : ''}</td>`;
     const netProfit = Number(trial.net_profit_pct || 0);
     const netProfitCell = `<td class="${netProfit >= 0 ? 'val-positive' : 'val-negative'}">${netProfit >= 0 ? '+' : ''}${formatNumber(netProfit, 2)}%</td>`;
     const maxDd = Math.abs(Number(trial.max_drawdown_pct || 0));
     const maxDdCell = `<td class="val-negative">-${formatNumber(maxDd, 2)}%</td>`;
+    const maxClCell = `<td>${trial.max_consecutive_losses ?? '-'}</td>`;
 
     const scoreValue = trial.score !== undefined && trial.score !== null
       ? Number(trial.score)
@@ -133,9 +146,11 @@
         <td>${paretoBadge}</td>
         ${hasConstraints ? `<td>${constraintBadge}</td>` : ''}
         ${objectiveCells.join('')}
+        ${winRateCell}
         ${netProfitCell}
         ${maxDdCell}
         <td>${trial.total_trades ?? '-'}</td>
+        ${maxClCell}
         <td>${scoreValue !== null ? formatNumber(scoreValue, 1) : 'N/A'}</td>
         <td>${formatNumber(romad, 3)}</td>
         <td>${formatNumber(sharpe, 3)}</td>

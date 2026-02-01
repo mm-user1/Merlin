@@ -170,6 +170,12 @@ document.addEventListener('DOMContentLoaded', async () => {
   bindScoreControls();
   bindOptunaUiControls();
   bindMASelectors();
+  if (window.PostProcessUI && typeof window.PostProcessUI.bind === 'function') {
+    window.PostProcessUI.bind();
+  }
+  if (window.OosTestUI && typeof window.OosTestUI.bind === 'function') {
+    window.OosTestUI.bind();
+  }
 
   await initializePresets();
 });

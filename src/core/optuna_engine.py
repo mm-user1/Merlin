@@ -9,9 +9,8 @@ import multiprocessing as mp
 import tempfile
 import time
 from dataclasses import asdict, dataclass, field, fields
-from decimal import Decimal
 from pathlib import Path
-from typing import Any, Dict, Iterable, List, Optional, Tuple, Union
+from typing import Any, Dict, List, Optional, Tuple, Union
 
 import optuna
 from optuna.pruners import MedianPruner, PercentilePruner, PatientPruner
@@ -86,6 +85,7 @@ class OptimizationResult:
     avg_loss: float = 0.0
     gross_profit: float = 0.0
     gross_loss: float = 0.0
+    max_consecutive_losses: int = 0
     romad: Optional[float] = None
     sharpe_ratio: Optional[float] = None
     sortino_ratio: Optional[float] = None
@@ -219,6 +219,7 @@ CONSTRAINT_OPERATORS: Dict[str, str] = {
     "romad": "gte",
     "profit_factor": "gte",
     "win_rate": "gte",
+    "max_consecutive_losses": "lte",
     "sqn": "gte",
     "ulcer_index": "lte",
     "consistency_score": "gte",
@@ -228,61 +229,6 @@ CONSTRAINT_OPERATORS: Dict[str, str] = {
 # ============================================================================
 # Utilities
 # ============================================================================
-
-
-def _generate_numeric_sequence(
-    start: float, stop: float, step: float, is_int: bool
-) -> List[Union[int, float]]:
-    if step == 0:
-        raise ValueError("Step must be non-zero for optimization ranges.")
-    delta = abs(step)
-    step_value = delta if start <= stop else -delta
-    decimals = max(0, -Decimal(str(step)).normalize().as_tuple().exponent)
-    epsilon = delta * 1e-9
-
-    values: List[Union[int, float]] = []
-    index = 0
-
-    while True:
-        raw_value = start + index * step_value
-        if step_value > 0:
-            if raw_value > stop + epsilon:
-                break
-        else:
-            if raw_value < stop - epsilon:
-                break
-
-        if is_int:
-            values.append(int(round(raw_value)))
-        else:
-            rounded_value = round(raw_value, decimals)
-            if rounded_value == 0:
-                rounded_value = 0.0
-            values.append(float(rounded_value))
-
-        index += 1
-
-    if not values:
-        if is_int:
-            values.append(int(round(start)))
-        else:
-            rounded_start = round(start, decimals)
-            values.append(float(0.0 if rounded_start == 0 else rounded_start))
-    return values
-
-
-def _parse_timestamp(value: Any) -> Optional[pd.Timestamp]:
-    if value in (None, ""):
-        return None
-    try:
-        ts = pd.Timestamp(value)
-    except (ValueError, TypeError):  # pragma: no cover - defensive
-        return None
-    if ts.tzinfo is None:
-        ts = ts.tz_localize("UTC")
-    else:
-        ts = ts.tz_convert("UTC")
-    return ts
 
 
 def _is_nan(value: Any) -> bool:
@@ -643,6 +589,7 @@ def _run_single_combination(
             avg_loss=0.0,
             gross_profit=0.0,
             gross_loss=0.0,
+            max_consecutive_losses=0,
             sharpe_ratio=None,
             sortino_ratio=None,
             profit_factor=None,
@@ -668,6 +615,7 @@ def _run_single_combination(
             avg_loss=basic_metrics.avg_loss,
             gross_profit=basic_metrics.gross_profit,
             gross_loss=basic_metrics.gross_loss,
+            max_consecutive_losses=basic_metrics.max_consecutive_losses,
             romad=advanced_metrics.romad,
             sharpe_ratio=advanced_metrics.sharpe_ratio,
             sortino_ratio=advanced_metrics.sortino_ratio,
@@ -724,6 +672,7 @@ def _result_from_trial(trial: optuna.trial.FrozenTrial) -> OptimizationResult:
         avg_loss=float(all_metrics.get("avg_loss", 0.0) or 0.0),
         gross_profit=float(all_metrics.get("gross_profit", 0.0) or 0.0),
         gross_loss=float(all_metrics.get("gross_loss", 0.0) or 0.0),
+        max_consecutive_losses=int(all_metrics.get("max_consecutive_losses", 0) or 0),
         romad=all_metrics.get("romad"),
         sharpe_ratio=all_metrics.get("sharpe_ratio"),
         sortino_ratio=all_metrics.get("sortino_ratio"),
@@ -1242,7 +1191,7 @@ class OptunaOptimizer:
         """Load strategy class and data, apply optional date filtering."""
 
         from strategies import get_strategy
-        from .backtest_engine import prepare_dataset_with_warmup
+        from .backtest_engine import align_date_bounds, prepare_dataset_with_warmup
 
         try:
             strategy_class = get_strategy(self.base_config.strategy_id)
@@ -1252,8 +1201,9 @@ class OptunaOptimizer:
         df = load_data(self.base_config.csv_file)
 
         use_date_filter = bool(self.base_config.fixed_params.get("dateFilter", False))
-        start_ts = _parse_timestamp(self.base_config.fixed_params.get("start"))
-        end_ts = _parse_timestamp(self.base_config.fixed_params.get("end"))
+        start_raw = self.base_config.fixed_params.get("start")
+        end_raw = self.base_config.fixed_params.get("end")
+        start_ts, end_ts = align_date_bounds(df.index, start_raw, end_raw)
 
         trade_start_idx = 0
         if use_date_filter and (start_ts is not None or end_ts is not None):
@@ -1346,6 +1296,7 @@ class OptunaOptimizer:
             "max_drawdown_pct": result.max_drawdown_pct,
             "total_trades": result.total_trades,
             "win_rate": result.win_rate,
+            "max_consecutive_losses": result.max_consecutive_losses,
             "avg_win": result.avg_win,
             "avg_loss": result.avg_loss,
             "gross_profit": result.gross_profit,
@@ -1817,6 +1768,7 @@ class OptunaOptimizer:
         )
 
         score_config = self.base_config.score_config or DEFAULT_SCORE_CONFIG
+        self.all_trial_results = list(self.trial_results)
         self.trial_results = calculate_score(self.trial_results, score_config)
 
         if self.study:
@@ -1872,6 +1824,7 @@ def run_optuna_optimization(
 
     optimizer = OptunaOptimizer(base_config, optuna_config)
     results = optimizer.optimize()
+    setattr(base_config, "optuna_all_results", getattr(optimizer, "all_trial_results", list(results)))
 
     study_id: Optional[str] = None
     if getattr(base_config, "optimization_mode", "optuna") == "optuna":

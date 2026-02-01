@@ -63,6 +63,7 @@ class BasicMetrics:
     avg_win: float
     avg_loss: float
     avg_trade: float
+    max_consecutive_losses: int
 
     def to_dict(self) -> Dict[str, Any]:
         """Convert to dictionary for serialization."""
@@ -80,6 +81,7 @@ class BasicMetrics:
             "avg_win": self.avg_win,
             "avg_loss": self.avg_loss,
             "avg_trade": self.avg_trade,
+            "max_consecutive_losses": self.max_consecutive_losses,
         }
 
 
@@ -288,6 +290,37 @@ def _calculate_consistency_score_value(monthly_returns: List[float]) -> Optional
     return consistency
 
 
+def calculate_higher_moments_from_monthly_returns(
+    monthly_returns: List[float],
+) -> tuple[Optional[float], Optional[float]]:
+    """
+    Calculate skewness and RAW kurtosis from monthly returns.
+
+    Returns:
+        (skewness, raw_kurtosis) or (None, None) if insufficient data.
+    """
+    if len(monthly_returns) < 3:
+        return None, None
+
+    values = np.array(monthly_returns, dtype=float)
+    if values.size < 3:
+        return None, None
+
+    mean = float(np.mean(values))
+    std = float(np.std(values, ddof=0))
+    if std == 0.0:
+        return None, None
+
+    standardized = (values - mean) / std
+    skewness = float(np.mean(standardized**3))
+    raw_kurtosis = float(np.mean(standardized**4))
+
+    if not math.isfinite(skewness) or not math.isfinite(raw_kurtosis):
+        return None, None
+
+    return skewness, raw_kurtosis
+
+
 def _calculate_sqn_value(trades: List[TradeRecord]) -> Optional[float]:
     """
     Calculate System Quality Number (Van Tharp).
@@ -372,6 +405,16 @@ def calculate_basic(result: StrategyResult, initial_balance: Optional[float] = N
     avg_loss = (gross_loss / losing_trades) if losing_trades > 0 else 0.0
     avg_trade = (net_profit / total_trades) if total_trades > 0 else 0.0
 
+    max_consecutive_losses = 0
+    consecutive_losses = 0
+    for trade in trades:
+        if trade.net_pnl <= 0:
+            consecutive_losses += 1
+            if consecutive_losses > max_consecutive_losses:
+                max_consecutive_losses = consecutive_losses
+        else:
+            consecutive_losses = 0
+
     return BasicMetrics(
         net_profit=net_profit,
         net_profit_pct=net_profit_pct,
@@ -386,6 +429,7 @@ def calculate_basic(result: StrategyResult, initial_balance: Optional[float] = N
         avg_win=avg_win,
         avg_loss=avg_loss,
         avg_trade=avg_trade,
+        max_consecutive_losses=max_consecutive_losses,
     )
 
 
@@ -484,58 +528,3 @@ def enrich_strategy_result(
             setattr(result, key, value)
 
     return basic, advanced
-
-
-def calculate_for_wfa(wfa_results: List[Dict[str, Any]]) -> WFAMetrics:
-    """Calculate aggregate WFA metrics from multiple windows."""
-    if not wfa_results:
-        return WFAMetrics(
-            avg_net_profit_pct=0.0,
-            avg_max_drawdown_pct=0.0,
-            successful_windows=0,
-            total_windows=0,
-            success_rate=0.0,
-            avg_sharpe_ratio=None,
-            avg_romad=None,
-        )
-
-    net_profits: List[float] = []
-    drawdowns: List[float] = []
-    sharpes: List[float] = []
-    romads: List[float] = []
-
-    successful = 0
-
-    for window in wfa_results:
-        oos_result: Optional[StrategyResult] = window.get("oos_result")
-        if oos_result is None:
-            continue
-
-        net_profits.append(float(oos_result.net_profit_pct))
-        drawdowns.append(float(oos_result.max_drawdown_pct))
-
-        if oos_result.sharpe_ratio is not None:
-            sharpes.append(float(oos_result.sharpe_ratio))
-        if oos_result.romad is not None:
-            romads.append(float(oos_result.romad))
-
-        if float(oos_result.net_profit_pct) > 0:
-            successful += 1
-
-    total_windows = len(wfa_results)
-    success_rate = (successful / total_windows * 100.0) if total_windows else 0.0
-
-    avg_net_profit_pct = float(np.mean(net_profits)) if net_profits else 0.0
-    avg_max_drawdown_pct = float(np.mean(drawdowns)) if drawdowns else 0.0
-    avg_sharpe_ratio = float(np.mean(sharpes)) if sharpes else None
-    avg_romad = float(np.mean(romads)) if romads else None
-
-    return WFAMetrics(
-        avg_net_profit_pct=avg_net_profit_pct,
-        avg_max_drawdown_pct=avg_max_drawdown_pct,
-        successful_windows=successful,
-        total_windows=total_windows,
-        success_rate=success_rate,
-        avg_sharpe_ratio=avg_sharpe_ratio,
-        avg_romad=avg_romad,
-    )
