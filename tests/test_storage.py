@@ -111,6 +111,19 @@ def test_wfa_window_new_columns():
     assert "constraints_satisfied" in columns
 
 
+def test_studies_stitched_columns():
+    with get_db_connection() as conn:
+        cursor = conn.execute("PRAGMA table_info(studies)")
+        columns = {row["name"] for row in cursor.fetchall()}
+    assert "stitched_oos_equity_curve" in columns
+    assert "stitched_oos_timestamps_json" in columns
+    assert "stitched_oos_window_ids_json" in columns
+    assert "stitched_oos_net_profit_pct" in columns
+    assert "stitched_oos_max_drawdown_pct" in columns
+    assert "stitched_oos_total_trades" in columns
+    assert "stitched_oos_win_rate" in columns
+
+
 def test_save_wfa_study_with_trials():
     wf_result = _build_dummy_wfa_result()
     study_id = save_wfa_study_to_db(

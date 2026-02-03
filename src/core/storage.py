@@ -171,7 +171,15 @@ def _create_schema(conn: sqlite3.Connection) -> None:
             filter_min_profit INTEGER DEFAULT 0,
             min_profit_threshold REAL DEFAULT 0.0,
             sanitize_enabled INTEGER DEFAULT 1,
-            sanitize_trades_threshold INTEGER DEFAULT 0
+            sanitize_trades_threshold INTEGER DEFAULT 0,
+
+            stitched_oos_equity_curve TEXT,
+            stitched_oos_timestamps_json TEXT,
+            stitched_oos_window_ids_json TEXT,
+            stitched_oos_net_profit_pct REAL,
+            stitched_oos_max_drawdown_pct REAL,
+            stitched_oos_total_trades INTEGER,
+            stitched_oos_win_rate REAL
         );
 
         CREATE INDEX IF NOT EXISTS idx_studies_strategy ON studies(strategy_id);
@@ -375,6 +383,13 @@ def _ensure_columns(conn: sqlite3.Connection) -> None:
     ensure("studies", "oos_test_start_date", "TEXT")
     ensure("studies", "oos_test_end_date", "TEXT")
     ensure("studies", "oos_test_source_module", "TEXT")
+    ensure("studies", "stitched_oos_equity_curve", "TEXT")
+    ensure("studies", "stitched_oos_timestamps_json", "TEXT")
+    ensure("studies", "stitched_oos_window_ids_json", "TEXT")
+    ensure("studies", "stitched_oos_net_profit_pct", "REAL")
+    ensure("studies", "stitched_oos_max_drawdown_pct", "REAL")
+    ensure("studies", "stitched_oos_total_trades", "INTEGER")
+    ensure("studies", "stitched_oos_win_rate", "REAL")
 
     ensure("trials", "max_consecutive_losses", "INTEGER")
     ensure("trials", "ft_max_consecutive_losses", "INTEGER")
@@ -950,6 +965,48 @@ def save_wfa_study_to_db(
     with get_db_connection() as conn:
         try:
             conn.execute("BEGIN TRANSACTION")
+
+            def _tri_state(value: Optional[bool]) -> Optional[int]:
+                if value is None:
+                    return None
+                return 1 if value else 0
+
+            def _serialize_timestamps(values: Optional[List[Any]]) -> Optional[str]:
+                if not values:
+                    return None
+                return json.dumps(
+                    [
+                        value.isoformat() if hasattr(value, "isoformat") else value
+                        for value in values
+                    ]
+                )
+
+            stitched_equity = None
+            stitched_timestamps = None
+            stitched_window_ids = None
+            stitched_net_profit_pct = None
+            stitched_max_drawdown_pct = None
+            stitched_total_trades = None
+            stitched_win_rate = None
+
+            stitched = getattr(wf_result, "stitched_oos", None)
+            if stitched:
+                stitched_equity = (
+                    json.dumps(list(stitched.equity_curve))
+                    if getattr(stitched, "equity_curve", None)
+                    else None
+                )
+                stitched_timestamps = _serialize_timestamps(getattr(stitched, "timestamps", None))
+                stitched_window_ids = (
+                    json.dumps(list(stitched.window_ids))
+                    if getattr(stitched, "window_ids", None)
+                    else None
+                )
+                stitched_net_profit_pct = getattr(stitched, "final_net_profit_pct", None)
+                stitched_max_drawdown_pct = getattr(stitched, "max_drawdown_pct", None)
+                stitched_total_trades = getattr(stitched, "total_trades", None)
+                stitched_win_rate = getattr(stitched, "oos_win_rate", None)
+
             conn.execute(
                 """
                 INSERT INTO studies (
@@ -965,8 +1022,12 @@ def save_wfa_study_to_db(
                     csv_file_path, csv_file_name,
                     dataset_start_date, dataset_end_date, warmup_bars,
                     completed_at,
-                    filter_min_profit, min_profit_threshold
-                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    filter_min_profit, min_profit_threshold,
+                    stitched_oos_equity_curve, stitched_oos_timestamps_json,
+                    stitched_oos_window_ids_json, stitched_oos_net_profit_pct,
+                    stitched_oos_max_drawdown_pct, stitched_oos_total_trades,
+                    stitched_oos_win_rate
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """,
                 (
                     study_id,
@@ -1004,38 +1065,22 @@ def save_wfa_study_to_db(
                     _utc_now_iso(),
                     1 if isinstance(config, dict) and config.get("filter_min_profit") else 0,
                     config.get("min_profit_threshold") if isinstance(config, dict) else None,
+                    stitched_equity,
+                    stitched_timestamps,
+                    stitched_window_ids,
+                    stitched_net_profit_pct,
+                    stitched_max_drawdown_pct,
+                    stitched_total_trades,
+                    stitched_win_rate,
                 ),
             )
 
-            def _tri_state(value: Optional[bool]) -> Optional[int]:
-                if value is None:
-                    return None
-                return 1 if value else 0
-
-            def _serialize_timestamps(values: Optional[List[Any]]) -> Optional[str]:
-                if not values:
-                    return None
-                return json.dumps(
-                    [
-                        value.isoformat() if hasattr(value, "isoformat") else value
-                        for value in values
-                    ]
-                )
-
             window_rows = []
             for window in wf_result.windows:
-                is_equity = (
-                    json.dumps(list(window.is_equity_curve))
-                    if getattr(window, "is_equity_curve", None)
-                    else None
-                )
-                oos_equity = (
-                    json.dumps(list(window.oos_equity_curve))
-                    if window.oos_equity_curve
-                    else None
-                )
-                oos_timestamps = _serialize_timestamps(getattr(window, "oos_timestamps", None))
-                is_timestamps = _serialize_timestamps(getattr(window, "is_timestamps", None))
+                is_equity = None
+                oos_equity = None
+                oos_timestamps = None
+                is_timestamps = None
                 available_modules = getattr(window, "available_modules", None)
                 window_rows.append(
                     (
@@ -1333,6 +1378,31 @@ def load_study_from_db(study_id: str) -> Optional[Dict]:
         csv_path = study.get("csv_file_path")
         csv_exists = bool(csv_path and Path(csv_path).exists())
 
+        stitched_oos = None
+        if study.get("stitched_oos_equity_curve"):
+            try:
+                equity_curve = json.loads(study.get("stitched_oos_equity_curve") or "[]")
+            except json.JSONDecodeError:
+                equity_curve = []
+            try:
+                timestamps = json.loads(study.get("stitched_oos_timestamps_json") or "[]")
+            except json.JSONDecodeError:
+                timestamps = []
+            try:
+                window_ids = json.loads(study.get("stitched_oos_window_ids_json") or "[]")
+            except json.JSONDecodeError:
+                window_ids = []
+            stitched_oos = {
+                "equity_curve": equity_curve,
+                "timestamps": timestamps,
+                "window_ids": window_ids,
+                "final_net_profit_pct": study.get("stitched_oos_net_profit_pct"),
+                "max_drawdown_pct": study.get("stitched_oos_max_drawdown_pct"),
+                "total_trades": study.get("stitched_oos_total_trades"),
+                "wfe": study.get("best_value"),
+                "oos_win_rate": study.get("stitched_oos_win_rate"),
+            }
+
         trials: List[Dict] = []
         windows: List[Dict] = []
         manual_tests: List[Dict] = []
@@ -1476,6 +1546,7 @@ def load_study_from_db(study_id: str) -> Optional[Dict]:
         "trials": trials,
         "windows": windows,
         "manual_tests": manual_tests,
+        "stitched_oos": stitched_oos,
         "csv_exists": csv_exists,
     }
 

@@ -142,6 +142,15 @@ class WindowResult:
 
 
 @dataclass
+class StitchWindow:
+    window_id: int
+    oos_equity_curve: List[float]
+    oos_timestamps: List[pd.Timestamp]
+    oos_total_trades: int
+    oos_start: pd.Timestamp
+
+
+@dataclass
 class OOSStitchedResult:
     """Stitched out-of-sample equity curve and summary"""
 
@@ -379,6 +388,8 @@ class WalkForwardEngine:
         windows = self.split_data(df, trading_start, trading_end)
 
         window_results: List[WindowResult] = []
+        dense_stitch_windows: List[StitchWindow] = []
+        compact_stitch_windows: List[StitchWindow] = []
 
         for window in windows:
             print(f"\n--- Window {window.window_id}/{len(windows)} ---")
@@ -654,6 +665,31 @@ class WalkForwardEngine:
                     "This may indicate overfitting or unsuitable parameters."
                 )
 
+            dense_curve = list(oos_result.balance_curve or [])
+            dense_timestamps = list(oos_result.timestamps or [])
+            dense_stitch_windows.append(
+                StitchWindow(
+                    window_id=window.window_id,
+                    oos_equity_curve=dense_curve,
+                    oos_timestamps=dense_timestamps,
+                    oos_total_trades=oos_basic.total_trades,
+                    oos_start=window.oos_start,
+                )
+            )
+
+            compact_equity, compact_timestamps = self._build_compact_oos_curve(
+                oos_result, window
+            )
+            compact_stitch_windows.append(
+                StitchWindow(
+                    window_id=window.window_id,
+                    oos_equity_curve=compact_equity,
+                    oos_timestamps=compact_timestamps,
+                    oos_total_trades=oos_basic.total_trades,
+                    oos_start=window.oos_start,
+                )
+            )
+
             window_results.append(
                 WindowResult(
                     window_id=window.window_id,
@@ -667,14 +703,13 @@ class WalkForwardEngine:
                     is_max_drawdown_pct=is_basic.max_drawdown_pct,
                     is_total_trades=is_basic.total_trades,
                     is_best_trial_number=best_trial_number,
-                    is_equity_curve=list(is_result.balance_curve or []),
-                    is_timestamps=list(is_result.timestamps or []),
+                    is_equity_curve=None,
+                    is_timestamps=None,
                     oos_net_profit_pct=oos_basic.net_profit_pct,
                     oos_max_drawdown_pct=oos_basic.max_drawdown_pct,
                     oos_total_trades=oos_basic.total_trades,
-                    # Use realized balance curve so stitched net profit matches per-window net profit.
-                    oos_equity_curve=list(oos_result.balance_curve or []),
-                    oos_timestamps=list(oos_result.timestamps or []),
+                    oos_equity_curve=[],
+                    oos_timestamps=[],
                     is_pareto_optimal=is_pareto_optimal,
                     constraints_satisfied=constraints_satisfied,
                     best_params_source=best_params_source,
@@ -709,7 +744,11 @@ class WalkForwardEngine:
                 )
             )
 
-        stitched_oos = self._build_stitched_oos_equity(window_results)
+        stitched_oos = self._build_stitched_oos_equity(
+            window_results,
+            dense_windows=dense_stitch_windows,
+            compact_windows=compact_stitch_windows,
+        )
 
         wf_result = WFResult(
             config=self.config,
@@ -736,29 +775,74 @@ class WalkForwardEngine:
 
         return wf_result, study_id
 
-    def _build_stitched_oos_equity(self, windows: List[WindowResult]) -> OOSStitchedResult:
-        """Build stitched OOS equity curve from stored per-window equity curves."""
+    def _build_compact_oos_curve(
+        self,
+        result: Any,
+        window: WindowSplit,
+    ) -> Tuple[List[float], List[pd.Timestamp]]:
+        timestamps = list(getattr(result, "timestamps", None) or [])
+        balance_curve = list(getattr(result, "balance_curve", None) or [])
+        if not timestamps or not balance_curve:
+            return [], []
+
+        time_index = pd.DatetimeIndex(timestamps)
+
+        def _resolve_point(target: Optional[pd.Timestamp]) -> Optional[Tuple[pd.Timestamp, float]]:
+            if target is None:
+                return None
+            idx = int(time_index.searchsorted(target, side="right") - 1)
+            if idx < 0:
+                idx = 0
+            if idx >= len(balance_curve):
+                idx = len(balance_curve) - 1
+            return timestamps[idx], balance_curve[idx]
+
+        points: List[Tuple[pd.Timestamp, float]] = []
+        for anchor in (window.oos_start, window.oos_end):
+            resolved = _resolve_point(anchor)
+            if resolved:
+                points.append(resolved)
+
+        for trade in getattr(result, "trades", None) or []:
+            exit_time = getattr(trade, "exit_time", None)
+            resolved = _resolve_point(exit_time)
+            if resolved:
+                points.append(resolved)
+
+        if not points:
+            return [balance_curve[0]], [timestamps[0]]
+
+        points.sort(key=lambda item: item[0])
+        deduped: List[Tuple[pd.Timestamp, float]] = []
+        for ts, equity in points:
+            if deduped and ts == deduped[-1][0]:
+                deduped[-1] = (ts, equity)
+            else:
+                deduped.append((ts, equity))
+
+        return [equity for _, equity in deduped], [ts for ts, _ in deduped]
+
+    def _stitch_windows(
+        self,
+        windows: List[StitchWindow],
+        include_start_for_all: bool,
+    ) -> Tuple[List[float], List[pd.Timestamp], List[int]]:
         stitched_equity: List[float] = []
         stitched_timestamps: List[pd.Timestamp] = []
         stitched_window_ids: List[int] = []
 
         current_balance = 100.0
-        total_trades = 0
-
-        for i, window_result in enumerate(windows):
+        for idx, window_result in enumerate(windows):
             window_equity = list(window_result.oos_equity_curve or [])
             window_timestamps = list(window_result.oos_timestamps or [])
-
-            if window_result.oos_total_trades == 0 or len(window_equity) == 0:
-                total_trades += 0
+            if not window_equity:
                 continue
 
             start_equity = window_equity[0] if window_equity else 0.0
             if start_equity == 0:
                 start_equity = 100.0
 
-            start_idx = 0 if i == 0 else 1
-
+            start_idx = 0 if include_start_for_all or idx == 0 else 1
             for j in range(start_idx, len(window_equity)):
                 pct_change = (window_equity[j] / start_equity) - 1.0
                 new_balance = current_balance * (1.0 + pct_change)
@@ -772,17 +856,47 @@ class WalkForwardEngine:
             if stitched_equity:
                 current_balance = stitched_equity[-1]
 
-            total_trades += window_result.oos_total_trades
+        return stitched_equity, stitched_timestamps, stitched_window_ids
 
-        if len(stitched_equity) == 0:
+    def _build_stitched_oos_equity(
+        self,
+        windows: List[WindowResult],
+        dense_windows: Optional[List[StitchWindow]] = None,
+        compact_windows: Optional[List[StitchWindow]] = None,
+    ) -> OOSStitchedResult:
+        """Build stitched OOS equity curve and metrics (metrics from dense data)."""
+
+        if dense_windows is None:
+            dense_windows = [
+                StitchWindow(
+                    window_id=window.window_id,
+                    oos_equity_curve=list(window.oos_equity_curve or []),
+                    oos_timestamps=list(window.oos_timestamps or []),
+                    oos_total_trades=window.oos_total_trades,
+                    oos_start=window.oos_start,
+                )
+                for window in windows
+            ]
+        use_compact = compact_windows is not None
+        if compact_windows is None:
+            compact_windows = dense_windows
+
+        dense_equity, _dense_timestamps, _dense_window_ids = self._stitch_windows(
+            dense_windows, include_start_for_all=False
+        )
+        compact_equity, compact_timestamps, compact_window_ids = self._stitch_windows(
+            compact_windows, include_start_for_all=use_compact
+        )
+
+        if len(dense_equity) == 0:
             final_net_profit_pct = 0.0
             max_drawdown_pct = 0.0
         else:
-            final_net_profit_pct = (stitched_equity[-1] / 100.0 - 1.0) * 100.0
+            final_net_profit_pct = (dense_equity[-1] / 100.0 - 1.0) * 100.0
 
-            peak = stitched_equity[0]
+            peak = dense_equity[0]
             max_dd = 0.0
-            for equity_value in stitched_equity:
+            for equity_value in dense_equity:
                 if equity_value > peak:
                     peak = equity_value
                 if peak > 0:
@@ -790,6 +904,8 @@ class WalkForwardEngine:
                     if dd > max_dd:
                         max_dd = dd
             max_drawdown_pct = max_dd
+
+        total_trades = sum(w.oos_total_trades for w in windows) if windows else 0
 
         if windows:
             avg_is_profit = sum(w.is_net_profit_pct for w in windows) / len(windows)
@@ -821,9 +937,9 @@ class WalkForwardEngine:
             total_trades=total_trades,
             wfe=wfe,
             oos_win_rate=oos_win_rate,
-            equity_curve=stitched_equity,
-            timestamps=stitched_timestamps,
-            window_ids=stitched_window_ids,
+            equity_curve=compact_equity,
+            timestamps=compact_timestamps,
+            window_ids=compact_window_ids,
         )
 
     def _convert_optuna_results_for_storage(

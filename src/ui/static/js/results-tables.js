@@ -837,7 +837,7 @@ function highlightParamItem(item) {
   }, 800);
 }
 
-function renderEquityChart(equityData, windowBoundaries = null, timestamps = null) {
+function renderEquityChart(equityData, windowBoundaries = null, timestamps = null, options = null) {
   const svg = document.querySelector('.chart-svg');
   const axis = document.getElementById('equityAxis');
   if (!svg || !equityData || equityData.length === 0) return;
@@ -845,6 +845,58 @@ function renderEquityChart(equityData, windowBoundaries = null, timestamps = nul
   const width = 800;
   const height = 260;
   const padding = 20;
+  const useTimeScaleRequested = Boolean(options && options.useTimeScale);
+  const hasTimestamps = Array.isArray(timestamps) && timestamps.length === equityData.length;
+  const pointCount = equityData.length;
+  const denom = Math.max(1, pointCount - 1);
+  let useTimeScale = false;
+  let timeStart = null;
+  let timeEnd = null;
+
+  if (useTimeScaleRequested && hasTimestamps) {
+    const start = Date.parse(timestamps[0]);
+    const end = Date.parse(timestamps[timestamps.length - 1]);
+    if (Number.isFinite(start) && Number.isFinite(end) && end > start) {
+      useTimeScale = true;
+      timeStart = start;
+      timeEnd = end;
+    }
+  }
+
+  const getIndexRatio = (index) => {
+    return index / denom;
+  };
+
+  const getTimeRatio = (timeValue) => {
+    if (!useTimeScale) return null;
+    const t = Date.parse(timeValue);
+    if (!Number.isFinite(t)) return null;
+    const ratio = (t - timeStart) / (timeEnd - timeStart);
+    return Math.min(1, Math.max(0, ratio));
+  };
+
+  const getRatioForIndex = (index) => {
+    if (useTimeScale) {
+      const ratio = getTimeRatio(timestamps[index]);
+      if (ratio !== null) return ratio;
+    }
+    return getIndexRatio(index);
+  };
+
+  const getRatioForBoundary = (boundary) => {
+    if (useTimeScale) {
+      let timeValue = boundary ? (boundary.time || boundary.timestamp || boundary.date) : null;
+      if (!timeValue && boundary && boundary.index !== undefined && boundary.index !== null) {
+        if (hasTimestamps && boundary.index >= 0 && boundary.index < timestamps.length) {
+          timeValue = timestamps[boundary.index];
+        }
+      }
+      const ratio = getTimeRatio(timeValue);
+      if (ratio !== null) return ratio;
+    }
+    if (!boundary || boundary.index === undefined || boundary.index === null) return null;
+    return getIndexRatio(boundary.index);
+  };
 
   const baseValue = 100.0;
   const minValue = Math.min(...equityData, baseValue);
@@ -874,8 +926,15 @@ function renderEquityChart(equityData, windowBoundaries = null, timestamps = nul
   svg.appendChild(baseLine);
 
   if (windowBoundaries && windowBoundaries.length > 0) {
+    const boundaryPositions = windowBoundaries.map((boundary) => {
+      const ratio = getRatioForBoundary(boundary);
+      if (ratio === null) return null;
+      return ratio * width;
+    });
+
     windowBoundaries.forEach((boundary, index) => {
-      const x = (boundary.index / (equityData.length - 1)) * width;
+      const x = boundaryPositions[index];
+      if (x === null) return;
       const line = document.createElementNS('http://www.w3.org/2000/svg', 'line');
       line.setAttribute('x1', x);
       line.setAttribute('y1', 0);
@@ -887,8 +946,9 @@ function renderEquityChart(equityData, windowBoundaries = null, timestamps = nul
       svg.appendChild(line);
 
       if (boundary.windowId !== undefined && boundary.windowId !== null) {
-        const labelX = index < windowBoundaries.length - 1
-          ? (x + (windowBoundaries[index + 1].index / (equityData.length - 1)) * width) / 2
+        const nextX = boundaryPositions[index + 1];
+        const labelX = nextX !== null && nextX !== undefined
+          ? (x + nextX) / 2
           : x + 40;
 
         const text = document.createElementNS('http://www.w3.org/2000/svg', 'text');
@@ -911,11 +971,21 @@ function renderEquityChart(equityData, windowBoundaries = null, timestamps = nul
       if (tickCount >= 2) {
         for (let i = 0; i < tickCount; i += 1) {
           const ratio = tickCount === 1 ? 0 : i / (tickCount - 1);
-          const index = Math.round(ratio * (equityData.length - 1));
-          const tickDate = new Date(timestamps[index]);
-          if (Number.isNaN(tickDate.getTime())) continue;
-          const xPct = (index / (equityData.length - 1)) * 100;
-          const x = (index / (equityData.length - 1)) * width;
+          let tickDate = null;
+          let xPct = 0;
+          let x = 0;
+          if (useTimeScale) {
+            const tickTime = timeStart + ratio * (timeEnd - timeStart);
+            tickDate = new Date(tickTime);
+            xPct = ratio * 100;
+            x = ratio * width;
+          } else {
+            const index = Math.round(ratio * (equityData.length - 1));
+            tickDate = new Date(timestamps[index]);
+            xPct = (index / (equityData.length - 1)) * 100;
+            x = (index / (equityData.length - 1)) * width;
+          }
+          if (!tickDate || Number.isNaN(tickDate.getTime())) continue;
 
           const grid = document.createElementNS('http://www.w3.org/2000/svg', 'line');
           grid.setAttribute('x1', x);
@@ -947,7 +1017,7 @@ function renderEquityChart(equityData, windowBoundaries = null, timestamps = nul
   }
 
   const points = equityData.map((value, index) => {
-    const x = (index / (equityData.length - 1)) * width;
+    const x = getRatioForIndex(index) * width;
     const y = height - padding - ((value - minValue) / valueRange) * (height - 2 * padding);
     return `${x},${y}`;
   }).join(' ');
@@ -969,6 +1039,18 @@ function calculateWindowBoundaries(windows, stitchedOOS) {
       boundaries.push({ index, windowId });
       lastWindowId = windowId;
     }
+  });
+  return boundaries;
+}
+
+function calculateWindowBoundariesByDate(windows, timestamps) {
+  if (!windows || !windows.length || !Array.isArray(timestamps) || !timestamps.length) return [];
+  const boundaries = [];
+  windows.forEach((window, index) => {
+    const windowId = window.window_number || window.window_id || index + 1;
+    const boundaryDate = window.oos_start_date || window.oos_start || window.is_end_date;
+    if (!boundaryDate) return;
+    boundaries.push({ time: boundaryDate, windowId });
   });
   return boundaries;
 }

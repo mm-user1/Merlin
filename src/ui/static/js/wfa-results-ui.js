@@ -89,10 +89,14 @@
     const stitched = window.ResultsState?.stitched_oos;
     if (!stitched?.equity_curve) return;
     if (typeof renderEquityChart !== 'function') return;
-    const boundaries = typeof calculateWindowBoundaries === 'function'
-      ? calculateWindowBoundaries(window.ResultsState?.results || [], stitched)
-      : [];
-    renderEquityChart(stitched.equity_curve, boundaries, stitched.timestamps || []);
+    const windows = window.ResultsState?.results || [];
+    let boundaries = [];
+    if (typeof calculateWindowBoundariesByDate === 'function') {
+      boundaries = calculateWindowBoundariesByDate(windows, stitched.timestamps || []);
+    } else if (typeof calculateWindowBoundaries === 'function') {
+      boundaries = calculateWindowBoundaries(windows, stitched);
+    }
+    renderEquityChart(stitched.equity_curve, boundaries, stitched.timestamps || [], { useTimeScale: true });
   }
 
   function setWfaSelection(selection) {

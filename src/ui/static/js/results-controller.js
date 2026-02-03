@@ -353,22 +353,39 @@ async function applyStudyPayload(data) {
   }
 
   if (ResultsState.mode === 'wfa') {
-    const stitched = buildStitchedFromWindows(ResultsState.results);
-    const summary = calculateSummaryFromEquity(stitched.equity_curve);
+    const storedStitched = data.stitched_oos || null;
     const profitable = (ResultsState.results || []).filter((w) => (w.oos_net_profit_pct || 0) > 0).length;
     const winRate = ResultsState.results && ResultsState.results.length
       ? (profitable / ResultsState.results.length) * 100
       : 0;
-    ResultsState.stitched_oos = {
-      final_net_profit_pct: summary.final_net_profit_pct,
-      max_drawdown_pct: summary.max_drawdown_pct,
-      total_trades: ResultsState.results.reduce((sum, w) => sum + (w.oos_total_trades || 0), 0),
-      wfe: study.best_value || 0,
-      oos_win_rate: winRate,
-      equity_curve: stitched.equity_curve,
-      timestamps: stitched.timestamps || [],
-      window_ids: stitched.window_ids
-    };
+    const totalTrades = ResultsState.results.reduce((sum, w) => sum + (w.oos_total_trades || 0), 0);
+
+    if (storedStitched && Array.isArray(storedStitched.equity_curve) && storedStitched.equity_curve.length) {
+      const fallbackSummary = calculateSummaryFromEquity(storedStitched.equity_curve);
+      ResultsState.stitched_oos = {
+        final_net_profit_pct: storedStitched.final_net_profit_pct ?? fallbackSummary.final_net_profit_pct,
+        max_drawdown_pct: storedStitched.max_drawdown_pct ?? fallbackSummary.max_drawdown_pct,
+        total_trades: storedStitched.total_trades ?? totalTrades,
+        wfe: storedStitched.wfe ?? study.best_value ?? 0,
+        oos_win_rate: storedStitched.oos_win_rate ?? winRate,
+        equity_curve: storedStitched.equity_curve,
+        timestamps: storedStitched.timestamps || [],
+        window_ids: storedStitched.window_ids || []
+      };
+    } else {
+      const stitched = buildStitchedFromWindows(ResultsState.results);
+      const summary = calculateSummaryFromEquity(stitched.equity_curve);
+      ResultsState.stitched_oos = {
+        final_net_profit_pct: summary.final_net_profit_pct,
+        max_drawdown_pct: summary.max_drawdown_pct,
+        total_trades: totalTrades,
+        wfe: study.best_value ?? 0,
+        oos_win_rate: winRate,
+        equity_curve: stitched.equity_curve,
+        timestamps: stitched.timestamps || [],
+        window_ids: stitched.window_ids
+      };
+    }
   }
 
   if (ResultsState.strategyId) {
@@ -669,8 +686,13 @@ function refreshResultsView() {
     } else {
       renderWFATable(ResultsState.results || []);
     }
-    const boundaries = calculateWindowBoundaries(ResultsState.results || [], summary);
-    renderEquityChart(summary.equity_curve || [], boundaries, summary.timestamps || []);
+    let boundaries = [];
+    if (typeof calculateWindowBoundariesByDate === 'function') {
+      boundaries = calculateWindowBoundariesByDate(ResultsState.results || [], summary.timestamps || []);
+    } else if (typeof calculateWindowBoundaries === 'function') {
+      boundaries = calculateWindowBoundaries(ResultsState.results || [], summary);
+    }
+    renderEquityChart(summary.equity_curve || [], boundaries, summary.timestamps || [], { useTimeScale: true });
     renderWindowIndicators(ResultsState.summary?.total_windows || ResultsState.results?.length || 0);
   } else {
     setComparisonLine('');
