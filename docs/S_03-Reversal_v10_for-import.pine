@@ -1,0 +1,273 @@
+// S_03 Reversal_v10 T Bands
+//@version=5
+strategy(title="S_03 Reversal Simple + T Bands",
+	 overlay=true,
+	 initial_capital=100,
+	 currency="USDT",
+     pyramiding=0,
+	 calc_on_order_fills=false,
+	 calc_on_every_tick=false,
+	 use_bar_magnifier=false,
+	 fill_orders_on_standard_ohlc=true,
+	 process_orders_on_close=false,
+	 default_qty_type=strategy.percent_of_equity,
+	 default_qty_value=100,
+	 commission_type=strategy.commission.percent,
+	 commission_value=0.05)
+
+
+// ══════════════════════════════════════════════════════════════════════════════
+// ███ INPUTS
+// ══════════════════════════════════════════════════════════════════════════════
+
+// ──────────────────────────────────────────────────────────────────────────────
+// Date Filter & Display Settings
+// ──────────────────────────────────────────────────────────────────────────────
+useDateFilter   = input.bool(true, "Date Filter", inline="Use Date Filter")
+
+startDate       = input.time(timestamp('2025-02-01'), title="Start Date")
+endDate         = input.time(timestamp('2026-02-01'), title="End Date")
+
+// ──────────────────────────────────────────────────────────────────────────────
+// Moving Average Settings
+// ──────────────────────────────────────────────────────────────────────────────
+var g_ma   = "Moving Averages"
+maType3    = input.string(title="T MA", defval="SMA", options=["EMA", "SMA", "HMA", "WMA", "ALMA", "KAMA", "TMA", "T3", "DEMA", "VWMA", "VWAP"], inline="MA №3", group=g_ma)
+maLength3  = input.int(title="", defval=75, minval=0, step=5, inline="MA №3", group=g_ma)
+maOffset3  = input.float(title="", defval=0.2, step=0.5, inline="MA №3", group=g_ma)
+maColor3   = input.color(defval=color.rgb(166, 109, 176, 40), title="", inline="MA №3", group=g_ma)
+
+// ──────────────────────────────────────────────────────────────────────────────
+// Entry Conditions: Close Count & T Bands
+// ──────────────────────────────────────────────────────────────────────────────
+useCloseCount     = input.bool(defval=true, title="Close Count Long", inline="Close Count", group=g_ma)
+closeCountLong    = input.int(title="", defval=7, minval=1, step=1, inline="Close Count", group=g_ma)
+closeCountShort   = input.int(title="Short", defval=5, minval=1, step=1, inline="Close Count", group=g_ma)
+
+useTBands         = input.bool(defval=true, title="T Bands % Long", inline="T bands", group=g_ma)
+tBandLongPct      = input.float(title="", defval=1.0, minval=0.1, step=0.1, inline="T bands", group=g_ma)
+tBandShortPct     = input.float(title="Short", defval=1.3, minval=0.1, step=0.1, inline="T bands", group=g_ma)
+
+// ──────────────────────────────────────────────────────────────────────────────
+// Position Sizing
+// ──────────────────────────────────────────────────────────────────────────────
+contractSize     = input.float(title="Contract Size", defval=0.01, options=[0.0001, 0.001, 0.01, 0.1, 1, 10, 100, 1000, 10000, 100000, 1000000], group=g_ma)
+
+// ──────────────────────────────────────────────────────────────────────────────
+// Reserved for future: Stops, Rewards, Risks
+// ──────────────────────────────────────────────────────────────────────────────
+var g_rrs   = "Stops, Rewards, Risks"
+
+
+// ══════════════════════════════════════════════════════════════════════════════
+// ███ CONSTANTS & FUNCTIONS (Trading Logic)
+// ══════════════════════════════════════════════════════════════════════════════
+
+// KAMA parameters
+float fastKama = 2
+float slowKama = 30
+
+// T3 smoothing factor
+float factorT3 = 0.7
+
+// ──────────────────────────────────────────────────────────────────────────────
+// T3 Moving Average helper function (Generalized DEMA)
+// ──────────────────────────────────────────────────────────────────────────────
+gd(_maSource, _maLength) =>
+    ta.ema(_maSource, _maLength) * (1 + factorT3) - ta.ema(ta.ema(_maSource, _maLength), _maLength) * factorT3
+
+// ──────────────────────────────────────────────────────────────────────────────
+// Universal Moving Average selector
+// ──────────────────────────────────────────────────────────────────────────────
+getMA(_maSource, _maType, _maLength) =>
+    if _maLength == 0
+        na
+    else
+        switch _maType
+            "SMA" => ta.sma(_maSource, _maLength)
+            "HMA" => ta.hma(_maSource, _maLength)
+            "WMA" => ta.wma(_maSource, _maLength)
+            "VWMA" => ta.vwma(_maSource, _maLength)
+            "VWAP" => ta.vwap
+            "ALMA" => ta.alma(_maSource, _maLength, 0.85, 6)
+            "DEMA" =>
+                e1 = ta.ema(_maSource, _maLength)
+                e2 = ta.ema(e1, _maLength)
+                2 * e1 - e2
+            "KAMA" =>
+                mom = math.abs(ta.change(_maSource, _maLength))
+                volatility = math.sum(math.abs(ta.change(_maSource)), _maLength)
+                er = volatility != 0 ? mom / volatility : 0
+                fastAlpha = 2 / (fastKama + 1)
+                slowAlpha = 2 / (slowKama + 1)
+                alpha = math.pow(er * (fastAlpha - slowAlpha) + slowAlpha, 2)
+                kama = 0.0
+                kama := alpha * _maSource + (1 - alpha) * nz(kama[1], _maSource)
+                kama
+            "TMA" =>
+                tma = ta.sma(ta.sma(_maSource, math.ceil(_maLength / 2)), math.floor(_maLength / 2) + 1)
+            "T3" =>
+                t3 = gd(gd(gd(_maSource, _maLength), _maLength), _maLength)
+            => ta.ema(_maSource, _maLength)
+
+
+// ══════════════════════════════════════════════════════════════════════════════
+// ███ INDICATORS
+// ══════════════════════════════════════════════════════════════════════════════
+
+// ATR (reserved for future use)
+atr = ta.atr(14)
+
+// Main Moving Average with optional offset
+ma3 = if maOffset3 == 0
+    getMA(close, maType3, maLength3)
+else if maOffset3 != 0
+    getMA(close, maType3, maLength3) * (1 + maOffset3/100)
+
+// Trend Bands (percentage offset from MA)
+ma3UpBand   = ma3 * (1 + tBandLongPct/100)
+ma3DownBand = ma3 * (1 - tBandShortPct/100)
+
+
+// ══════════════════════════════════════════════════════════════════════════════
+// ███ SIGNAL LOGIC
+// ══════════════════════════════════════════════════════════════════════════════
+
+// ──────────────────────────────────────────────────────────────────────────────
+// Date Range Filter
+// ──────────────────────────────────────────────────────────────────────────────
+timeInRange = not useDateFilter or time >= startDate and time <= endDate
+
+// ──────────────────────────────────────────────────────────────────────────────
+// T Bands Signals (Hysteresis Logic)
+// tBandState: 1 = LONG allowed, -1 = SHORT allowed, 0 = neutral (no position)
+// ──────────────────────────────────────────────────────────────────────────────
+
+// Combined breakout conditions (high/low pierces band AND close confirms beyond band)
+breakUpBand   = high > ma3UpBand and close > ma3UpBand
+breakDownBand = low < ma3DownBand and close < ma3DownBand
+
+// Fail condition: single bar pierces both bands (extreme volatility)
+crossTbandFail = (high >= ma3UpBand) and (low <= ma3DownBand)
+
+// T Bands state machine with memory
+var int tBandState = 0  // Start neutral, wait for first clean breakout
+
+// Update state only on confirmed bars to prevent false signals on realtime ticks
+if barstate.isconfirmed
+    if crossTbandFail
+        // F2 logic: determine direction by close relative to MA
+        tBandState := close > ma3 ? 1 : -1
+    else
+        // Normal breakout logic
+        if breakUpBand
+            tBandState := 1
+        else if breakDownBand
+            tBandState := -1
+        // else: keep previous state (hysteresis - no change between bands)
+
+// Generate signals based on T Bands state
+crossTBandLong  = useTBands ? (tBandState == 1) : true
+crossTBandShort = useTBands ? (tBandState == -1) : true
+
+// ──────────────────────────────────────────────────────────────────────────────
+// Close Count Signals
+// Counts consecutive closes above/below MA
+// ──────────────────────────────────────────────────────────────────────────────
+var int countCloseLong = 0
+var int countCloseShort = 0
+
+// Update counters only on confirmed bars to prevent miscounting on realtime ticks
+if barstate.isconfirmed
+    if close > ma3
+        countCloseLong := countCloseLong + 1
+        countCloseShort := 0
+    else if close < ma3
+        countCloseShort := countCloseShort + 1
+        countCloseLong := 0
+    else
+        countCloseLong := 0
+        countCloseShort := 0
+
+countLong = if useCloseCount
+    countCloseLong >= closeCountLong
+else
+    true
+
+countShort = if useCloseCount
+    countCloseShort >= closeCountShort
+else
+    true
+
+
+// ══════════════════════════════════════════════════════════════════════════════
+// ███ ENTRY CONDITIONS
+// ══════════════════════════════════════════════════════════════════════════════
+
+longConditions  = timeInRange and countLong and crossTBandLong and barstate.isconfirmed
+shortConditions = timeInRange and countShort and crossTBandShort and barstate.isconfirmed
+
+
+// ══════════════════════════════════════════════════════════════════════════════
+// ███ EXECUTION
+// ══════════════════════════════════════════════════════════════════════════════
+
+// Close opposite position before entry (webhook safe: 1 bar delay)
+if longConditions and strategy.position_size < 0
+    strategy.close("Short", comment="Close Short")
+
+if shortConditions and strategy.position_size > 0
+    strategy.close("Long", comment="Close Long")
+
+// Entry orders (only when flat)
+if longConditions and strategy.position_size == 0
+    positionSize = math.floor((strategy.equity / close) / contractSize)* contractSize
+    strategy.entry("Long", strategy.long, qty=positionSize)
+
+if shortConditions and strategy.position_size == 0
+    positionSize = math.floor((strategy.equity / close) / contractSize)* contractSize
+    strategy.entry("Short", strategy.short, qty=positionSize)
+
+// Exit on date filter expiry
+if not timeInRange
+    strategy.close_all("Close")
+
+
+// Reference test results:
+// Test Configuration:
+// CSV File: ./data/raw/"OKX_SUIUSDT.P, 30 2025.01.01-2026.02.01.csv"
+
+// Default Parameters:
+
+// Date range: from 2025-02-01 to 2026-02-01
+
+// Parameters:
+// maType3 = SMA
+// maLength3 = 75
+// maOffset3 = 0.2
+// useCloseCount = true
+// closeCountLong = 7
+// closeCountShort = 5
+// useTBands = true
+// tBandLongPct = 1.0
+// tBandShortPct = 1.3
+
+// Contract Size = 0.01  (project default setting)
+
+// Expected Results
+
+// Performance Metrics:
+// ├─ Net Profit:        186.61%
+// ├─ Max Drawdown:      35.49%
+// ├─ Total Trades:      221
+
+// Default settings for Optuna optimization parameters
+// maType3 = true + all checkboxes enabled (same as in S_01 strategy)
+// maLength3 = "min": 25, "max": 500, "step": 25
+// maOffset3 = "min": -2.0, "max": 2.0, "step": 0.5
+// useCloseCount = true
+// closeCountLong = "min": 2, "max": 7, "step": 1
+// closeCountShort = "min": 2, "max": 7, "step": 1
+// useTBands = true
+// tBandLongPct = "min": 0.2, "max": 2.0, "step": 0.2
+// tBandShortPct = "min": 0.2, "max": 2.0, "step": 0.2
