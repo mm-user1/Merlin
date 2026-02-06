@@ -43,7 +43,7 @@ class WFConfig:
     post_process: Optional[PostProcessConfig] = None
     dsr_config: Optional[DSRConfig] = None
     stress_test_config: Optional[StressTestConfig] = None
-    store_top_n_trials: int = 100
+    store_top_n_trials: int = 50
 
 
 @dataclass

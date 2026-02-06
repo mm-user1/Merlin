@@ -910,7 +910,7 @@ async function runWalkForward({ sources, state }) {
 
   const wfIsPeriodDays = document.getElementById('wfIsPeriodDays').value;
   const wfOosPeriodDays = document.getElementById('wfOosPeriodDays').value;
-  const wfStoreTopNTrials = document.getElementById('wfStoreTopNTrials')?.value || '100';
+  const wfStoreTopNTrials = document.getElementById('wfStoreTopNTrials')?.value || '50';
   const warmupValue = document.getElementById('warmupBars')?.value || '1000';
   const strategySummary = getStrategySummary();
 

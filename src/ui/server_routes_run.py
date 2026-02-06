@@ -348,9 +348,9 @@ def register_routes(app):
         oos_period_days = max(1, min(3650, oos_period_days))
 
         try:
-            store_top_n_trials = int(data.get("wf_store_top_n_trials", 100))
+            store_top_n_trials = int(data.get("wf_store_top_n_trials", 50))
         except (TypeError, ValueError):
-            store_top_n_trials = 100
+            store_top_n_trials = 50
         store_top_n_trials = max(10, min(500, store_top_n_trials))
 
         from core.walkforward_engine import WFConfig, WalkForwardEngine
