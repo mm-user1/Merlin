@@ -62,6 +62,7 @@ src/
 |-- strategies/               # Trading strategies
 |   |-- base.py               # BaseStrategy class
 |   |-- s01_trailing_ma/
+|   |-- s03_reversal_v10/
 |   `-- s04_stochrsi/
 |-- storage/                  # Database storage (gitignored)
 |   |-- studies.db            # SQLite database (WAL mode)
@@ -81,7 +82,17 @@ src/
         |   |-- results-format.js     # Results formatters + labels + MD5
         |   |-- results-tables.js     # Results table/chart renderers + row selection
         |   |-- results-controller.js # Results orchestration + API calls + event binding
-        |   `-- api.js            # API client
+        |   |-- api.js            # API client
+        |   |-- strategy-config.js    # Dynamic form generation from config.json
+        |   |-- ui-handlers.js        # Shared UI event handlers
+        |   |-- optuna-ui.js          # Optuna Start-page UI helpers
+        |   |-- optuna-results-ui.js  # Optuna Results-page UI helpers
+        |   |-- post-process-ui.js    # Post process UI helpers
+        |   |-- oos-test-ui.js        # OOS test UI helpers
+        |   |-- wfa-results-ui.js     # WFA Results-page UI helpers
+        |   |-- presets.js            # Preset management
+        |   |-- results.js            # Results page initialization
+        |   `-- utils.js              # Shared utility functions
         `-- css/
 ```
 
@@ -205,7 +216,14 @@ pytest tests/ -v
 ### Key Test Files
 - `test_sanity.py` - Infrastructure checks
 - `test_regression_s01.py` - S01 baseline regression
+- `test_s03_reversal_v10.py` - S03 strategy tests
+- `test_s04_stochrsi.py` - S04 strategy tests
 - `test_naming_consistency.py` - camelCase guardrails
+- `test_storage.py` - Database storage tests
+- `test_post_process.py` - Post-process module tests
+- `test_dsr.py` - Deflated Sharpe Ratio tests
+- `test_oos_selection.py` - OOS selection tests
+- `test_stress_test.py` - Stress test tests
 
 ### Regenerate S01 Baseline
 ```bash
@@ -274,6 +292,9 @@ python tools/generate_baseline_s01.py
 - **post-process-ui.js**: Post process UI helpers (Forward Test, DSR panels)
 - **oos-test-ui.js**: OOS test UI helpers
 - **wfa-results-ui.js**: WFA Results-page UI helpers
+- **presets.js**: Preset management (load/save/import)
+- **results.js**: Results page initialization
+- **utils.js**: Shared utility functions
 - Forms generated dynamically from `config.json`
 - Strategy dropdown auto-populated from discovered strategies
 - No hardcoded parameters in frontend
@@ -295,6 +316,7 @@ python tools/generate_baseline_s01.py
 - `POST /api/optimize` - Run Optuna optimization, returns study_id
 - `POST /api/walkforward` - Run WFA, returns study_id
 - `POST /api/backtest` - Run single backtest (no database storage)
+- `POST /api/backtest/trades` - Download trades CSV for single backtest
 - `GET /api/optimization/status` - Get current optimization state
 - `POST /api/optimization/cancel` - Cancel running optimization
 
@@ -312,16 +334,20 @@ python tools/generate_baseline_s01.py
 - `POST /api/studies/<study_id>/trials/<trial_number>/ft-trades` - Download Forward Test trades CSV
 - `POST /api/studies/<study_id>/trials/<trial_number>/oos-trades` - Download OOS Test trades CSV
 - `POST /api/studies/<study_id>/tests/<test_id>/trials/<trial_number>/mt-trades` - Download Manual Test trades CSV
+- `GET /api/studies/<study_id>/wfa/windows/<window_number>` - Get WFA window details with module trials
+- `POST /api/studies/<study_id>/wfa/windows/<window_number>/equity` - Generate WFA window equity curve on-demand
+- `POST /api/studies/<study_id>/wfa/windows/<window_number>/trades` - Download WFA window trades CSV
 - `POST /api/studies/<study_id>/wfa/trades` - Download stitched WFA OOS trades CSV
 
 ### Strategy & Presets
 - `GET /api/strategies` - List available strategies
 - `GET /api/strategies/<strategy_id>` - Get strategy metadata
-- `GET /api/strategy/<strategy_id>/config` - Get strategy schema
+- `GET /api/strategy/<strategy_id>/config` - Get strategy parameter schema
 - `GET /api/presets` - List presets
 - `POST /api/presets` - Create preset
 - `GET/PUT/DELETE /api/presets/<name>` - Load/update/delete preset
 - `PUT /api/presets/defaults` - Update default preset values
+- `POST /api/presets/import-csv` - Import preset from CSV parameter block
 
 ## Performance Considerations
 
@@ -337,6 +363,7 @@ python tools/generate_baseline_s01.py
 | ID | Name | Description |
 |----|------|-------------|
 | `s01_trailing_ma` | S01 Trailing MA | Complex trailing MA with 11 MA types, close counts, ATR stops |
+| `s03_reversal_v10` | S03 Reversal | Reversal strategy using close-count confirmation and T-Bands hysteresis |
 | `s04_stochrsi` | S04 StochRSI | StochRSI swing strategy with swing-based stops |
 
 ## Key Files for Reference
@@ -352,6 +379,7 @@ python tools/generate_baseline_s01.py
 | Flask services/helpers | `src/ui/server_services.py` |
 | Flask data routes | `src/ui/server_routes_data.py` |
 | Flask run routes | `src/ui/server_routes_run.py` |
+| S03 example | `src/strategies/s03_reversal_v10/strategy.py` |
 | S04 example | `src/strategies/s04_stochrsi/strategy.py` |
 | config.json example | `src/strategies/s04_stochrsi/config.json` |
 | Test baseline | `data/baseline/` |

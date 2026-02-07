@@ -25,13 +25,22 @@ project-root/
 |   |-- test_sanity.py         # Infrastructure sanity checks
 |   |-- test_regression_s01.py # S01 baseline regression
 |   |-- test_s01_migration.py  # S01 migration validation
+|   |-- test_s03_reversal_v10.py # S03 strategy tests
 |   |-- test_s04_stochrsi.py   # S04 strategy tests
 |   |-- test_metrics.py        # Metrics calculation tests
 |   |-- test_export.py         # Export functionality tests
 |   |-- test_indicators.py     # Indicator tests
 |   |-- test_naming_consistency.py # camelCase naming guardrails
 |   |-- test_walkforward.py    # Walk-forward analysis tests
-|   `-- test_server.py         # HTTP API tests
+|   |-- test_server.py         # HTTP API tests
+|   |-- test_storage.py        # Database storage tests
+|   |-- test_post_process.py   # Post-process module tests
+|   |-- test_dsr.py            # Deflated Sharpe Ratio tests
+|   |-- test_oos_selection.py  # OOS selection tests
+|   |-- test_stress_test.py    # Stress test tests
+|   |-- test_multiprocess_score.py    # Multi-process scoring tests
+|   |-- test_optuna_sanitization.py   # Optuna sanitization tests
+|   `-- test_score_normalization.py   # Score normalization tests
 `-- src/                      # Application source code
     |-- run_backtest.py       # CLI backtest runner
     |-- core/                 # Core engines and utilities
@@ -53,6 +62,9 @@ project-root/
     |   |-- s01_trailing_ma/   # Trailing MA strategy
     |   |   |-- config.json    # Parameter schema
     |   |   `-- strategy.py    # Strategy implementation
+    |   |-- s03_reversal_v10/  # Reversal strategy (T-Bands + close counts)
+    |   |   |-- config.json
+    |   |   `-- strategy.py
     |   `-- s04_stochrsi/      # StochRSI strategy
     |       |-- config.json
     |       `-- strategy.py
@@ -83,8 +95,9 @@ project-root/
     |       |   |-- post-process-ui.js   # Post process UI helpers
     |       |   |-- oos-test-ui.js       # OOS test UI helpers
     |       |   |-- wfa-results-ui.js    # WFA Results-page UI helpers
-    |       |   |-- presets.js
-    |       |   `-- utils.js
+    |       |   |-- presets.js           # Preset management
+    |       |   |-- results.js           # Results page initialization
+    |       |   `-- utils.js             # Shared utility functions
     |       `-- css/
     |           `-- style.css # Light theme styles
     `-- presets/              # Saved parameter presets
@@ -188,7 +201,7 @@ Start Page (index.html)
   -> User submits optimization
   -> server.py builds OptimizationConfig
   -> optuna_engine / walkforward_engine
-  -> strategy (s01/s04/...) + indicators
+  -> strategy (s01/s03/s04/...) + indicators
   -> backtest_engine (per trial/window)
   -> metrics.py
   -> storage.py
@@ -209,13 +222,15 @@ Results Page (results.html)
 #### Trade Export (On-Demand)
 ```
 User clicks "Download Trades"
-  -> Endpoint depends on active tab:
+  -> Endpoint depends on context:
+     - Single Backtest: POST /api/backtest/trades
      - IS: POST /api/studies/{id}/trials/{n}/trades
      - Forward Test: POST /api/studies/{id}/trials/{n}/ft-trades
      - OOS Test: POST /api/studies/{id}/trials/{n}/oos-trades
      - Manual Test: POST /api/studies/{id}/tests/{test_id}/trials/{n}/mt-trades
-     - WFA: POST /api/studies/{id}/wfa/trades
-  -> storage.py loads params/metadata
+     - WFA Window: POST /api/studies/{id}/wfa/windows/{n}/trades
+     - WFA Stitched: POST /api/studies/{id}/wfa/trades
+  -> storage.py loads params/metadata (or backtest re-runs directly)
   -> backtest_engine re-runs strategy
   -> export.py outputs CSV
 ```
@@ -255,6 +270,7 @@ SQLite database stored at `src/storage/studies.db` with WAL (Write-Ahead Logging
 | Endpoint | Method | Purpose |
 |----------|--------|---------|
 | `/api/backtest` | POST | Run single backtest (no storage) |
+| `/api/backtest/trades` | POST | Download trades CSV for single backtest |
 | `/api/optimize` | POST | Run Optuna optimization, save to database |
 | `/api/walkforward` | POST | Run WFA, save to database |
 | `/api/optimization/status` | GET | Get current optimization state |
@@ -275,6 +291,9 @@ SQLite database stored at `src/storage/studies.db` with WAL (Write-Ahead Logging
 | `/api/studies/<study_id>/trials/<trial_number>/ft-trades` | POST | Generate and download Forward Test trades CSV |
 | `/api/studies/<study_id>/trials/<trial_number>/oos-trades` | POST | Generate and download OOS Test trades CSV |
 | `/api/studies/<study_id>/tests/<test_id>/trials/<trial_number>/mt-trades` | POST | Generate and download Manual Test trades CSV |
+| `/api/studies/<study_id>/wfa/windows/<window_number>` | GET | Get WFA window details with module trials |
+| `/api/studies/<study_id>/wfa/windows/<window_number>/equity` | POST | Generate WFA window equity curve on-demand |
+| `/api/studies/<study_id>/wfa/windows/<window_number>/trades` | POST | Download WFA window trades CSV |
 | `/api/studies/<study_id>/wfa/trades` | POST | Generate and download stitched WFA OOS trades CSV |
 
 #### Strategy Configuration
@@ -330,6 +349,7 @@ pytest tests/ -v
 | ID | Name | Description |
 |----|------|-------------|
 | `s01_trailing_ma` | S01 Trailing MA | Complex trailing MA strategy with 11 MA types, close counts, ATR stops |
+| `s03_reversal_v10` | S03 Reversal | Reversal strategy using close-count confirmation and T-Bands hysteresis |
 | `s04_stochrsi` | S04 StochRSI | StochRSI swing strategy with swing-based stops |
 
 ## Adding New Strategies
