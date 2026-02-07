@@ -62,6 +62,7 @@ try:
         DEFAULT_PRESET_NAME,
         _build_optimization_config,
         _build_trial_metrics,
+        _execute_backtest_request,
         _find_wfa_window,
         _get_optimization_state,
         _get_parameter_types,
@@ -81,7 +82,6 @@ try:
         _set_optimization_state,
         _validate_csv_for_study,
         _validate_preset_name,
-        _validate_strategy_params,
         _write_preset,
         validate_constraints_config,
         validate_objectives_config,
@@ -92,6 +92,7 @@ except ImportError:
         DEFAULT_PRESET_NAME,
         _build_optimization_config,
         _build_trial_metrics,
+        _execute_backtest_request,
         _find_wfa_window,
         _get_optimization_state,
         _get_parameter_types,
@@ -111,7 +112,6 @@ except ImportError:
         _set_optimization_state,
         _validate_csv_for_study,
         _validate_preset_name,
-        _validate_strategy_params,
         _write_preset,
         validate_constraints_config,
         validate_objectives_config,
@@ -483,122 +483,45 @@ def register_routes(app):
 
     @app.post("/api/backtest")
     def run_backtest() -> object:
-        """Run single backtest with selected strategy"""
-
         strategy_id, error_response = _resolve_strategy_id_from_request()
         if error_response:
             return error_response
 
-        # Get warmup bars
-        warmup_bars_raw = request.form.get("warmupBars", "1000")
-        try:
-            warmup_bars = int(warmup_bars_raw)
-            warmup_bars = max(100, min(5000, warmup_bars))
-        except (TypeError, ValueError):
-            warmup_bars = 1000
-
-        csv_file = request.files.get("file")
-        csv_path_raw = (request.form.get("csvPath") or "").strip()
-        data_source = None
-        opened_file = None
-
-        if csv_file and csv_file.filename:
-            data_source = csv_file
-        elif csv_path_raw:
-            try:
-                resolved_path = _resolve_csv_path(csv_path_raw)
-            except FileNotFoundError:
-                return ("CSV file not found.", HTTPStatus.BAD_REQUEST)
-            except IsADirectoryError:
-                return ("CSV path must point to a file.", HTTPStatus.BAD_REQUEST)
-            except ValueError:
-                return ("CSV file is required.", HTTPStatus.BAD_REQUEST)
-            except OSError:
-                return ("Failed to access CSV file.", HTTPStatus.BAD_REQUEST)
-            try:
-                opened_file = resolved_path.open("rb")
-            except OSError:
-                return ("Failed to access CSV file.", HTTPStatus.BAD_REQUEST)
-            data_source = opened_file
-        else:
-            return ("CSV file is required.", HTTPStatus.BAD_REQUEST)
-
-        payload_raw = request.form.get("payload", "{}")
-        try:
-            payload = json.loads(payload_raw)
-        except json.JSONDecodeError:
-            return ("Invalid payload JSON.", HTTPStatus.BAD_REQUEST)
-
-        # Load strategy
-        from strategies import get_strategy
-
-        try:
-            strategy_class = get_strategy(strategy_id)
-        except ValueError as e:
-            return (str(e), HTTPStatus.BAD_REQUEST)
-
-        # Load data
-        try:
-            df = load_data(data_source)
-        except ValueError as exc:
-            if opened_file:
-                opened_file.close()
-                opened_file = None
-            return (str(exc), HTTPStatus.BAD_REQUEST)
-        except Exception as exc:  # pragma: no cover - defensive
-            if opened_file:
-                opened_file.close()
-                opened_file = None
-            app.logger.exception("Failed to load CSV")
-            return ("Failed to load CSV data.", HTTPStatus.INTERNAL_SERVER_ERROR)
-        finally:
-            if opened_file:
-                try:
-                    opened_file.close()
-                except OSError:  # pragma: no cover - defensive
-                    pass
-                opened_file = None
-
-        # Prepare dataset with warmup
-        trade_start_idx = 0
-        use_date_filter = payload.get("dateFilter", False)
-        start_raw = payload.get("start")
-        end_raw = payload.get("end")
-
-        if use_date_filter and (start_raw is not None or end_raw is not None):
-            start, end = align_date_bounds(df.index, start_raw, end_raw)
-            if start_raw not in (None, "") and start is None:
-                return ("Invalid start date.", HTTPStatus.BAD_REQUEST)
-            if end_raw not in (None, "") and end is None:
-                return ("Invalid end date.", HTTPStatus.BAD_REQUEST)
-
-            # Apply warmup
-            try:
-                df, trade_start_idx = prepare_dataset_with_warmup(
-                    df, start, end, warmup_bars
-                )
-            except Exception as exc:  # pragma: no cover - defensive
-                app.logger.exception("Failed to prepare dataset with warmup")
-                return ("Failed to prepare dataset.", HTTPStatus.INTERNAL_SERVER_ERROR)
-
-        try:
-            _validate_strategy_params(strategy_id, payload)
-        except ValueError as exc:
-            return (str(exc), HTTPStatus.BAD_REQUEST)
-
-        # Run strategy
-        try:
-            result = strategy_class.run(df, payload, trade_start_idx)
-        except ValueError as exc:
-            return (str(exc), HTTPStatus.BAD_REQUEST)
-        except Exception as exc:  # pragma: no cover - defensive
-            app.logger.exception("Backtest execution failed")
-            return ("Backtest execution failed.", HTTPStatus.INTERNAL_SERVER_ERROR)
+        execution, error = _execute_backtest_request(strategy_id)
+        if error:
+            return error
+        result = execution["result"]
+        payload = execution["payload"]
 
         return jsonify({
             "metrics": result.to_dict(),
             "parameters": payload,
         })
+
+
+    @app.post("/api/backtest/trades")
+    def download_backtest_trades() -> object:
+        strategy_id, error_response = _resolve_strategy_id_from_request()
+        if error_response:
+            return error_response
+
+        execution, error = _execute_backtest_request(strategy_id)
+        if error:
+            return error
+
+        result = execution["result"]
+        csv_name = str(execution.get("csv_name") or "")
+        source_stem = Path(csv_name).stem if csv_name else "dataset"
+        safe_source = re.sub(r"[^A-Za-z0-9._-]+", "_", source_stem).strip("_") or "dataset"
+        safe_strategy = re.sub(r"[^A-Za-z0-9._-]+", "_", strategy_id).strip("_") or "strategy"
+        filename = f"backtest_{safe_strategy}_{safe_source}_trades.csv"
+
+        return _send_trades_csv(
+            trades=result.trades or [],
+            csv_path=csv_name,
+            study={},
+            filename=filename,
+        )
 
 
     @app.post("/api/optimize")
