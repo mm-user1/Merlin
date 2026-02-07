@@ -230,10 +230,23 @@ function createParamId(params, strategyConfig, fixedParams) {
       optimizable.push(name);
     }
   });
-  const preferred = ['maType', 'maLength'];
-  const labelKeys = preferred.every((key) => Object.prototype.hasOwnProperty.call(merged, key))
-    ? preferred
-    : optimizable.slice(0, 2);
+    const preferredPairs = [
+      ['maType', 'maLength'],
+      ['maType3', 'maLength3'],
+      ['maType2', 'maLength2']
+    ];
+    let labelKeys = null;
+    preferredPairs.some((pair) => {
+      const hasPair = pair.every((key) => Object.prototype.hasOwnProperty.call(merged, key));
+      if (hasPair) {
+        labelKeys = pair;
+        return true;
+      }
+      return false;
+    });
+    if (!labelKeys) {
+      labelKeys = optimizable.slice(0, 2);
+    }
   const labelParts = labelKeys.map((key) => {
     const value = Object.prototype.hasOwnProperty.call(merged, key) ? merged[key] : '?';
     return String(value);

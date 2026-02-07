@@ -910,7 +910,7 @@ async function runWalkForward({ sources, state }) {
 
   const wfIsPeriodDays = document.getElementById('wfIsPeriodDays').value;
   const wfOosPeriodDays = document.getElementById('wfOosPeriodDays').value;
-  const wfStoreTopNTrials = document.getElementById('wfStoreTopNTrials')?.value || '100';
+  const wfStoreTopNTrials = document.getElementById('wfStoreTopNTrials')?.value || '50';
   const warmupValue = document.getElementById('warmupBars')?.value || '1000';
   const strategySummary = getStrategySummary();
 
@@ -1058,11 +1058,53 @@ async function runWalkForward({ sources, state }) {
   }
 }
 
-async function runBacktest(event) {
-  event.preventDefault();
+function buildBacktestRequestFormData(primaryFile, payload) {
+  const formData = new FormData();
+  formData.append('strategy', window.currentStrategyId);
+  const warmupInput = document.getElementById('warmupBars');
+  formData.append('warmupBars', warmupInput ? warmupInput.value : '1000');
+  if (primaryFile) {
+    formData.append('file', primaryFile, primaryFile.name);
+  }
+  if (window.selectedCsvPath) {
+    formData.append('csvPath', window.selectedCsvPath);
+  }
+  formData.append('payload', JSON.stringify(payload));
+  return formData;
+}
+
+async function triggerDownloadFromResponse(response, fallbackFilename) {
+  const blob = await response.blob();
+  const url = window.URL.createObjectURL(blob);
+  const link = document.createElement('a');
+  link.href = url;
+
+  let filename = fallbackFilename;
+  const disposition = response.headers.get('Content-Disposition');
+  if (disposition) {
+    const match = disposition.match(/filename="?([^";]+)"?/i);
+    if (match && match[1]) {
+      filename = match[1];
+    }
+  }
+
+  link.download = filename;
+  document.body.appendChild(link);
+  link.click();
+  link.remove();
+  window.URL.revokeObjectURL(url);
+}
+
+async function executeBacktestRun({ event = null, downloadTrades = false } = {}) {
+  if (event && typeof event.preventDefault === 'function') {
+    event.preventDefault();
+  }
   const resultsEl = document.getElementById('results');
   const errorEl = document.getElementById('error');
   const fileInput = document.getElementById('csvFile');
+  if (!resultsEl || !errorEl || !fileInput) {
+    return;
+  }
 
   errorEl.style.display = 'none';
   resultsEl.classList.remove('ready');
@@ -1110,17 +1152,7 @@ async function runBacktest(event) {
     const combo = combinations[index];
     const payload = { ...state.payload, ...combo };
 
-    const formData = new FormData();
-    formData.append('strategy', window.currentStrategyId);
-    const warmupInput = document.getElementById('warmupBars');
-    formData.append('warmupBars', warmupInput ? warmupInput.value : '1000');
-    if (primaryFile) {
-      formData.append('file', primaryFile, primaryFile.name);
-    }
-    if (window.selectedCsvPath) {
-      formData.append('csvPath', window.selectedCsvPath);
-    }
-    formData.append('payload', JSON.stringify(payload));
+    const formData = buildBacktestRequestFormData(primaryFile, payload);
 
     resultsEl.textContent = `Running calculation... (${index + 1}/${combinations.length})`;
 
@@ -1134,11 +1166,38 @@ async function runBacktest(event) {
       errorEl.style.display = 'block';
       return;
     }
+
+    if (downloadTrades) {
+      try {
+        const tradesResponse = await downloadBacktestTradesRequest(
+          buildBacktestRequestFormData(primaryFile, payload)
+        );
+        await triggerDownloadFromResponse(
+          tradesResponse,
+          `backtest_trades_${Date.now()}.csv`
+        );
+      } catch (err) {
+        resultsEl.textContent = aggregatedResults.join('\n\n');
+        resultsEl.classList.remove('loading');
+        resultsEl.classList.add('ready');
+        errorEl.textContent = err.message || 'Backtest trade export failed.';
+        errorEl.style.display = 'block';
+        return;
+      }
+    }
   }
 
   resultsEl.textContent = aggregatedResults.join('\n\n');
   resultsEl.classList.remove('loading');
   resultsEl.classList.add('ready');
+}
+
+async function runBacktest(event) {
+  await executeBacktestRun({ event, downloadTrades: false });
+}
+
+async function runBacktestAndDownloadTrades(event) {
+  await executeBacktestRun({ event, downloadTrades: true });
 }
 
 async function submitOptimization(event) {

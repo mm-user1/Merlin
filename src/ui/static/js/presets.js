@@ -373,7 +373,12 @@ async function handlePresetOverwrite(name) {
 }
 
 async function initializePresets() {
-  applyDefaults({ clearResults: true });
+  try {
+    await loadPreset(DEFAULT_PRESET_KEY, { clearResults: true });
+  } catch (error) {
+    console.warn('Failed to load defaults preset at startup, using local fallback.', error);
+    applyDefaults({ clearResults: true });
+  }
   await refreshPresetList(true);
 }
 

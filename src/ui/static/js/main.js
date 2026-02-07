@@ -146,13 +146,9 @@ document.addEventListener('DOMContentLoaded', async () => {
     }
   });
 
-  const cancelBtn = document.getElementById('cancelBtn');
-  if (cancelBtn) {
-    cancelBtn.addEventListener('click', () => {
-      const backtestForm = document.getElementById('backtestForm');
-      if (backtestForm) backtestForm.reset();
-      applyDefaults({ clearResults: true });
-    });
+  const tradesBtn = document.getElementById('tradesBtn');
+  if (tradesBtn) {
+    tradesBtn.addEventListener('click', runBacktestAndDownloadTrades);
   }
 
   const backtestForm = document.getElementById('backtestForm');

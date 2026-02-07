@@ -22,6 +22,7 @@ pytest tests/ --cov=src --cov-report=html
 | `test_sanity.py` | Infrastructure sanity checks (imports, directories, Python version) |
 | `test_regression_s01.py` | S01 baseline regression - validates results match saved baseline |
 | `test_s01_migration.py` | S01 migration validation - ensures migrated strategy works correctly |
+| `test_s03_reversal_v10.py` | S03 Reversal v10 strategy tests |
 | `test_s04_stochrsi.py` | S04 StochRSI strategy tests |
 | `test_metrics.py` | Metrics calculation tests (BasicMetrics, AdvancedMetrics) |
 | `test_export.py` | CSV export functionality tests |
@@ -29,6 +30,14 @@ pytest tests/ --cov=src --cov-report=html
 | `test_naming_consistency.py` | camelCase naming guardrails - prevents snake_case parameters |
 | `test_walkforward.py` | Walk-forward analysis tests |
 | `test_server.py` | HTTP API endpoint tests |
+| `test_storage.py` | Database storage tests |
+| `test_post_process.py` | Post-process module tests (FT, DSR, stress test) |
+| `test_dsr.py` | Deflated Sharpe Ratio calculation tests |
+| `test_oos_selection.py` | OOS candidate selection tests |
+| `test_stress_test.py` | Stress test module tests |
+| `test_multiprocess_score.py` | Multi-process scoring tests |
+| `test_optuna_sanitization.py` | Optuna sanitization tests |
+| `test_score_normalization.py` | Score normalization tests |
 
 ## Test Categories
 
@@ -52,7 +61,7 @@ python tools/generate_baseline_s01.py
 ### Strategy Tests
 Test individual strategy implementations:
 ```bash
-pytest tests/test_s01_migration.py tests/test_s04_stochrsi.py -v
+pytest tests/test_s01_migration.py tests/test_s03_reversal_v10.py tests/test_s04_stochrsi.py -v
 ```
 
 ### Naming Guardrails
@@ -64,8 +73,8 @@ pytest tests/test_naming_consistency.py -v
 ## Baseline Data
 
 Regression baselines stored in `data/baseline/`:
-- `s01_baseline_metrics.json` - Expected S01 metrics
-- `s01_baseline_trades.csv` - Expected S01 trade list
+- `s01_metrics.json` - Expected S01 metrics
+- `s01_trades.csv` - Expected S01 trade list
 
 ## Adding Tests for New Strategies
 

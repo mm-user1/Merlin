@@ -43,7 +43,7 @@ class WFConfig:
     post_process: Optional[PostProcessConfig] = None
     dsr_config: Optional[DSRConfig] = None
     stress_test_config: Optional[StressTestConfig] = None
-    store_top_n_trials: int = 100
+    store_top_n_trials: int = 50
 
 
 @dataclass
@@ -1265,6 +1265,16 @@ class WalkForwardEngine:
 
             config = get_strategy_config(self.config.strategy_id)
             parameters = config.get("parameters", {}) if isinstance(config, dict) else {}
+
+            preferred_pairs = [
+                ("maType", "maLength"),
+                ("maType3", "maLength3"),
+                ("maType2", "maLength2"),
+            ]
+            for left, right in preferred_pairs:
+                if left in params and right in params:
+                    label = f"{params.get(left)} {params.get(right)}"
+                    return f"{label}_{param_hash}"
 
             optimizable: List[str] = []
             for param_name, param_spec in parameters.items():

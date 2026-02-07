@@ -104,6 +104,128 @@ def _persist_csv_upload(file_storage) -> str:
     return str(temp_path)
 
 
+def _parse_warmup_bars(raw_value: Any, default: int = 1000) -> int:
+    try:
+        warmup_bars = int(raw_value)
+    except (TypeError, ValueError):
+        warmup_bars = default
+    return max(100, min(5000, warmup_bars))
+
+
+def _execute_backtest_request(strategy_id: str) -> Tuple[Optional[Dict[str, Any]], Optional[Tuple[str, HTTPStatus]]]:
+    """Execute one backtest run from current Flask request payload."""
+
+    warmup_bars = _parse_warmup_bars(request.form.get("warmupBars", "1000"))
+
+    csv_file = request.files.get("file")
+    csv_path_raw = (request.form.get("csvPath") or "").strip()
+    data_source = None
+    opened_file = None
+    csv_name = ""
+
+    def _close_opened_file() -> None:
+        nonlocal opened_file
+        if not opened_file:
+            return
+        try:
+            opened_file.close()
+        except OSError:  # pragma: no cover - defensive
+            pass
+        opened_file = None
+
+    if csv_file and csv_file.filename:
+        data_source = csv_file
+        csv_name = csv_file.filename
+    elif csv_path_raw:
+        try:
+            resolved_path = _resolve_csv_path(csv_path_raw)
+        except FileNotFoundError:
+            return None, ("CSV file not found.", HTTPStatus.BAD_REQUEST)
+        except IsADirectoryError:
+            return None, ("CSV path must point to a file.", HTTPStatus.BAD_REQUEST)
+        except ValueError:
+            return None, ("CSV file is required.", HTTPStatus.BAD_REQUEST)
+        except OSError:
+            return None, ("Failed to access CSV file.", HTTPStatus.BAD_REQUEST)
+        try:
+            opened_file = resolved_path.open("rb")
+        except OSError:
+            return None, ("Failed to access CSV file.", HTTPStatus.BAD_REQUEST)
+        data_source = opened_file
+        csv_name = resolved_path.name
+    else:
+        return None, ("CSV file is required.", HTTPStatus.BAD_REQUEST)
+
+    payload_raw = request.form.get("payload", "{}")
+    try:
+        payload = json.loads(payload_raw)
+    except json.JSONDecodeError:
+        _close_opened_file()
+        return None, ("Invalid payload JSON.", HTTPStatus.BAD_REQUEST)
+    if not isinstance(payload, dict):
+        _close_opened_file()
+        return None, ("Invalid payload JSON.", HTTPStatus.BAD_REQUEST)
+
+    from strategies import get_strategy
+
+    try:
+        strategy_class = get_strategy(strategy_id)
+    except ValueError as exc:
+        _close_opened_file()
+        return None, (str(exc), HTTPStatus.BAD_REQUEST)
+
+    try:
+        df = load_data(data_source)
+    except ValueError as exc:
+        _close_opened_file()
+        return None, (str(exc), HTTPStatus.BAD_REQUEST)
+    except Exception:  # pragma: no cover - defensive
+        _close_opened_file()
+        _get_logger().exception("Failed to load CSV")
+        return None, ("Failed to load CSV data.", HTTPStatus.INTERNAL_SERVER_ERROR)
+    finally:
+        _close_opened_file()
+
+    trade_start_idx = 0
+    use_date_filter = bool(payload.get("dateFilter", False))
+    start_raw = payload.get("start")
+    end_raw = payload.get("end")
+
+    if use_date_filter and (start_raw is not None or end_raw is not None):
+        start, end = align_date_bounds(df.index, start_raw, end_raw)
+        if start_raw not in (None, "") and start is None:
+            return None, ("Invalid start date.", HTTPStatus.BAD_REQUEST)
+        if end_raw not in (None, "") and end is None:
+            return None, ("Invalid end date.", HTTPStatus.BAD_REQUEST)
+        try:
+            df, trade_start_idx = prepare_dataset_with_warmup(
+                df, start, end, warmup_bars
+            )
+        except Exception:  # pragma: no cover - defensive
+            _get_logger().exception("Failed to prepare dataset with warmup")
+            return None, ("Failed to prepare dataset.", HTTPStatus.INTERNAL_SERVER_ERROR)
+
+    try:
+        _validate_strategy_params(strategy_id, payload)
+    except ValueError as exc:
+        return None, (str(exc), HTTPStatus.BAD_REQUEST)
+
+    try:
+        result = strategy_class.run(df, payload, trade_start_idx)
+    except ValueError as exc:
+        return None, (str(exc), HTTPStatus.BAD_REQUEST)
+    except Exception:  # pragma: no cover - defensive
+        _get_logger().exception("Backtest execution failed")
+        return None, ("Backtest execution failed.", HTTPStatus.INTERNAL_SERVER_ERROR)
+
+    return {
+        "result": result,
+        "payload": payload,
+        "csv_name": csv_name,
+        "warmup_bars": warmup_bars,
+    }, None
+
+
 def _run_trade_export(
     *,
     strategy_id: str,

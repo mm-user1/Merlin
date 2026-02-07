@@ -43,6 +43,20 @@ async function runBacktestRequest(formData) {
   return response.json();
 }
 
+async function downloadBacktestTradesRequest(formData) {
+  const response = await fetch('/api/backtest/trades', {
+    method: 'POST',
+    body: formData
+  });
+
+  if (!response.ok) {
+    const message = await response.text();
+    throw new Error(message || 'Backtest trade export failed.');
+  }
+
+  return response;
+}
+
 async function runOptimizationRequest(formData, signal = null) {
   const response = await fetch('/api/optimize', {
     method: 'POST',

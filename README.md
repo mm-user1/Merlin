@@ -6,7 +6,7 @@ Config-driven backtesting and Optuna optimization platform for cryptocurrency tr
 
 - **Database persistence** - All optimization results automatically saved to SQLite database
 - **Studies browser** - Web UI for browsing, opening, and managing historical optimization studies
-- **Multi-strategy support** - S01 Trailing MA and S04 StochRSI included, easily extensible
+- **Multi-strategy support** - S01 Trailing MA, S03 Reversal, and S04 StochRSI included, easily extensible
 - **Optuna optimization** - Single- and multi-objective optimization (1-6 objectives) with Pareto front results, primary-objective sorting, and multiple samplers (Random, TPE/MOTPE, NSGA-II/NSGA-III)
 - **Soft constraints (Optuna)** - Configure feasibility rules (e.g., Total Trades >= 30). Results show feasible/infeasible indicators; infeasible trials are deprioritized, not discarded.
 - **Robust trial handling** - If an objective returns NaN, the trial is marked FAIL (study continues) and failed trials are ignored by samplers.
@@ -35,7 +35,7 @@ project-root/
 |-- src/
 |   |-- core/           # Backtest, Optuna, WFA engines + metrics + database + export + post-process + testing
 |   |-- indicators/     # MA (11 types), ATR, RSI, StochRSI
-|   |-- strategies/     # s01_trailing_ma, s04_stochrsi
+|   |-- strategies/     # s01_trailing_ma, s03_reversal_v10, s04_stochrsi
 |   |-- storage/        # SQLite database (studies.db)
 |   `-- ui/             # Flask server + two-page frontend (Start/Results)
 |-- data/               # OHLCV CSVs and regression baselines

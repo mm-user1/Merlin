@@ -278,6 +278,8 @@ function createSelectOptions(paramName, paramDef) {
   const container = document.createElement('div');
   container.className = 'select-options-container';
   container.dataset.paramName = paramName;
+  const allByDefaultParams = new Set(['maType', 'trailMaType', 'maType3']);
+  const selectAllByDefault = allByDefaultParams.has(paramName);
 
   const options = paramDef.options || [];
 
@@ -318,7 +320,7 @@ function createSelectOptions(paramName, paramDef) {
     optionCheckbox.dataset.optionValue = optionValue;
     optionCheckbox.id = `opt-${paramName}-${optionValue}`;
 
-    if (optionValue === paramDef.default) {
+    if (selectAllByDefault || optionValue === paramDef.default) {
       optionCheckbox.checked = true;
     }
 
@@ -342,6 +344,8 @@ function createSelectOptions(paramName, paramDef) {
   const individualCheckboxes = container.querySelectorAll(
     `input.select-option-checkbox[data-param-name="${paramName}"]:not([data-option-value="__ALL__"])`
   );
+  const areAllSelectedByDefault = Array.from(individualCheckboxes).every((checkbox) => checkbox.checked);
+  allCheckbox.checked = areAllSelectedByDefault;
   individualCheckboxes.forEach((cb) => {
     cb.addEventListener('change', () => {
       const allChecked = Array.from(individualCheckboxes).every((checkbox) => checkbox.checked);
