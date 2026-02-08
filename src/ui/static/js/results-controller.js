@@ -123,6 +123,10 @@ async function activateTab(tabId) {
 function renderStudiesList(studies) {
   const listEl = document.querySelector('.studies-list');
   if (!listEl) return;
+  const selectedStudies = Array.isArray(ResultsState.selectedStudies) ? ResultsState.selectedStudies : [];
+  if (!Array.isArray(ResultsState.selectedStudies)) {
+    ResultsState.selectedStudies = selectedStudies;
+  }
   listEl.innerHTML = '';
 
   if (!studies || !studies.length) {
@@ -134,31 +138,202 @@ function renderStudiesList(studies) {
   }
 
   studies.forEach((study) => {
+    const studyId = study.study_id;
+    const studyName = study.study_name || '';
     const item = document.createElement('div');
     item.className = 'study-item';
-    item.dataset.studyId = study.study_id;
+    item.dataset.studyId = String(studyId);
+    item.dataset.studyName = studyName;
 
-    if (study.study_id === ResultsState.studyId && !ResultsState.multiSelect) {
+    if (studyId === ResultsState.studyId && !ResultsState.multiSelect) {
       item.classList.add('selected');
     }
-    if (ResultsState.multiSelect && ResultsState.selectedStudies.includes(study.study_id)) {
+    if (ResultsState.multiSelect && selectedStudies.includes(studyId)) {
       item.classList.add('selected');
     }
 
-    item.innerHTML = `
-      <span class="study-name">${study.study_name}</span>
-    `;
+    const name = document.createElement('span');
+    name.className = 'study-name';
+    name.textContent = studyName;
+    item.appendChild(name);
 
     item.addEventListener('click', (event) => {
       if (ResultsState.multiSelect) {
         event.preventDefault();
-        toggleStudySelection(study.study_id);
+        toggleStudySelection(studyId);
       } else {
-        openStudy(study.study_id);
+        openStudy(studyId);
       }
     });
 
     listEl.appendChild(item);
+  });
+
+  applyStudiesFilter();
+}
+
+function syncStudiesManagerControls() {
+  const selectBtn = document.getElementById('studySelectBtn');
+  if (selectBtn) {
+    selectBtn.textContent = ResultsState.multiSelect ? 'Cancel' : 'Select';
+    selectBtn.classList.toggle('active', ResultsState.multiSelect);
+  }
+
+  const filterBtn = document.getElementById('studyFilterBtn');
+  if (filterBtn) {
+    filterBtn.classList.toggle('active', ResultsState.filterActive);
+  }
+
+  const filterRow = document.getElementById('studyFilterRow');
+  if (filterRow) {
+    filterRow.hidden = !ResultsState.filterActive;
+  }
+
+  const filterText = typeof ResultsState.filterText === 'string' ? ResultsState.filterText : '';
+  if (ResultsState.filterText !== filterText) {
+    ResultsState.filterText = filterText;
+  }
+  const filterInput = document.getElementById('studyFilterInput');
+  if (filterInput && filterInput.value !== filterText) {
+    filterInput.value = filterText;
+  }
+}
+
+function updateStudiesFilterEmptyState(listEl, show) {
+  if (!listEl) return;
+  let emptyState = listEl.querySelector('.study-filter-empty');
+  if (!show) {
+    if (emptyState) emptyState.remove();
+    return;
+  }
+  if (!emptyState) {
+    emptyState = document.createElement('div');
+    emptyState.className = 'study-item study-filter-empty';
+    emptyState.textContent = 'No matching studies.';
+  }
+  if (emptyState.parentElement !== listEl) {
+    listEl.appendChild(emptyState);
+  }
+}
+
+function applyStudiesFilter() {
+  const listEl = document.querySelector('.studies-list');
+  if (!listEl) return;
+  const items = Array.from(listEl.querySelectorAll('.study-item[data-study-id]'));
+  const filterText = (ResultsState.filterText || '').trim().toLowerCase();
+  const shouldFilter = ResultsState.filterActive && filterText.length > 0;
+  const visibleIds = new Set();
+  let visibleCount = 0;
+
+  items.forEach((item) => {
+    const studyId = item.dataset.studyId || '';
+    const studyName = (item.dataset.studyName || '').toLowerCase();
+    const match = !shouldFilter || studyName.includes(filterText);
+    item.style.display = match ? '' : 'none';
+    if (match) {
+      visibleCount += 1;
+      if (studyId) visibleIds.add(studyId);
+    }
+  });
+
+  const selectedStudies = Array.isArray(ResultsState.selectedStudies) ? ResultsState.selectedStudies : [];
+  if (!Array.isArray(ResultsState.selectedStudies)) {
+    ResultsState.selectedStudies = selectedStudies;
+  }
+  if (ResultsState.multiSelect && selectedStudies.length) {
+    const pruned = selectedStudies.filter((studyId) => visibleIds.has(String(studyId)));
+    if (pruned.length !== selectedStudies.length) {
+      ResultsState.selectedStudies = pruned;
+    }
+    const selectedIds = new Set((ResultsState.selectedStudies || []).map((studyId) => String(studyId)));
+    items.forEach((item) => {
+      const studyId = item.dataset.studyId || '';
+      item.classList.toggle('selected', selectedIds.has(studyId));
+    });
+  }
+
+  updateStudiesFilterEmptyState(listEl, shouldFilter && items.length > 0 && visibleCount === 0);
+}
+
+function getVisibleStudyIds() {
+  const visibleIds = new Set();
+  document.querySelectorAll('.studies-list .study-item[data-study-id]').forEach((item) => {
+    if (item.style.display === 'none') return;
+    const studyId = item.dataset.studyId;
+    if (studyId) visibleIds.add(studyId);
+  });
+  return visibleIds;
+}
+
+function getVisibleStudyItems() {
+  return Array.from(document.querySelectorAll('.studies-list .study-item[data-study-id]'))
+    .filter((item) => item.style.display !== 'none');
+}
+
+function isTypingElement(element) {
+  if (!element) return false;
+  if (element.isContentEditable) return true;
+  const tagName = element.tagName ? element.tagName.toLowerCase() : '';
+  return tagName === 'input' || tagName === 'textarea' || tagName === 'select';
+}
+
+function hasOpenModal() {
+  return Boolean(document.querySelector('.modal-overlay.show'));
+}
+
+function isStudiesManagerClosed() {
+  const manager = document.querySelector('.studies-manager');
+  if (!manager) return true;
+  const collapsible = manager.closest('.collapsible');
+  return Boolean(collapsible && !collapsible.classList.contains('open'));
+}
+
+function resolveStudyArrowTarget(direction) {
+  if (ResultsState.multiSelect) return null;
+  const currentStudyId = String(ResultsState.studyId || '');
+  if (!currentStudyId) return null;
+  const items = getVisibleStudyItems();
+  if (!items.length) return null;
+  const currentIndex = items.findIndex((item) => (item.dataset.studyId || '') === currentStudyId);
+  if (currentIndex < 0) return null;
+  const targetIndex = (currentIndex + direction + items.length) % items.length;
+  const target = items[targetIndex];
+  const targetStudyId = target ? (target.dataset.studyId || '') : '';
+  if (!targetStudyId || targetStudyId === currentStudyId) return null;
+  return { studyId: targetStudyId, item: target };
+}
+
+async function navigateStudyByArrow(target) {
+  if (!target || studiesKeyboardNavigationInProgress) return;
+  studiesKeyboardNavigationInProgress = true;
+  try {
+    await openStudy(target.studyId);
+    const selectedItem = getVisibleStudyItems()
+      .find((item) => (item.dataset.studyId || '') === String(target.studyId));
+    if (selectedItem) {
+      selectedItem.scrollIntoView({ block: 'nearest' });
+    }
+  } finally {
+    studiesKeyboardNavigationInProgress = false;
+  }
+}
+
+function bindStudiesKeyboardNavigation() {
+  if (studiesKeyboardNavigationBound) return;
+  studiesKeyboardNavigationBound = true;
+  document.addEventListener('keydown', (event) => {
+    if (event.defaultPrevented) return;
+    if (event.altKey || event.ctrlKey || event.metaKey || event.shiftKey) return;
+    if (event.key !== 'ArrowDown' && event.key !== 'ArrowUp') return;
+    if (studiesKeyboardNavigationInProgress) return;
+    if (hasOpenModal()) return;
+    if (isStudiesManagerClosed()) return;
+    if (isTypingElement(document.activeElement)) return;
+    const direction = event.key === 'ArrowDown' ? 1 : -1;
+    const target = resolveStudyArrowTarget(direction);
+    if (!target) return;
+    event.preventDefault();
+    void navigateStudyByArrow(target);
   });
 }
 
@@ -166,10 +341,12 @@ async function loadStudiesList() {
   try {
     const data = await fetchStudiesList();
     renderStudiesList(data.studies || []);
+    syncStudiesManagerControls();
     return data.studies || [];
   } catch (error) {
     console.warn('Failed to load studies list', error);
     renderStudiesList([]);
+    syncStudiesManagerControls();
     return [];
   }
 }
@@ -247,6 +424,7 @@ function resetForDbSwitch() {
     summary: {}
   });
   window.history.replaceState({}, '', window.location.pathname);
+  syncStudiesManagerControls();
 }
 
 async function loadDatabasesList() {
@@ -262,6 +440,8 @@ async function loadDatabasesList() {
 }
 
 let databaseSwitchInProgress = false;
+let studiesKeyboardNavigationBound = false;
+let studiesKeyboardNavigationInProgress = false;
 
 function renderDatabasesList(databases) {
   const container = document.querySelector('.database-list');
@@ -883,25 +1063,50 @@ function bindCollapsibles() {
 function bindStudiesManager() {
   const selectBtn = document.getElementById('studySelectBtn');
   const deleteBtn = document.getElementById('studyDeleteBtn');
+  const filterBtn = document.getElementById('studyFilterBtn');
+  const filterInput = document.getElementById('studyFilterInput');
+
+  syncStudiesManagerControls();
 
   if (selectBtn) {
-    selectBtn.textContent = ResultsState.multiSelect ? 'Cancel' : 'Select';
-    selectBtn.classList.toggle('active', ResultsState.multiSelect);
     selectBtn.addEventListener('click', () => {
       ResultsState.multiSelect = !ResultsState.multiSelect;
       if (!ResultsState.multiSelect) {
         ResultsState.selectedStudies = [];
       }
-      selectBtn.classList.toggle('active', ResultsState.multiSelect);
-      selectBtn.textContent = ResultsState.multiSelect ? 'Cancel' : 'Select';
+      syncStudiesManagerControls();
       loadStudiesList();
+    });
+  }
+
+  if (filterBtn && filterInput) {
+    filterBtn.addEventListener('click', () => {
+      ResultsState.filterActive = !ResultsState.filterActive;
+      if (!ResultsState.filterActive) {
+        ResultsState.filterText = '';
+      }
+      syncStudiesManagerControls();
+      applyStudiesFilter();
+      if (ResultsState.filterActive) {
+        filterInput.focus();
+      }
+    });
+
+    filterInput.addEventListener('input', () => {
+      ResultsState.filterText = filterInput.value || '';
+      applyStudiesFilter();
     });
   }
 
   if (deleteBtn) {
     deleteBtn.addEventListener('click', async () => {
+      const visibleStudyIds = getVisibleStudyIds();
+      const selectedStudies = Array.isArray(ResultsState.selectedStudies) ? ResultsState.selectedStudies : [];
+      if (!Array.isArray(ResultsState.selectedStudies)) {
+        ResultsState.selectedStudies = selectedStudies;
+      }
       const selected = ResultsState.multiSelect
-        ? ResultsState.selectedStudies.slice()
+        ? selectedStudies.filter((studyId) => visibleStudyIds.has(String(studyId)))
         : (ResultsState.studyId ? [ResultsState.studyId] : []);
       if (!selected.length) {
         alert('Select a study first.');
@@ -928,10 +1133,13 @@ function bindStudiesManager() {
       }
     });
   }
+
+  bindStudiesKeyboardNavigation();
 }
 
 function toggleStudySelection(studyId) {
-  const selected = new Set(ResultsState.selectedStudies || []);
+  const selectedStudies = Array.isArray(ResultsState.selectedStudies) ? ResultsState.selectedStudies : [];
+  const selected = new Set(selectedStudies);
   if (selected.has(studyId)) {
     selected.delete(studyId);
   } else {

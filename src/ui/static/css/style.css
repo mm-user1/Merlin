@@ -1471,6 +1471,41 @@
       border-color: #a8a8a8;
     }
 
+    .manager-filter-row {
+      padding: 3px 10px 5px;
+    }
+
+    .manager-filter-row:not([hidden]) {
+      display: flex;
+      justify-content: center;
+    }
+
+    .manager-filter-input {
+      width: clamp(110px, calc((100% - 16px) / 3), 240px);
+      padding: 5px 8px;
+      border: 1px solid #b8b8b8;
+      border-radius: 3px;
+      font-size: 12px;
+      color: #2a2a2a;
+      background: #fff;
+      box-sizing: border-box;
+      outline: none;
+    }
+
+    .manager-filter-input:focus {
+      border-color: #a8a8a8;
+    }
+
+    .study-filter-empty {
+      cursor: default;
+      color: #5f5f5f;
+      font-style: italic;
+    }
+
+    .study-filter-empty:hover {
+      background: transparent;
+    }
+
     .studies-list::-webkit-scrollbar {
       width: 8px;
     }
