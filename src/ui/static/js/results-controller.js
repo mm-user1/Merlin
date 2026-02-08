@@ -174,6 +174,149 @@ async function loadStudiesList() {
   }
 }
 
+function resetForDbSwitch() {
+  ResultsState.studyId = '';
+  ResultsState.studyName = '';
+  ResultsState.studyCreatedAt = '';
+  ResultsState.status = 'idle';
+  ResultsState.mode = 'optuna';
+  ResultsState.strategy = {};
+  ResultsState.strategyId = '';
+  ResultsState.dataset = {};
+  ResultsState.optuna = {};
+  ResultsState.wfa = {};
+  ResultsState.summary = {};
+  ResultsState.results = [];
+  ResultsState.dsr = {
+    enabled: false,
+    topK: null,
+    trials: [],
+    nTrials: null,
+    meanSharpe: null,
+    varSharpe: null
+  };
+  ResultsState.forwardTest = {
+    enabled: false,
+    trials: [],
+    startDate: '',
+    endDate: '',
+    periodDays: null,
+    sortMetric: 'profit_degradation',
+    source: 'optuna'
+  };
+  ResultsState.stressTest = {
+    enabled: false,
+    topK: null,
+    trials: [],
+    sortMetric: 'profit_retention',
+    failureThreshold: 0.7,
+    avgProfitRetention: null,
+    avgRomadRetention: null,
+    avgCombinedFailureRate: null,
+    candidatesSkippedBadBase: 0,
+    candidatesSkippedNoParams: 0,
+    candidatesInsufficientData: 0,
+    source: 'optuna'
+  };
+  ResultsState.oosTest = {
+    enabled: false,
+    topK: null,
+    periodDays: null,
+    startDate: '',
+    endDate: '',
+    source: '',
+    trials: []
+  };
+  ResultsState.manualTests = [];
+  ResultsState.activeManualTest = null;
+  ResultsState.manualTestResults = [];
+  ResultsState.activeTab = 'optuna';
+  ResultsState.stitched_oos = {};
+  ResultsState.dataPath = '';
+  ResultsState.selectedRowId = null;
+  ResultsState.multiSelect = false;
+  ResultsState.selectedStudies = [];
+  ResultsState.wfaSelection = null;
+  updateStoredState({
+    status: 'idle',
+    mode: 'optuna',
+    study_id: '',
+    studyId: '',
+    study_name: '',
+    studyName: '',
+    summary: {}
+  });
+  window.history.replaceState({}, '', window.location.pathname);
+}
+
+async function loadDatabasesList() {
+  const container = document.querySelector('.database-list');
+  if (!container) return;
+  try {
+    const data = await fetchDatabasesList();
+    renderDatabasesList(data.databases || []);
+  } catch (error) {
+    console.warn('Failed to load databases', error);
+    container.innerHTML = '';
+  }
+}
+
+let databaseSwitchInProgress = false;
+
+function renderDatabasesList(databases) {
+  const container = document.querySelector('.database-list');
+  if (!container) return;
+  container.innerHTML = '';
+
+  if (!databases || !databases.length) {
+    const empty = document.createElement('div');
+    empty.className = 'study-item';
+    empty.textContent = 'No database files found.';
+    container.appendChild(empty);
+    return;
+  }
+
+  databases.forEach((db) => {
+    const item = document.createElement('div');
+    const classes = ['study-item'];
+    if (db.active) classes.push('db-active', 'selected');
+    item.className = classes.join(' ');
+    item.textContent = db.name;
+    item.dataset.dbName = db.name;
+    item.addEventListener('click', async () => {
+      selectDatabaseItem(item);
+      if (db.active || databaseSwitchInProgress) return;
+      databaseSwitchInProgress = true;
+      try {
+        await switchDatabase(db.name);
+      } finally {
+        databaseSwitchInProgress = false;
+      }
+    });
+    container.appendChild(item);
+  });
+}
+
+function selectDatabaseItem(item) {
+  document.querySelectorAll('.database-list .study-item').forEach((el) => {
+    el.classList.remove('selected');
+  });
+  item.classList.add('selected');
+}
+
+async function switchDatabase(filename) {
+  try {
+    await switchDatabaseRequest(filename);
+    resetForDbSwitch();
+    refreshResultsView();
+    await loadStudiesList();
+    await loadDatabasesList();
+  } catch (error) {
+    await loadDatabasesList();
+    alert(error.message || 'Failed to switch database.');
+  }
+}
+
 function buildStitchedFromWindows(windows) {
   const stitched = [];
   const stitchedTimestamps = [];
@@ -1138,6 +1281,7 @@ function initResultsPage() {
       openStudy(studies[0].study_id);
     }
   });
+  loadDatabasesList();
 
   hydrateFromServer();
 

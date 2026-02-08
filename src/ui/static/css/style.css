@@ -613,6 +613,10 @@
       border: 1px solid #bbbbbb;
     }
 
+    .future-hidden {
+      display: none !important;
+    }
+
     .collapsible-header {
       padding: 10px;
       cursor: pointer;
@@ -944,6 +948,25 @@
 
     button.secondary:hover {
       background: #bbbbbb;
+    }
+
+    .db-target-refresh-btn {
+      padding: 4px 8px;
+      min-width: 28px;
+      line-height: 1;
+      font-size: 13px;
+      background: #cccccc;
+      color: #2a2a2a;
+      border: 1px solid #aaaaaa;
+    }
+
+    .db-target-refresh-btn:hover:not(:disabled) {
+      background: #bbbbbb;
+    }
+
+    .db-target-refresh-btn:disabled {
+      opacity: 0.65;
+      cursor: wait;
     }
 
     .error {
@@ -1370,6 +1393,37 @@
       background: #d4e9ff;
       border-left: 3px solid #4a90e2;
       padding-left: 9px;
+    }
+
+    .database-list {
+      max-height: 280px;
+      overflow-y: auto;
+      background: #ffffff;
+      border: 1px solid #cccccc;
+      border-radius: 3px;
+      margin: 0 0 12px 0;
+    }
+
+    .database-list::-webkit-scrollbar {
+      width: 8px;
+    }
+
+    .database-list::-webkit-scrollbar-track {
+      background: #f0f0f0;
+    }
+
+    .database-list::-webkit-scrollbar-thumb {
+      background: #c0c0c0;
+      border-radius: 4px;
+    }
+
+    .database-list::-webkit-scrollbar-thumb:hover {
+      background: #a0a0a0;
+    }
+
+    .database-list .study-item {
+      font-size: 12px;
+      font-weight: 400;
     }
 
     .study-name {

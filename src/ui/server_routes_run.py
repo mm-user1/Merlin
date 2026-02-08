@@ -40,14 +40,17 @@ from core.post_process import (
 )
 from core.testing import run_period_test_for_trials, select_oos_source_candidates
 from core.storage import (
+    create_new_db,
     delete_manual_test,
     delete_study,
+    get_active_db_name,
     get_study_trial,
     list_manual_tests,
     list_studies,
     load_manual_test_results,
     load_study_from_db,
     load_wfa_window_trials,
+    set_active_db,
     save_dsr_results,
     save_forward_test_results,
     save_stress_test_results,
@@ -133,6 +136,20 @@ def register_routes(app):
         state["status"] = "cancelled"
         _set_optimization_state(state)
         return jsonify({"status": "cancelled"})
+
+    def _apply_db_target_from_form(form_data) -> Optional[object]:
+        db_target = (form_data.get("dbTarget") or "").strip()
+        db_label = (form_data.get("dbLabel") or "").strip()
+        if not db_target:
+            return None
+        try:
+            if db_target == "new":
+                create_new_db(db_label)
+            elif db_target != get_active_db_name():
+                set_active_db(db_target)
+        except ValueError as exc:
+            return jsonify({"error": str(exc)}), HTTPStatus.BAD_REQUEST
+        return None
 
 
 
@@ -409,6 +426,10 @@ def register_routes(app):
         )
         engine = WalkForwardEngine(wf_config, base_template, optuna_settings, csv_file_path=data_path)
 
+        db_apply_error = _apply_db_target_from_form(data)
+        if db_apply_error:
+            return db_apply_error
+
         _set_optimization_state(
             {
                 "status": "running",
@@ -464,6 +485,7 @@ def register_routes(app):
             "strategy_id": strategy_id,
             "data_path": data_path,
             "study_id": study_id,
+            "active_db": get_active_db_name(),
         }
 
         _set_optimization_state(
@@ -744,6 +766,10 @@ def register_routes(app):
             optimization_config.ft_end_date = ft_end.strftime("%Y-%m-%d") if ft_end else None
         if ft_enabled or oos_enabled:
             optimization_config.is_period_days = is_days
+
+        db_apply_error = _apply_db_target_from_form(request.form)
+        if db_apply_error:
+            return db_apply_error
 
         _set_optimization_state({
             "status": "running",
@@ -1107,6 +1133,7 @@ def register_routes(app):
                 "summary": optimization_metadata or {},
                 "strategy_id": optimization_config.strategy_id,
                 "data_path": data_path,
+                "active_db": get_active_db_name(),
             }
         )
 

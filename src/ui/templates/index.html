@@ -799,6 +799,29 @@
               </div>
             </div>
 
+            <div class="wf-section" style="margin-top: 0; margin-bottom: 16px; padding: 20px; border: 2px solid #3498db; border-radius: 8px; background-color: #f8f9fa;">
+              <h3 style="color: #3498db; margin-bottom: 12px;">Database Target</h3>
+              <div class="form-group">
+                <label for="dbTarget" style="min-width: 100px;">Save to</label>
+                <select id="dbTarget" style="flex: 1;">
+                  <option value="new">Create new DB</option>
+                </select>
+                <button
+                  type="button"
+                  id="dbTargetRefreshBtn"
+                  class="db-target-refresh-btn"
+                  title="Refresh database list"
+                  aria-label="Refresh database list"
+                >
+                  &#x21bb;
+                </button>
+              </div>
+              <div class="form-group" id="dbLabelGroup" style="display: none;">
+                <label for="dbLabel" style="min-width: 100px;">Label</label>
+                <input type="text" id="dbLabel" placeholder="optional label (e.g. link-15m)" style="flex: 1;" />
+              </div>
+            </div>
+
             <div class="opt-actions" style="margin-top: 20px;">
               <button type="button" id="runOptimizationBtn" onclick="document.getElementById('optimizerForm').requestSubmit()">Run Optimization</button>
             </div>

@@ -267,3 +267,38 @@ async function importPresetFromCsvRequest(file) {
 
   return response.json();
 }
+
+async function fetchDatabasesList() {
+  const response = await fetch('/api/databases');
+  if (!response.ok) {
+    const message = await response.text();
+    throw new Error(message || 'Failed to fetch databases.');
+  }
+  return response.json();
+}
+
+async function switchDatabaseRequest(filename) {
+  const response = await fetch('/api/databases/active', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ filename })
+  });
+  if (!response.ok) {
+    const payload = await response.json().catch(() => ({}));
+    throw new Error(payload.error || 'Failed to switch database.');
+  }
+  return response.json();
+}
+
+async function createDatabaseRequest(label) {
+  const response = await fetch('/api/databases', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ label })
+  });
+  if (!response.ok) {
+    const payload = await response.json().catch(() => ({}));
+    throw new Error(payload.error || 'Failed to create database.');
+  }
+  return response.json();
+}

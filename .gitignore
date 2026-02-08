@@ -5,3 +5,5 @@ src/storage/*.db-wal
 src/storage/*.db-shm
 src/storage/journals/
 .DS_Store
+tests/.tmp_db_mgmt/
+db-mgmt-*/

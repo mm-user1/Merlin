@@ -40,9 +40,12 @@ from core.post_process import (
 )
 from core.testing import run_period_test_for_trials, select_oos_source_candidates
 from core.storage import (
+    create_new_db,
     delete_manual_test,
     delete_study,
+    get_active_db_name,
     get_study_trial,
+    list_db_files,
     list_manual_tests,
     list_studies,
     load_manual_test_results,
@@ -53,6 +56,7 @@ from core.storage import (
     save_stress_test_results,
     save_manual_test_to_db,
     save_oos_test_results,
+    set_active_db,
     update_csv_path,
     update_study_config_json,
 )
@@ -130,6 +134,58 @@ def register_routes(app):
     @app.route("/results")
     def results_page() -> object:
         return render_template("results.html")
+
+
+    @app.get("/api/databases")
+    def list_databases() -> object:
+        return jsonify({
+            "databases": list_db_files(),
+            "active": get_active_db_name(),
+        })
+
+
+    @app.post("/api/databases/active")
+    def switch_database() -> object:
+        state = _get_optimization_state()
+        if state.get("status") == "running":
+            return (
+                jsonify({"error": "Cannot switch database while optimization is running."}),
+                HTTPStatus.CONFLICT,
+            )
+
+        body = request.get_json(silent=True) or {}
+        filename = (body.get("filename") or "").strip()
+        if not filename:
+            return jsonify({"error": "Missing filename."}), HTTPStatus.BAD_REQUEST
+        if not filename.endswith(".db"):
+            return jsonify({"error": "Invalid filename."}), HTTPStatus.BAD_REQUEST
+
+        try:
+            set_active_db(filename)
+        except ValueError as exc:
+            return jsonify({"error": str(exc)}), HTTPStatus.BAD_REQUEST
+
+        return jsonify({"active": get_active_db_name()})
+
+
+    @app.post("/api/databases")
+    def create_database() -> object:
+        state = _get_optimization_state()
+        if state.get("status") == "running":
+            return (
+                jsonify({"error": "Cannot create database while optimization is running."}),
+                HTTPStatus.CONFLICT,
+            )
+
+        body = request.get_json(silent=True) or {}
+        label = (body.get("label") or "").strip()
+
+        try:
+            filename = create_new_db(label)
+        except ValueError as exc:
+            return jsonify({"error": str(exc)}), HTTPStatus.BAD_REQUEST
+
+        return jsonify({"filename": filename, "active": filename})
 
 
 

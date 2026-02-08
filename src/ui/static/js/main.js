@@ -2,8 +2,61 @@
  * Main entry: binds DOM events and initializes UI state.
  */
 
+async function loadDatabasesList({ preserveSelection = false } = {}) {
+  const select = document.getElementById('dbTarget');
+  if (!select || typeof fetchDatabasesList !== 'function') return;
+
+  const refreshBtn = document.getElementById('dbTargetRefreshBtn');
+  const previousValue = preserveSelection ? select.value : '';
+
+  try {
+    if (refreshBtn) {
+      refreshBtn.disabled = true;
+    }
+
+    const data = await fetchDatabasesList();
+    const databases = Array.isArray(data.databases) ? data.databases : [];
+    select.querySelectorAll('option:not([value="new"])').forEach((opt) => opt.remove());
+
+    databases.forEach((db) => {
+      const option = document.createElement('option');
+      option.value = db.name;
+      option.textContent = db.name;
+      select.appendChild(option);
+    });
+
+    let nextValue = 'new';
+    const hasPrevious = preserveSelection
+      && previousValue
+      && databases.some((db) => db.name === previousValue);
+    if (hasPrevious) {
+      nextValue = previousValue;
+    } else if (databases.length) {
+      const activeDb = databases.find((db) => db.active);
+      nextValue = activeDb ? activeDb.name : databases[0].name;
+    }
+    select.value = nextValue;
+  } catch (error) {
+    console.warn('Failed to load database list', error);
+  } finally {
+    if (refreshBtn) {
+      refreshBtn.disabled = false;
+    }
+  }
+
+  toggleDbLabelVisibility();
+}
+
+function toggleDbLabelVisibility() {
+  const select = document.getElementById('dbTarget');
+  const labelGroup = document.getElementById('dbLabelGroup');
+  if (!select || !labelGroup) return;
+  labelGroup.style.display = select.value === 'new' ? 'flex' : 'none';
+}
+
 document.addEventListener('DOMContentLoaded', async () => {
   await loadStrategiesList();
+  await loadDatabasesList();
 
   const resultsNav = document.querySelector('.nav-tab[data-nav="results"]');
   if (resultsNav) {
@@ -54,6 +107,18 @@ document.addEventListener('DOMContentLoaded', async () => {
   });
   syncBudgetInputs();
   toggleWFSettings();
+
+  const dbTargetSelect = document.getElementById('dbTarget');
+  if (dbTargetSelect) {
+    dbTargetSelect.addEventListener('change', toggleDbLabelVisibility);
+  }
+
+  const dbTargetRefreshBtn = document.getElementById('dbTargetRefreshBtn');
+  if (dbTargetRefreshBtn) {
+    dbTargetRefreshBtn.addEventListener('click', async () => {
+      await loadDatabasesList({ preserveSelection: true });
+    });
+  }
 
   const csvFileInputEl = document.getElementById('csvFile');
   if (csvFileInputEl) {

@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import json
+import os
 import re
 import sqlite3
 import threading
@@ -28,26 +29,60 @@ OBJECTIVE_DIRECTIONS: Dict[str, str] = {
 }
 
 DB_INIT_LOCK = threading.Lock()
+DB_ACCESS_LOCK = threading.RLock()
 DB_INITIALIZED = False
 
 BASE_DIR = Path(__file__).resolve().parent.parent
 STORAGE_DIR = BASE_DIR / "storage"
 JOURNAL_DIR = STORAGE_DIR / "journals"
-DB_PATH = STORAGE_DIR / "studies.db"
+_active_db_path: Path = STORAGE_DIR / "studies.db"
+
+_INVALID_DB_LABEL_CHARS = re.compile(r'[<>:"/\\|?*]')
+
+
+def _sanitize_db_label(label: str) -> str:
+    return _INVALID_DB_LABEL_CHARS.sub("", str(label or "")).strip().replace(" ", "-")[:50]
+
+
+def _generate_db_filename(label: str) -> str:
+    """Generate a timestamped DB filename with optional sanitized label."""
+    ts = datetime.now().strftime("%Y-%m-%d_%H%M%S")
+    safe_label = _sanitize_db_label(label)
+    if safe_label:
+        return f"{ts}_{safe_label}.db"
+    return f"{ts}.db"
+
+
+def _pick_newest_db() -> Path:
+    """Return newest .db file in STORAGE_DIR by ctime, or generated default path."""
+    STORAGE_DIR.mkdir(parents=True, exist_ok=True)
+    db_files = sorted(
+        STORAGE_DIR.glob("*.db"),
+        key=lambda path: os.path.getctime(path),
+        reverse=True,
+    )
+    if db_files:
+        return db_files[0]
+    return STORAGE_DIR / _generate_db_filename("")
+
+
+_active_db_path = _pick_newest_db()
 
 
 def _utc_now_iso() -> str:
     return datetime.now(timezone.utc).isoformat().replace("+00:00", "Z")
 
 
-def init_database() -> None:
+def init_database(db_path: Optional[Path] = None) -> None:
     """Initialize database schema and ensure storage directories exist."""
     global DB_INITIALIZED
-    if DB_INITIALIZED and not DB_PATH.exists():
+    path = db_path or _active_db_path
+
+    if DB_INITIALIZED and not path.exists():
         DB_INITIALIZED = False
-    if DB_INITIALIZED and DB_PATH.exists():
+    if DB_INITIALIZED and path.exists():
         with sqlite3.connect(
-            str(DB_PATH),
+            str(path),
             check_same_thread=False,
             timeout=30.0,
             isolation_level="DEFERRED",
@@ -66,7 +101,7 @@ def init_database() -> None:
         JOURNAL_DIR.mkdir(parents=True, exist_ok=True)
 
         with sqlite3.connect(
-            str(DB_PATH),
+            str(path),
             check_same_thread=False,
             timeout=30.0,
             isolation_level="DEFERRED",
@@ -536,9 +571,12 @@ def _ensure_wfa_schema_updated(conn: sqlite3.Connection) -> None:
 
 @contextmanager
 def get_db_connection() -> Iterator[sqlite3.Connection]:
-    init_database()
+    with DB_ACCESS_LOCK:
+        path = _active_db_path
+
+    init_database(db_path=path)
     conn = sqlite3.connect(
-        str(DB_PATH),
+        str(path),
         check_same_thread=False,
         timeout=30.0,
         isolation_level="DEFERRED",
@@ -548,6 +586,62 @@ def get_db_connection() -> Iterator[sqlite3.Connection]:
         yield conn
     finally:
         conn.close()
+
+
+def _validate_db_filename(filename: str) -> Path:
+    if not filename:
+        raise ValueError("Invalid database filename")
+    target = STORAGE_DIR / filename
+    if target.parent.resolve() != STORAGE_DIR.resolve():
+        raise ValueError("Invalid database filename")
+    if target.suffix.lower() != ".db":
+        raise ValueError("Invalid database filename")
+    return target
+
+
+def get_active_db_name() -> str:
+    """Return the active database filename."""
+    return _active_db_path.name
+
+
+def _set_active_db_path(filename: str) -> None:
+    """Internal setter that updates active DB path without existence checks."""
+    global _active_db_path, DB_INITIALIZED
+    target = _validate_db_filename(filename)
+    _active_db_path = target
+    DB_INITIALIZED = False
+
+
+def set_active_db(filename: str) -> None:
+    """Set active DB to an existing file in STORAGE_DIR."""
+    with DB_ACCESS_LOCK:
+        target = _validate_db_filename(filename)
+        if not target.exists():
+            raise ValueError(f"Database '{filename}' not found")
+        _set_active_db_path(filename)
+
+
+def create_new_db(label: str = "") -> str:
+    """Create a new timestamped DB file, set it active, and initialize schema."""
+    with DB_ACCESS_LOCK:
+        filename = _generate_db_filename(label)
+        target = STORAGE_DIR / filename
+        _set_active_db_path(filename)
+        init_database(db_path=target)
+        return filename
+
+
+def list_db_files() -> List[Dict[str, Any]]:
+    """List available DB files sorted by creation time with active marker."""
+    with DB_ACCESS_LOCK:
+        STORAGE_DIR.mkdir(parents=True, exist_ok=True)
+        active_name = _active_db_path.name
+        db_files = sorted(
+            STORAGE_DIR.glob("*.db"),
+            key=lambda path: os.path.getctime(path),
+            reverse=True,
+        )
+        return [{"name": path.name, "active": path.name == active_name} for path in db_files]
 
 
 def generate_study_id() -> str:

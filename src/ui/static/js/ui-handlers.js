@@ -873,6 +873,16 @@ function clearWFResults() {
   }
 }
 
+function appendDatabaseTargetToFormData(formData) {
+  const dbTarget = document.getElementById('dbTarget')?.value || '';
+  if (!dbTarget) return;
+  formData.append('dbTarget', dbTarget);
+  if (dbTarget === 'new') {
+    const dbLabel = document.getElementById('dbLabel')?.value?.trim() || '';
+    formData.append('dbLabel', dbLabel);
+  }
+}
+
 async function runWalkForward({ sources, state }) {
   const wfStatusEl = document.getElementById('wfStatus');
 
@@ -987,6 +997,7 @@ async function runWalkForward({ sources, state }) {
     formData.append('wf_is_period_days', wfIsPeriodDays);
     formData.append('wf_oos_period_days', wfOosPeriodDays);
     formData.append('wf_store_top_n_trials', wfStoreTopNTrials);
+    appendDatabaseTargetToFormData(formData);
     try {
       const data = await runWalkForwardRequest(formData, optimizationAbortController.signal);
 
@@ -1383,6 +1394,7 @@ async function submitOptimization(event) {
       formData.append('csvPath', source.path);
     }
     formData.append('config', JSON.stringify(config));
+    appendDatabaseTargetToFormData(formData);
 
     try {
       const data = await runOptimizationRequest(formData, optimizationAbortController.signal);
