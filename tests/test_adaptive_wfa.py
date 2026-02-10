@@ -263,3 +263,95 @@ def test_adaptive_does_not_append_zero_day_last_window(monkeypatch):
     assert result.windows[-1].oos_end <= end_ts
     assert all((window.oos_end - window.oos_start).total_seconds() > 0 for window in result.windows)
     assert all((window.oos_actual_days or 0.0) > 0.0 for window in result.windows)
+
+
+def test_adaptive_oos_windows_do_not_overlap(monkeypatch):
+    index = pd.date_range("2025-01-01 00:00:00", "2025-05-01 00:00:00", freq="1h", tz="UTC")
+    df = pd.DataFrame(
+        {"Open": 1.0, "High": 1.0, "Low": 1.0, "Close": 1.0, "Volume": 1.0},
+        index=index,
+    )
+
+    config = WFConfig(
+        strategy_id="s01_trailing_ma",
+        adaptive_mode=True,
+        is_period_days=20,
+        max_oos_period_days=10,
+        min_oos_trades=5,
+        check_interval_trades=3,
+    )
+    base_template = {
+        "fixed_params": {
+            "dateFilter": True,
+            "start": "2025-01-01T00:00",
+            "end": "2025-05-01T00:00",
+        },
+    }
+    engine = WalkForwardEngine(config, base_template, {})
+
+    def fake_pipeline(self, df, is_start, is_end, window_id):  # noqa: ARG001
+        return ISPipelineResult(
+            best_result=SimpleNamespace(score=0.0),
+            best_params={},
+            param_id=f"w{window_id}",
+            best_trial_number=window_id,
+            best_params_source="optuna_is",
+            is_pareto_optimal=None,
+            constraints_satisfied=None,
+            available_modules=["optuna_is"],
+            module_status={"optuna_is": {"enabled": True, "ran": True, "reason": None}},
+            selection_chain={},
+            optimization_start=is_start,
+            optimization_end=is_end,
+            ft_start=None,
+            ft_end=None,
+            optuna_is_trials=[],
+            dsr_trials=None,
+            forward_test_trials=None,
+            stress_test_trials=None,
+        )
+
+    def fake_backtest(self, df, start, end, params):  # noqa: ARG001
+        return StrategyResult(
+            trades=[],
+            equity_curve=[100.0, 100.0],
+            balance_curve=[100.0, 100.0],
+            timestamps=[start, end],
+        )
+
+    def fake_baseline(self, is_result, is_period_days):  # noqa: ARG001
+        return {
+            "h": 5.0,
+            "dd_limit": 0.0,
+            "mu": 0.0,
+            "sigma": 0.0,
+            "is_avg_trade_interval": None,
+            "max_trade_interval": None,
+            "cusum_enabled": False,
+            "drawdown_enabled": False,
+            "inactivity_enabled": False,
+        }
+
+    def fake_scan(self, trades, balance_curve, timestamps, baseline, oos_start, oos_max_end):  # noqa: ARG001
+        return SimpleNamespace(
+            triggered=False,
+            trigger_type="max_period",
+            trigger_trade_idx=None,
+            trigger_time=oos_max_end,
+            cusum_final=0.0,
+            cusum_threshold=5.0,
+            dd_peak=0.0,
+            dd_threshold=0.0,
+            oos_actual_trades=0,
+            oos_actual_days=(oos_max_end - oos_start).total_seconds() / 86400.0,
+        )
+
+    monkeypatch.setattr(WalkForwardEngine, "_run_window_is_pipeline", fake_pipeline)
+    monkeypatch.setattr(WalkForwardEngine, "_run_period_backtest", fake_backtest)
+    monkeypatch.setattr(WalkForwardEngine, "_compute_is_baseline", fake_baseline)
+    monkeypatch.setattr(WalkForwardEngine, "_scan_triggers", fake_scan)
+
+    result, _study_id = engine.run_wf_optimization(df)
+    assert len(result.windows) >= 2
+    for prev_window, next_window in zip(result.windows, result.windows[1:]):
+        assert next_window.oos_start > prev_window.oos_end

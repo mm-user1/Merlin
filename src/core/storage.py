@@ -368,6 +368,8 @@ def _create_schema(conn: sqlite3.Connection) -> None:
 
             is_start_date TEXT,
             is_end_date TEXT,
+            is_start_ts TEXT,
+            is_end_ts TEXT,
             is_net_profit_pct REAL,
             is_max_drawdown_pct REAL,
             is_total_trades INTEGER,
@@ -376,6 +378,8 @@ def _create_schema(conn: sqlite3.Connection) -> None:
 
             oos_start_date TEXT,
             oos_end_date TEXT,
+            oos_start_ts TEXT,
+            oos_end_ts TEXT,
             oos_net_profit_pct REAL,
             oos_max_drawdown_pct REAL,
             oos_total_trades INTEGER,
@@ -556,10 +560,18 @@ def _ensure_wfa_schema_updated(conn: sqlite3.Connection) -> None:
 
     add_col("ALTER TABLE wfa_windows ADD COLUMN optimization_start_date TEXT;", "optimization_start_date")
     add_col("ALTER TABLE wfa_windows ADD COLUMN optimization_end_date TEXT;", "optimization_end_date")
+    add_col("ALTER TABLE wfa_windows ADD COLUMN optimization_start_ts TEXT;", "optimization_start_ts")
+    add_col("ALTER TABLE wfa_windows ADD COLUMN optimization_end_ts TEXT;", "optimization_end_ts")
     add_col("ALTER TABLE wfa_windows ADD COLUMN ft_start_date TEXT;", "ft_start_date")
     add_col("ALTER TABLE wfa_windows ADD COLUMN ft_end_date TEXT;", "ft_end_date")
+    add_col("ALTER TABLE wfa_windows ADD COLUMN ft_start_ts TEXT;", "ft_start_ts")
+    add_col("ALTER TABLE wfa_windows ADD COLUMN ft_end_ts TEXT;", "ft_end_ts")
     add_col("ALTER TABLE wfa_windows ADD COLUMN is_timestamps_json TEXT;", "is_timestamps_json")
     add_col("ALTER TABLE wfa_windows ADD COLUMN oos_timestamps_json TEXT;", "oos_timestamps_json")
+    add_col("ALTER TABLE wfa_windows ADD COLUMN is_start_ts TEXT;", "is_start_ts")
+    add_col("ALTER TABLE wfa_windows ADD COLUMN is_end_ts TEXT;", "is_end_ts")
+    add_col("ALTER TABLE wfa_windows ADD COLUMN oos_start_ts TEXT;", "oos_start_ts")
+    add_col("ALTER TABLE wfa_windows ADD COLUMN oos_end_ts TEXT;", "oos_end_ts")
 
     add_col("ALTER TABLE wfa_windows ADD COLUMN is_win_rate REAL;", "is_win_rate")
     add_col("ALTER TABLE wfa_windows ADD COLUMN is_max_consecutive_losses INTEGER;", "is_max_consecutive_losses")
@@ -1234,11 +1246,17 @@ def save_wfa_study_to_db(
                         else None,
                         _format_date(getattr(window, "optimization_start", None)),
                         _format_date(getattr(window, "optimization_end", None)),
+                        _format_timestamp(getattr(window, "optimization_start", None)),
+                        _format_timestamp(getattr(window, "optimization_end", None)),
                         _format_date(getattr(window, "ft_start", None)),
                         _format_date(getattr(window, "ft_end", None)),
+                        _format_timestamp(getattr(window, "ft_start", None)),
+                        _format_timestamp(getattr(window, "ft_end", None)),
                         is_timestamps,
                         _format_date(window.is_start),
                         _format_date(window.is_end),
+                        _format_timestamp(window.is_start),
+                        _format_timestamp(window.is_end),
                         window.is_net_profit_pct,
                         window.is_max_drawdown_pct,
                         window.is_total_trades,
@@ -1255,6 +1273,8 @@ def save_wfa_study_to_db(
                         getattr(window, "is_composite_score", None),
                         _format_date(window.oos_start),
                         _format_date(window.oos_end),
+                        _format_timestamp(window.oos_start),
+                        _format_timestamp(window.oos_end),
                         window.oos_net_profit_pct,
                         window.oos_max_drawdown_pct,
                         window.oos_total_trades,
@@ -1278,30 +1298,37 @@ def save_wfa_study_to_db(
                 )
 
             if window_rows:
+                window_columns = (
+                    "window_id", "study_id", "window_number",
+                    "best_params_json", "param_id", "best_params_source",
+                    "is_pareto_optimal", "constraints_satisfied",
+                    "available_modules", "store_top_n_trials",
+                    "module_status_json", "selection_chain_json",
+                    "optimization_start_date", "optimization_end_date",
+                    "optimization_start_ts", "optimization_end_ts",
+                    "ft_start_date", "ft_end_date",
+                    "ft_start_ts", "ft_end_ts",
+                    "is_timestamps_json",
+                    "is_start_date", "is_end_date",
+                    "is_start_ts", "is_end_ts",
+                    "is_net_profit_pct", "is_max_drawdown_pct", "is_total_trades", "is_best_trial_number",
+                    "is_equity_curve",
+                    "is_win_rate", "is_max_consecutive_losses", "is_romad", "is_sharpe_ratio",
+                    "is_profit_factor", "is_sqn", "is_ulcer_index", "is_consistency_score", "is_composite_score",
+                    "oos_start_date", "oos_end_date",
+                    "oos_start_ts", "oos_end_ts",
+                    "oos_net_profit_pct", "oos_max_drawdown_pct", "oos_total_trades",
+                    "oos_equity_curve", "oos_timestamps_json",
+                    "oos_win_rate", "oos_max_consecutive_losses", "oos_romad", "oos_sharpe_ratio",
+                    "oos_profit_factor", "oos_sqn", "oos_ulcer_index", "oos_consistency_score",
+                    "trigger_type", "cusum_final", "cusum_threshold", "dd_threshold", "oos_actual_days",
+                    "wfe",
+                )
+                placeholders = ", ".join(["?"] * len(window_columns))
                 conn.executemany(
-                    """
-                    INSERT INTO wfa_windows (
-                        window_id, study_id, window_number,
-                        best_params_json, param_id, best_params_source,
-                        is_pareto_optimal, constraints_satisfied,
-                        available_modules, store_top_n_trials,
-                        module_status_json, selection_chain_json,
-                        optimization_start_date, optimization_end_date,
-                        ft_start_date, ft_end_date,
-                        is_timestamps_json,
-                        is_start_date, is_end_date,
-                        is_net_profit_pct, is_max_drawdown_pct, is_total_trades, is_best_trial_number,
-                        is_equity_curve,
-                        is_win_rate, is_max_consecutive_losses, is_romad, is_sharpe_ratio,
-                        is_profit_factor, is_sqn, is_ulcer_index, is_consistency_score, is_composite_score,
-                        oos_start_date, oos_end_date,
-                        oos_net_profit_pct, oos_max_drawdown_pct, oos_total_trades,
-                        oos_equity_curve, oos_timestamps_json,
-                        oos_win_rate, oos_max_consecutive_losses, oos_romad, oos_sharpe_ratio,
-                        oos_profit_factor, oos_sqn, oos_ulcer_index, oos_consistency_score,
-                        trigger_type, cusum_final, cusum_threshold, dd_threshold, oos_actual_days,
-                        wfe
-                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    f"""
+                    INSERT INTO wfa_windows ({", ".join(window_columns)})
+                    VALUES ({placeholders})
                     """,
                     window_rows,
                 )
@@ -2333,4 +2360,12 @@ def _format_date(value: Any) -> str:
         return value.strftime("%Y-%m-%d")
     if value:
         return str(value)[:10]
+    return ""
+
+
+def _format_timestamp(value: Any) -> str:
+    if hasattr(value, "isoformat"):
+        return value.isoformat()
+    if value:
+        return str(value)
     return ""

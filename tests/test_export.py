@@ -43,8 +43,84 @@ class TestExportTrades:
         csv_content = export_trades_csv(trades)
         lines = csv_content.splitlines()
         assert len(lines) == 5
-        assert lines[1].endswith("1.0,2025-01-01 00:00:00")
-        assert lines[2].endswith("2.0,2025-01-02 00:00:00")
-        assert lines[3].endswith("2.0,2025-02-01 00:00:00")
-        assert lines[4].endswith("1.0,2025-02-02 00:00:00")
+        assert lines[1].endswith("1,2025-01-01 00:00:00")
+        assert lines[2].endswith("2,2025-01-02 00:00:00")
+        assert lines[3].endswith("2,2025-02-01 00:00:00")
+        assert lines[4].endswith("1,2025-02-02 00:00:00")
+
+    def test_export_trades_csv_sorts_transactions_chronologically(self):
+        trades = [
+            TradeRecord(
+                direction="long",
+                entry_time=pd.Timestamp("2025-10-06 14:00", tz="UTC"),
+                exit_time=pd.Timestamp("2025-10-07 12:00", tz="UTC"),
+                entry_price=0.26209,
+                exit_price=0.26422,
+                size=393.56,
+            ),
+            TradeRecord(
+                direction="short",
+                entry_time=pd.Timestamp("2025-10-07 00:00", tz="UTC"),
+                exit_time=pd.Timestamp("2025-10-07 06:00", tz="UTC"),
+                entry_price=0.26582,
+                exit_price=0.26049,
+                size=376.19,
+            ),
+        ]
+
+        csv_content = export_trades_csv(trades, symbol="OKX:DOGEUSDT.P")
+        lines = csv_content.splitlines()
+        assert len(lines) == 5
+        assert lines[1].endswith("2025-10-06 14:00:00")
+        assert lines[2].endswith("2025-10-07 00:00:00")
+        assert lines[3].endswith("2025-10-07 06:00:00")
+        assert lines[4].endswith("2025-10-07 12:00:00")
+
+    def test_export_trades_csv_can_preserve_input_event_order(self):
+        trades = [
+            TradeRecord(
+                direction="long",
+                entry_time=pd.Timestamp("2025-10-06 14:00", tz="UTC"),
+                exit_time=pd.Timestamp("2025-10-07 12:00", tz="UTC"),
+                entry_price=0.26209,
+                exit_price=0.26422,
+                size=393.56,
+            ),
+            TradeRecord(
+                direction="short",
+                entry_time=pd.Timestamp("2025-10-07 00:00", tz="UTC"),
+                exit_time=pd.Timestamp("2025-10-07 06:00", tz="UTC"),
+                entry_price=0.26582,
+                exit_price=0.26049,
+                size=376.19,
+            ),
+        ]
+
+        csv_content = export_trades_csv(
+            trades,
+            symbol="OKX:DOGEUSDT.P",
+            sort_events_chronologically=False,
+        )
+        lines = csv_content.splitlines()
+        assert len(lines) == 5
+        assert lines[1].endswith("2025-10-06 14:00:00")
+        assert lines[2].endswith("2025-10-07 12:00:00")
+        assert lines[3].endswith("2025-10-07 00:00:00")
+        assert lines[4].endswith("2025-10-07 06:00:00")
+
+    def test_export_trades_csv_normalizes_float_artifacts(self):
+        trade = TradeRecord(
+            direction="long",
+            entry_time=pd.Timestamp("2026-01-28 00:00", tz="UTC"),
+            exit_time=pd.Timestamp("2026-01-29 01:00", tz="UTC"),
+            entry_price=0.1257,
+            exit_price=0.12333,
+            size=722.9300000000001,
+        )
+
+        csv_content = export_trades_csv([trade], symbol="OKX:DOGEUSDT.P")
+        lines = csv_content.splitlines()
+        # Qty should not keep binary-float tails like ...0000000001
+        assert "722.9300000000001" not in csv_content
+        assert lines[1] == "OKX:DOGEUSDT.P,Buy,722.93,0.1257,2026-01-28 00:00:00"
 

@@ -124,6 +124,60 @@ except ImportError:
 
 
 def register_routes(app):
+    def _trade_time_ns(value: Any) -> int:
+        if value is None:
+            return -1
+        try:
+            return int(value.value)
+        except Exception:
+            return -1
+
+    def _normalize_wfa_oos_trades(
+        trades: List[Any],
+        *,
+        start: Any,
+        end: Any,
+        expected_total: Optional[Any] = None,
+    ) -> List[Any]:
+        """
+        Normalize OOS trade export to match stored WFA window semantics:
+        - closed trades only
+        - bounded by resolved OOS period (entry and exit)
+        - capped by stored OOS total trades when available
+        """
+        start_ts = parse_timestamp_utc(start)
+        end_ts = parse_timestamp_utc(end)
+
+        normalized: List[Any] = []
+        for trade in list(trades or []):
+            entry_time = getattr(trade, "entry_time", None)
+            exit_time = getattr(trade, "exit_time", None)
+            if entry_time is None or exit_time is None:
+                continue
+            if start_ts is not None and entry_time < start_ts:
+                continue
+            if end_ts is not None and entry_time > end_ts:
+                continue
+            if end_ts is not None and exit_time > end_ts:
+                continue
+            normalized.append(trade)
+
+        normalized.sort(
+            key=lambda trade: (
+                _trade_time_ns(getattr(trade, "exit_time", None)),
+                _trade_time_ns(getattr(trade, "entry_time", None)),
+            )
+        )
+
+        try:
+            limit = max(0, int(expected_total)) if expected_total is not None else None
+        except (TypeError, ValueError):
+            limit = None
+
+        if limit is not None and len(normalized) > limit:
+            normalized = normalized[:limit]
+
+        return normalized
 
     @app.route("/")
     def index() -> object:
@@ -706,12 +760,20 @@ def register_routes(app):
             "window_id": window_id,
             "is_start_date": window.get("is_start_date"),
             "is_end_date": window.get("is_end_date"),
+            "is_start_ts": window.get("is_start_ts"),
+            "is_end_ts": window.get("is_end_ts"),
             "oos_start_date": window.get("oos_start_date"),
             "oos_end_date": window.get("oos_end_date"),
+            "oos_start_ts": window.get("oos_start_ts"),
+            "oos_end_ts": window.get("oos_end_ts"),
             "optimization_start_date": window.get("optimization_start_date"),
             "optimization_end_date": window.get("optimization_end_date"),
+            "optimization_start_ts": window.get("optimization_start_ts"),
+            "optimization_end_ts": window.get("optimization_end_ts"),
             "ft_start_date": window.get("ft_start_date"),
             "ft_end_date": window.get("ft_end_date"),
+            "ft_start_ts": window.get("ft_start_ts"),
+            "ft_end_ts": window.get("ft_end_ts"),
             "best_params": window.get("best_params") or {},
             "param_id": window.get("param_id"),
             "best_params_source": window.get("best_params_source") or "optuna_is",
@@ -863,6 +925,14 @@ def register_routes(app):
         if error:
             return jsonify({"error": error}), HTTPStatus.BAD_REQUEST
 
+        if (period or "").lower() == "oos" and (not module_type or module_type == "oos_result"):
+            trades = _normalize_wfa_oos_trades(
+                trades or [],
+                start=start,
+                end=end,
+                expected_total=window.get("oos_total_trades"),
+            )
+
         module_label = module_type or "window"
         filename = (
             f"{study.get('study_name', 'study')}_wfa_window_{window_number}_"
@@ -913,8 +983,9 @@ def register_routes(app):
 
         all_trades = []
         for window in windows:
-            start_raw = window.get("oos_start_date") or window.get("oos_start")
-            end_raw = window.get("oos_end_date") or window.get("oos_end")
+            start_raw, end_raw, error = _resolve_wfa_period(window, "oos")
+            if error:
+                continue
             start, end = align_date_bounds(df.index, start_raw, end_raw)
             if start is None or end is None:
                 continue
@@ -936,20 +1007,23 @@ def register_routes(app):
             except Exception as exc:
                 return jsonify({"error": str(exc)}), HTTPStatus.BAD_REQUEST
 
-            window_trades = [
-                trade
-                for trade in result.trades
-                if trade.entry_time and start <= trade.entry_time <= end
-            ]
+            window_trades = _normalize_wfa_oos_trades(
+                result.trades or [],
+                start=start,
+                end=end,
+                expected_total=window.get("oos_total_trades"),
+            )
             all_trades.extend(window_trades)
 
-
-        all_trades.sort(key=lambda t: t.entry_time or pd.Timestamp.min)
 
         from core.export import _extract_symbol_from_csv_filename
 
         symbol = _extract_symbol_from_csv_filename(study.get("csv_file_name") or "")
-        csv_content = export_trades_csv(all_trades, symbol=symbol)
+        csv_content = export_trades_csv(
+            all_trades,
+            symbol=symbol,
+            sort_events_chronologically=False,
+        )
         buffer = io.BytesIO(csv_content.encode("utf-8"))
         buffer.seek(0)
 

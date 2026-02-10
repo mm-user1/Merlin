@@ -969,22 +969,156 @@ def _resolve_wfa_period(
     window: Dict[str, Any],
     period: str,
 ) -> Tuple[Optional[str], Optional[str], Optional[str]]:
+    def _normalize_boundary(value: Any) -> Optional[str]:
+        if value in (None, ""):
+            return None
+        if hasattr(value, "isoformat"):
+            return value.isoformat()
+        return str(value)
+
+    def _is_date_only_text(value: Any) -> bool:
+        return isinstance(value, str) and bool(re.match(r"^\d{4}-\d{2}-\d{2}$", value.strip()))
+
+    def _resolve_boundary(
+        *,
+        ts_key: str,
+        date_key: str,
+        legacy_key: Optional[str] = None,
+        timestamps_key: Optional[str] = None,
+        side: str,
+    ) -> Optional[str]:
+        # Prefer exact persisted timestamp for precise boundary replay.
+        exact = _normalize_boundary(window.get(ts_key))
+        if exact:
+            return exact
+
+        # Legacy studies can still carry exact boundary in dense timestamps JSON.
+        if timestamps_key:
+            seq = window.get(timestamps_key)
+            if isinstance(seq, list) and seq:
+                idx = 0 if side == "start" else -1
+                seq_value = _normalize_boundary(seq[idx])
+                if seq_value:
+                    return seq_value
+
+        date_value = _normalize_boundary(window.get(date_key))
+        if date_value:
+            return date_value
+
+        if legacy_key:
+            return _normalize_boundary(window.get(legacy_key))
+        return None
+
+    def _reconstruct_adaptive_oos_end() -> Optional[str]:
+        # Legacy adaptive studies may only have date columns, but oos_actual_days
+        # preserves the exact trigger cut (including intraday fractions).
+        if _normalize_boundary(window.get("oos_end_ts")):
+            return None
+        actual_days_raw = window.get("oos_actual_days")
+        if actual_days_raw in (None, ""):
+            return None
+        try:
+            actual_days = float(actual_days_raw)
+        except (TypeError, ValueError):
+            return None
+        if actual_days <= 0:
+            return None
+
+        start_raw = _resolve_boundary(
+            ts_key="oos_start_ts",
+            date_key="oos_start_date",
+            legacy_key="oos_start",
+            timestamps_key="oos_timestamps",
+            side="start",
+        )
+        start_ts = parse_timestamp_utc(start_raw)
+        if start_ts is None:
+            return None
+        return (start_ts + pd.Timedelta(days=actual_days)).isoformat()
+
     period = (period or "").lower()
     if period == "optuna_is":
-        start = window.get("optimization_start_date") or window.get("is_start_date")
-        end = window.get("optimization_end_date") or window.get("is_end_date")
+        start = _resolve_boundary(
+            ts_key="optimization_start_ts",
+            date_key="optimization_start_date",
+            timestamps_key=None,
+            side="start",
+        ) or _resolve_boundary(
+            ts_key="is_start_ts",
+            date_key="is_start_date",
+            timestamps_key="is_timestamps",
+            side="start",
+        )
+        end = _resolve_boundary(
+            ts_key="optimization_end_ts",
+            date_key="optimization_end_date",
+            timestamps_key=None,
+            side="end",
+        ) or _resolve_boundary(
+            ts_key="is_end_ts",
+            date_key="is_end_date",
+            timestamps_key="is_timestamps",
+            side="end",
+        )
     elif period == "is":
-        start = window.get("is_start_date")
-        end = window.get("is_end_date")
+        start = _resolve_boundary(
+            ts_key="is_start_ts",
+            date_key="is_start_date",
+            timestamps_key="is_timestamps",
+            side="start",
+        )
+        end = _resolve_boundary(
+            ts_key="is_end_ts",
+            date_key="is_end_date",
+            timestamps_key="is_timestamps",
+            side="end",
+        )
     elif period == "ft":
-        start = window.get("ft_start_date")
-        end = window.get("ft_end_date")
+        start = _resolve_boundary(
+            ts_key="ft_start_ts",
+            date_key="ft_start_date",
+            side="start",
+        )
+        end = _resolve_boundary(
+            ts_key="ft_end_ts",
+            date_key="ft_end_date",
+            side="end",
+        )
     elif period == "oos":
-        start = window.get("oos_start_date")
-        end = window.get("oos_end_date")
+        start = _resolve_boundary(
+            ts_key="oos_start_ts",
+            date_key="oos_start_date",
+            legacy_key="oos_start",
+            timestamps_key="oos_timestamps",
+            side="start",
+        )
+        end = _resolve_boundary(
+            ts_key="oos_end_ts",
+            date_key="oos_end_date",
+            legacy_key="oos_end",
+            timestamps_key="oos_timestamps",
+            side="end",
+        )
+        reconstructed_end = _reconstruct_adaptive_oos_end()
+        if reconstructed_end and _is_date_only_text(end):
+            end = reconstructed_end
     elif period == "both":
-        start = window.get("is_start_date")
-        end = window.get("oos_end_date")
+        start = _resolve_boundary(
+            ts_key="is_start_ts",
+            date_key="is_start_date",
+            timestamps_key="is_timestamps",
+            side="start",
+        )
+        end = _resolve_boundary(
+            ts_key="oos_end_ts",
+            date_key="oos_end_date",
+            legacy_key="oos_end",
+            timestamps_key="oos_timestamps",
+            side="end",
+        )
+        reconstructed_end = _reconstruct_adaptive_oos_end()
+        if reconstructed_end and _is_date_only_text(end):
+            end = reconstructed_end
     else:
         return None, None, "Invalid period."
 

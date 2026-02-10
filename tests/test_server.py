@@ -1,5 +1,6 @@
 import io
 import sys
+import csv
 from pathlib import Path
 
 import pytest
@@ -8,6 +9,7 @@ import pandas as pd
 sys.path.insert(0, str(Path(__file__).parent.parent / "src"))
 
 from ui.server import app
+from core.backtest_engine import TradeRecord
 from core.walkforward_engine import OOSStitchedResult, WFConfig, WFResult, WindowResult
 from core.storage import save_wfa_study_to_db
 from strategies import get_strategy_config
@@ -321,6 +323,332 @@ def test_download_wfa_window_trades(client):
     )
     assert response.status_code == 200
     assert response.headers.get("Content-Type", "").startswith("text/csv")
+
+
+def test_resolve_wfa_period_oos_prefers_precise_timestamp_and_legacy_timestamps():
+    from ui.server_services import _resolve_wfa_period
+
+    window = {
+        "oos_start_date": "2025-01-01",
+        "oos_end_date": "2025-01-02",
+        "oos_start_ts": "2025-01-01T00:00:00+00:00",
+        "oos_end_ts": "2025-01-02T12:00:00+00:00",
+    }
+    start, end, error = _resolve_wfa_period(window, "oos")
+    assert error is None
+    assert start == "2025-01-01T00:00:00+00:00"
+    assert end == "2025-01-02T12:00:00+00:00"
+
+    legacy_window = {
+        "oos_start_date": "2025-01-01",
+        "oos_end_date": "2025-01-02",
+        "oos_timestamps": [
+            "2025-01-01T00:00:00+00:00",
+            "2025-01-02T12:00:00+00:00",
+        ],
+    }
+    legacy_start, legacy_end, legacy_error = _resolve_wfa_period(legacy_window, "oos")
+    assert legacy_error is None
+    assert legacy_start == "2025-01-01T00:00:00+00:00"
+    assert legacy_end == "2025-01-02T12:00:00+00:00"
+
+    adaptive_legacy_window = {
+        "oos_start_date": "2025-01-01",
+        "oos_end_date": "2025-01-02",
+        "oos_actual_days": 1.5,
+    }
+    adaptive_start, adaptive_end, adaptive_error = _resolve_wfa_period(adaptive_legacy_window, "oos")
+    assert adaptive_error is None
+    assert adaptive_start == "2025-01-01"
+    assert adaptive_end == "2025-01-02T12:00:00+00:00"
+
+
+def test_download_wfa_trades_uses_precise_oos_timestamp_bounds(client, monkeypatch):
+    import strategies
+    import ui.server_routes_data as routes_data
+
+    csv_path = Path(__file__).parent / "_tmp_wfa_precise_bounds.csv"
+    csv_path.write_text("timestamp,open,high,low,close,volume\n", encoding="utf-8")
+
+    try:
+        study_id = "wfa_precise_bounds"
+        study_data = {
+            "study": {
+                "study_id": study_id,
+                "study_name": "wfa_precise_bounds",
+                "optimization_mode": "wfa",
+                "strategy_id": "s01_trailing_ma",
+                "csv_file_path": str(csv_path),
+                "csv_file_name": "OKX_TESTUSDT.csv",
+                "warmup_bars": 0,
+                "config_json": {"fixed_params": {}},
+            },
+            "windows": [
+                {
+                    "window_number": 1,
+                    "best_params": {},
+                    "oos_start_date": "2025-01-01",
+                    "oos_end_date": "2025-01-02",
+                    "oos_start_ts": "2025-01-01T00:00:00+00:00",
+                    "oos_end_ts": "2025-01-02T12:00:00+00:00",
+                    "oos_total_trades": 1,
+                }
+            ],
+        }
+
+        monkeypatch.setattr(
+            routes_data,
+            "load_study_from_db",
+            lambda sid: study_data if sid == study_id else None,
+        )
+
+        index = pd.date_range("2025-01-01 00:00:00+00:00", periods=72, freq="h")
+        df = pd.DataFrame(
+            {
+                "open": 1.0,
+                "high": 1.0,
+                "low": 1.0,
+                "close": 1.0,
+                "volume": 1.0,
+            },
+            index=index,
+        )
+        monkeypatch.setattr(routes_data, "load_data", lambda _: df)
+        monkeypatch.setattr(routes_data, "prepare_dataset_with_warmup", lambda data, *_: (data, 0))
+
+        class FakeResult:
+            def __init__(self, trades):
+                self.trades = trades
+
+        class FakeStrategy:
+            @staticmethod
+            def run(*_args, **_kwargs):
+                return FakeResult(
+                    [
+                        TradeRecord(
+                            direction="long",
+                            entry_time=pd.Timestamp("2025-01-02 10:00:00+00:00"),
+                            exit_time=pd.Timestamp("2025-01-02 10:30:00+00:00"),
+                            entry_price=100.0,
+                            exit_price=101.0,
+                            size=1.0,
+                        ),
+                        TradeRecord(
+                            direction="long",
+                            entry_time=pd.Timestamp("2025-01-02 20:00:00+00:00"),
+                            exit_time=pd.Timestamp("2025-01-02 20:30:00+00:00"),
+                            entry_price=100.0,
+                            exit_price=99.0,
+                            size=1.0,
+                        ),
+                    ]
+                )
+
+        monkeypatch.setattr(strategies, "get_strategy", lambda _sid: FakeStrategy)
+
+        response = client.post(f"/api/studies/{study_id}/wfa/trades")
+        assert response.status_code == 200
+
+        text = response.get_data(as_text=True)
+        rows = list(csv.reader(io.StringIO(text)))
+        # Header + 2 rows (entry/exit) for exactly one trade.
+        assert len(rows) == 3
+    finally:
+        if csv_path.exists():
+            csv_path.unlink()
+
+
+def test_download_wfa_trades_preserves_window_sequence_for_overlap(client, monkeypatch):
+    import strategies
+    import ui.server_routes_data as routes_data
+
+    csv_path = Path(__file__).parent / "_tmp_wfa_overlap_sequence.csv"
+    csv_path.write_text("timestamp,open,high,low,close,volume\n", encoding="utf-8")
+
+    try:
+        study_id = "wfa_overlap_sequence"
+        study_data = {
+            "study": {
+                "study_id": study_id,
+                "study_name": "wfa_overlap_sequence",
+                "optimization_mode": "wfa",
+                "strategy_id": "s01_trailing_ma",
+                "csv_file_path": str(csv_path),
+                "csv_file_name": "OKX_TESTUSDT.csv",
+                "warmup_bars": 0,
+                "config_json": {"fixed_params": {}},
+            },
+            "windows": [
+                {
+                    "window_number": 1,
+                    "best_params": {},
+                    "oos_start_ts": "2025-01-01T00:00:00+00:00",
+                    "oos_end_ts": "2025-01-02T12:00:00+00:00",
+                    "oos_start_date": "2025-01-01",
+                    "oos_end_date": "2025-01-02",
+                    "oos_total_trades": 1,
+                },
+                {
+                    "window_number": 2,
+                    "best_params": {},
+                    "oos_start_ts": "2025-01-02T00:00:00+00:00",
+                    "oos_end_ts": "2025-01-03T00:00:00+00:00",
+                    "oos_start_date": "2025-01-02",
+                    "oos_end_date": "2025-01-03",
+                    "oos_total_trades": 1,
+                },
+            ],
+        }
+
+        monkeypatch.setattr(
+            routes_data,
+            "load_study_from_db",
+            lambda sid: study_data if sid == study_id else None,
+        )
+
+        index = pd.date_range("2025-01-01 00:00:00+00:00", periods=72, freq="h")
+        df = pd.DataFrame(
+            {
+                "Open": 1.0,
+                "High": 1.0,
+                "Low": 1.0,
+                "Close": 1.0,
+                "Volume": 1.0,
+            },
+            index=index,
+        )
+        monkeypatch.setattr(routes_data, "load_data", lambda _: df)
+        monkeypatch.setattr(routes_data, "prepare_dataset_with_warmup", lambda data, *_: (data, 0))
+
+        class FakeResult:
+            def __init__(self, trades):
+                self.trades = trades
+
+        class FakeStrategy:
+            @staticmethod
+            def run(_df, params, _trade_start_idx):
+                start = params.get("start")
+                if start == pd.Timestamp("2025-01-01 00:00:00+00:00"):
+                    return FakeResult(
+                        [
+                            TradeRecord(
+                                direction="long",
+                                entry_time=pd.Timestamp("2025-01-02 10:00:00+00:00"),
+                                exit_time=pd.Timestamp("2025-01-02 12:00:00+00:00"),
+                                entry_price=100.0,
+                                exit_price=101.0,
+                                size=1.0,
+                            )
+                        ]
+                    )
+                if start == pd.Timestamp("2025-01-02 00:00:00+00:00"):
+                    return FakeResult(
+                        [
+                            TradeRecord(
+                                direction="long",
+                                entry_time=pd.Timestamp("2025-01-02 00:00:00+00:00"),
+                                exit_time=pd.Timestamp("2025-01-02 06:00:00+00:00"),
+                                entry_price=100.0,
+                                exit_price=99.0,
+                                size=1.0,
+                            )
+                        ]
+                    )
+                return FakeResult([])
+
+        monkeypatch.setattr(strategies, "get_strategy", lambda _sid: FakeStrategy)
+
+        response = client.post(f"/api/studies/{study_id}/wfa/trades")
+        assert response.status_code == 200
+
+        rows = list(csv.reader(io.StringIO(response.get_data(as_text=True))))
+        assert len(rows) == 5
+        # Keep per-window transaction sequence for stitched exports.
+        assert rows[1][4] == "2025-01-02 10:00:00"
+        assert rows[2][4] == "2025-01-02 12:00:00"
+        assert rows[3][4] == "2025-01-02 00:00:00"
+        assert rows[4][4] == "2025-01-02 06:00:00"
+    finally:
+        if csv_path.exists():
+            csv_path.unlink()
+
+
+def test_download_wfa_window_trades_respects_stored_oos_trade_count(client, monkeypatch):
+    import ui.server_routes_data as routes_data
+
+    csv_path = Path(__file__).parent / "_tmp_wfa_window_trades.csv"
+    csv_path.write_text("timestamp,open,high,low,close,volume\n", encoding="utf-8")
+
+    try:
+        study_id = "wfa_window_count_limit"
+        study_data = {
+            "study": {
+                "study_id": study_id,
+                "study_name": "wfa_window_count_limit",
+                "optimization_mode": "wfa",
+                "strategy_id": "s01_trailing_ma",
+                "csv_file_path": str(csv_path),
+                "csv_file_name": "OKX_TESTUSDT.csv",
+                "warmup_bars": 0,
+                "config_json": {"fixed_params": {}},
+            },
+            "windows": [
+                {
+                    "window_number": 1,
+                    "window_id": f"{study_id}_w1",
+                    "best_params": {},
+                    "oos_start_ts": "2025-01-01T00:00:00+00:00",
+                    "oos_end_ts": "2025-01-02T23:00:00+00:00",
+                    "oos_start_date": "2025-01-01",
+                    "oos_end_date": "2025-01-02",
+                    "oos_total_trades": 1,
+                }
+            ],
+        }
+
+        monkeypatch.setattr(
+            routes_data,
+            "load_study_from_db",
+            lambda sid: study_data if sid == study_id else None,
+        )
+
+        fake_trades = [
+            TradeRecord(
+                direction="long",
+                entry_time=pd.Timestamp("2025-01-02 10:00:00+00:00"),
+                exit_time=pd.Timestamp("2025-01-02 10:30:00+00:00"),
+                entry_price=100.0,
+                exit_price=101.0,
+                size=1.0,
+            ),
+            TradeRecord(
+                direction="long",
+                entry_time=pd.Timestamp("2025-01-02 20:00:00+00:00"),
+                exit_time=pd.Timestamp("2025-01-02 20:30:00+00:00"),
+                entry_price=100.0,
+                exit_price=99.0,
+                size=1.0,
+            ),
+        ]
+
+        monkeypatch.setattr(
+            routes_data,
+            "_run_trade_export",
+            lambda **_kwargs: (fake_trades, None),
+        )
+
+        response = client.post(
+            f"/api/studies/{study_id}/wfa/windows/1/trades",
+            json={"period": "oos"},
+        )
+        assert response.status_code == 200
+
+        rows = list(csv.reader(io.StringIO(response.get_data(as_text=True))))
+        # Header + 2 rows (entry/exit) for exactly one trade after count cap.
+        assert len(rows) == 3
+    finally:
+        if csv_path.exists():
+            csv_path.unlink()
 
 
 @pytest.mark.parametrize("threshold", [-1, "bad"])

@@ -12,6 +12,7 @@ from __future__ import annotations
 import csv
 from io import StringIO
 from pathlib import Path
+from decimal import Decimal, InvalidOperation
 from typing import List, Optional
 
 from .backtest_engine import TradeRecord
@@ -30,6 +31,7 @@ def export_trades_csv(
     path: Optional[str] = None,
     *,
     symbol: str = "LINKUSDT",
+    sort_events_chronologically: bool = True,
 ) -> str:
     """Export trade history to TradingView-compatible CSV format.
 
@@ -40,6 +42,8 @@ def export_trades_csv(
         trades: List of TradeRecord objects
         path: Optional file path to write CSV (if None, just return string)
         symbol: Trading symbol used for all rows
+        sort_events_chronologically: Sort entry/exit events by timestamp.
+            Disable for stitched WFA exports to preserve per-window sequence.
 
     Returns:
         CSV content as string
@@ -49,21 +53,60 @@ def export_trades_csv(
     writer = csv.writer(output, lineterminator="\n")
     writer.writerow(["Symbol", "Side", "Qty", "Fill Price", "Closing Time"])
 
+    def _format_numeric(value: object) -> str:
+        if value is None:
+            return ""
+        try:
+            number = Decimal(str(value))
+        except (InvalidOperation, ValueError):
+            return str(value)
+        # Trim binary-float artifacts while preserving practical precision.
+        normalized = format(number.quantize(Decimal("0.00000001")).normalize(), "f")
+        return normalized.rstrip("0").rstrip(".") if "." in normalized else normalized
+
+    events = []
     for trade in trades:
         direction_raw = trade.direction or trade.side or "long"
         is_short = str(direction_raw).lower() == "short"
         entry_side = "Sell" if is_short else "Buy"
         exit_side = "Buy" if is_short else "Sell"
 
-        entry_time = trade.entry_time.strftime("%Y-%m-%d %H:%M:%S") if trade.entry_time else ""
-        exit_time = trade.exit_time.strftime("%Y-%m-%d %H:%M:%S") if trade.exit_time else ""
+        qty_value = _format_numeric(trade.size)
+        entry_price_value = _format_numeric(trade.entry_price)
+        exit_price_value = _format_numeric(trade.exit_price)
 
-        qty_value = "" if trade.size is None else trade.size
-        entry_price_value = "" if trade.entry_price is None else trade.entry_price
-        exit_price_value = "" if trade.exit_price is None else trade.exit_price
+        events.append(
+            {
+                "seq": len(events),
+                "time": trade.entry_time,
+                "row": [symbol, entry_side, qty_value, entry_price_value, ""],
+            }
+        )
+        events.append(
+            {
+                "seq": len(events),
+                "time": trade.exit_time,
+                "row": [symbol, exit_side, qty_value, exit_price_value, ""],
+            }
+        )
 
-        writer.writerow([symbol, entry_side, qty_value, entry_price_value, entry_time])
-        writer.writerow([symbol, exit_side, qty_value, exit_price_value, exit_time])
+    def _event_sort_key(event: dict) -> tuple:
+        ts = event.get("time")
+        if ts is None:
+            return (1, "", int(event.get("seq", 0)))
+        # Use lexical ISO key to avoid timezone-aware/naive comparison issues.
+        sort_key = ts.isoformat() if hasattr(ts, "isoformat") else str(ts)
+        return (0, sort_key, int(event.get("seq", 0)))
+
+    event_rows = (
+        sorted(events, key=_event_sort_key)
+        if sort_events_chronologically
+        else events
+    )
+    for event in event_rows:
+        ts = event.get("time")
+        event["row"][-1] = ts.strftime("%Y-%m-%d %H:%M:%S") if ts else ""
+        writer.writerow(event["row"])
 
     csv_content = output.getvalue()
 
