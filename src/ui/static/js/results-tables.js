@@ -1143,8 +1143,34 @@ function updateSidebarSettings() {
   if (ResultsState.mode === 'wfa') {
     setElementVisible('wfa-progress-section', true);
     setElementVisible('wfa-settings-section', true);
-    setText('wfa-is-days', ResultsState.wfa.isPeriodDays ?? '-');
-    setText('wfa-oos-days', ResultsState.wfa.oosPeriodDays ?? '-');
+    setText('wfa-is-days', ResultsState.wfa.isPeriodDays ?? ResultsState.wfa.is_period_days ?? '-');
+    setText('wfa-oos-days', ResultsState.wfa.oosPeriodDays ?? ResultsState.wfa.oos_period_days ?? '-');
+    const adaptiveMode = Boolean(ResultsState.wfa.adaptiveMode ?? ResultsState.wfa.adaptive_mode);
+    setText('wfa-adaptive-mode', adaptiveMode ? 'On' : 'Off');
+    setText('wfa-max-oos-days', ResultsState.wfa.maxOosPeriodDays ?? ResultsState.wfa.max_oos_period_days ?? '-');
+    setText('wfa-min-trades', ResultsState.wfa.minOosTrades ?? ResultsState.wfa.min_oos_trades ?? '-');
+    setText('wfa-check-interval', ResultsState.wfa.checkIntervalTrades ?? ResultsState.wfa.check_interval_trades ?? '-');
+    setText(
+      'wfa-cusum-h',
+      (ResultsState.wfa.cusumThreshold ?? ResultsState.wfa.cusum_threshold) !== null
+      && (ResultsState.wfa.cusumThreshold ?? ResultsState.wfa.cusum_threshold) !== undefined
+        ? Number(ResultsState.wfa.cusumThreshold ?? ResultsState.wfa.cusum_threshold).toFixed(2)
+        : '-'
+    );
+    setText(
+      'wfa-dd-mult',
+      (ResultsState.wfa.ddThresholdMultiplier ?? ResultsState.wfa.dd_threshold_multiplier) !== null
+      && (ResultsState.wfa.ddThresholdMultiplier ?? ResultsState.wfa.dd_threshold_multiplier) !== undefined
+        ? Number(ResultsState.wfa.ddThresholdMultiplier ?? ResultsState.wfa.dd_threshold_multiplier).toFixed(2)
+        : '-'
+    );
+    setText(
+      'wfa-inactivity-mult',
+      (ResultsState.wfa.inactivityMultiplier ?? ResultsState.wfa.inactivity_multiplier) !== null
+      && (ResultsState.wfa.inactivityMultiplier ?? ResultsState.wfa.inactivity_multiplier) !== undefined
+        ? Number(ResultsState.wfa.inactivityMultiplier ?? ResultsState.wfa.inactivity_multiplier).toFixed(2)
+        : '-'
+    );
   } else {
     setElementVisible('wfa-progress-section', false);
     setElementVisible('wfa-settings-section', false);

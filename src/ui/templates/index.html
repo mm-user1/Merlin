@@ -787,6 +787,45 @@
                   <span style="font-size: 12px; color: #666; margin-left: 10px;">(Per module per window)</span>
                 </div>
 
+                <div style="margin-top: 16px; padding: 14px; border: 1px solid #3498db40; border-radius: 6px; background-color: #f0f6ff;">
+                  <div class="form-group vertical" style="align-items: flex-start; margin-bottom: 0;">
+                    <label>
+                      <input type="checkbox" id="enableAdaptiveWF" onchange="toggleAdaptiveWFSettings()" />
+                      <strong>Adaptive Re-Optimization</strong>
+                    </label>
+                    <p style="font-size: 12px; color: #666; margin: 6px 0 0 0;">
+                      Extends OOS while performance is stable and re-optimizes early on degradation.
+                    </p>
+                  </div>
+
+                  <div id="adaptiveWFSettings" style="display: none; margin-top: 12px;">
+                    <div class="form-group" style="margin-bottom: 10px;">
+                      <label style="min-width: 170px;">Max OOS (days):</label>
+                      <input type="number" id="wfMaxOosPeriodDays" value="90" min="30" max="365" style="width: 100px;" />
+                    </div>
+                    <div class="form-group" style="margin-bottom: 10px;">
+                      <label style="min-width: 170px;">Min OOS Trades:</label>
+                      <input type="number" id="wfMinOosTrades" value="5" min="2" max="50" style="width: 100px;" />
+                    </div>
+                    <div class="form-group" style="margin-bottom: 10px;">
+                      <label style="min-width: 170px;">Check Every N Trades:</label>
+                      <input type="number" id="wfCheckIntervalTrades" value="3" min="1" max="20" style="width: 100px;" />
+                    </div>
+                    <div class="form-group" style="margin-bottom: 10px;">
+                      <label style="min-width: 170px;">CUSUM Threshold:</label>
+                      <input type="number" id="wfCusumThreshold" value="5.0" min="1.0" max="20.0" step="0.1" style="width: 100px;" />
+                    </div>
+                    <div class="form-group" style="margin-bottom: 10px;">
+                      <label style="min-width: 170px;">Max DD Multiplier:</label>
+                      <input type="number" id="wfDdThresholdMultiplier" value="1.5" min="1.0" max="5.0" step="0.1" style="width: 100px;" />
+                    </div>
+                    <div class="form-group" style="margin-bottom: 0;">
+                      <label style="min-width: 170px;">Inactivity Multiplier:</label>
+                      <input type="number" id="wfInactivityMultiplier" value="5.0" min="2.0" max="20.0" step="0.1" style="width: 100px;" />
+                    </div>
+                  </div>
+                </div>
+
                 <div style="background-color: #e8f4f8; padding: 15px; border-radius: 5px;">
                   <strong>Behavior (Phase 2):</strong>
                   <ul style="margin-top: 10px; font-size: 13px; color: #555; padding-left: 18px;">

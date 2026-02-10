@@ -209,17 +209,52 @@ async function refreshOptimizationStateFromServer() {
 function toggleWFSettings() {
   const wfToggle = document.getElementById('enableWF');
   const wfSettings = document.getElementById('wfSettings');
+  const adaptiveToggle = document.getElementById('enableAdaptiveWF');
   if (!wfToggle || !wfSettings) {
     return;
   }
   if (wfToggle.disabled) {
     wfSettings.style.display = 'none';
+    if (adaptiveToggle) {
+      adaptiveToggle.disabled = true;
+      adaptiveToggle.checked = false;
+    }
+    toggleAdaptiveWFSettings();
     return;
   }
   wfSettings.style.display = wfToggle.checked ? 'block' : 'none';
+  if (adaptiveToggle) {
+    adaptiveToggle.disabled = !wfToggle.checked;
+    if (!wfToggle.checked) {
+      adaptiveToggle.checked = false;
+    }
+  }
+  toggleAdaptiveWFSettings();
 }
 
 window.toggleWFSettings = toggleWFSettings;
+
+function toggleAdaptiveWFSettings() {
+  const wfToggle = document.getElementById('enableWF');
+  const adaptiveToggle = document.getElementById('enableAdaptiveWF');
+  const adaptiveSettings = document.getElementById('adaptiveWFSettings');
+  const oosInput = document.getElementById('wfOosPeriodDays');
+  if (!adaptiveToggle || !adaptiveSettings || !oosInput) {
+    return;
+  }
+
+  const enabled = Boolean(
+    wfToggle
+    && wfToggle.checked
+    && !wfToggle.disabled
+    && adaptiveToggle.checked
+    && !adaptiveToggle.disabled
+  );
+  adaptiveSettings.style.display = enabled ? 'block' : 'none';
+  oosInput.disabled = enabled;
+}
+
+window.toggleAdaptiveWFSettings = toggleAdaptiveWFSettings;
 
 function syncBudgetInputs() {
   const budgetModeRadios = document.querySelectorAll('input[name="budgetMode"]');
@@ -921,6 +956,13 @@ async function runWalkForward({ sources, state }) {
   const wfIsPeriodDays = document.getElementById('wfIsPeriodDays').value;
   const wfOosPeriodDays = document.getElementById('wfOosPeriodDays').value;
   const wfStoreTopNTrials = document.getElementById('wfStoreTopNTrials')?.value || '50';
+  const wfAdaptiveMode = Boolean(document.getElementById('enableAdaptiveWF')?.checked);
+  const wfMaxOosPeriodDays = document.getElementById('wfMaxOosPeriodDays')?.value || '90';
+  const wfMinOosTrades = document.getElementById('wfMinOosTrades')?.value || '5';
+  const wfCheckIntervalTrades = document.getElementById('wfCheckIntervalTrades')?.value || '3';
+  const wfCusumThreshold = document.getElementById('wfCusumThreshold')?.value || '5.0';
+  const wfDdThresholdMultiplier = document.getElementById('wfDdThresholdMultiplier')?.value || '1.5';
+  const wfInactivityMultiplier = document.getElementById('wfInactivityMultiplier')?.value || '5.0';
   const warmupValue = document.getElementById('warmupBars')?.value || '1000';
   const strategySummary = getStrategySummary();
 
@@ -951,7 +993,14 @@ async function runWalkForward({ sources, state }) {
     wfa: {
       isPeriodDays: Number(wfIsPeriodDays),
       oosPeriodDays: Number(wfOosPeriodDays),
-      storeTopNTrials: Number(wfStoreTopNTrials)
+      storeTopNTrials: Number(wfStoreTopNTrials),
+      adaptiveMode: wfAdaptiveMode,
+      maxOosPeriodDays: Number(wfMaxOosPeriodDays),
+      minOosTrades: Number(wfMinOosTrades),
+      checkIntervalTrades: Number(wfCheckIntervalTrades),
+      cusumThreshold: Number(wfCusumThreshold),
+      ddThresholdMultiplier: Number(wfDdThresholdMultiplier),
+      inactivityMultiplier: Number(wfInactivityMultiplier)
     },
     fixedParams: clonePreset(config.fixed_params || {}),
     strategyConfig: clonePreset(window.currentStrategyConfig || {})
@@ -997,6 +1046,13 @@ async function runWalkForward({ sources, state }) {
     formData.append('wf_is_period_days', wfIsPeriodDays);
     formData.append('wf_oos_period_days', wfOosPeriodDays);
     formData.append('wf_store_top_n_trials', wfStoreTopNTrials);
+    formData.append('wf_adaptive_mode', wfAdaptiveMode ? 'true' : 'false');
+    formData.append('wf_max_oos_period_days', wfMaxOosPeriodDays);
+    formData.append('wf_min_oos_trades', wfMinOosTrades);
+    formData.append('wf_check_interval_trades', wfCheckIntervalTrades);
+    formData.append('wf_cusum_threshold', wfCusumThreshold);
+    formData.append('wf_dd_threshold_multiplier', wfDdThresholdMultiplier);
+    formData.append('wf_inactivity_multiplier', wfInactivityMultiplier);
     appendDatabaseTargetToFormData(formData);
     try {
       const data = await runWalkForwardRequest(formData, optimizationAbortController.signal);

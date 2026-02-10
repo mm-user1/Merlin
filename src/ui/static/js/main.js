@@ -107,6 +107,9 @@ document.addEventListener('DOMContentLoaded', async () => {
   });
   syncBudgetInputs();
   toggleWFSettings();
+  if (typeof toggleAdaptiveWFSettings === 'function') {
+    toggleAdaptiveWFSettings();
+  }
 
   const dbTargetSelect = document.getElementById('dbTarget');
   if (dbTargetSelect) {

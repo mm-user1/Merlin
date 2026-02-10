@@ -364,6 +364,48 @@ def register_routes(app):
         is_period_days = max(1, min(3650, is_period_days))
         oos_period_days = max(1, min(3650, oos_period_days))
 
+        adaptive_raw = data.get("wf_adaptive_mode", False)
+        if isinstance(adaptive_raw, str):
+            adaptive_mode = adaptive_raw.strip().lower() in {"true", "1", "yes", "on"}
+        else:
+            adaptive_mode = bool(adaptive_raw)
+
+        try:
+            max_oos_period_days = int(data.get("wf_max_oos_period_days", 90))
+        except (TypeError, ValueError):
+            max_oos_period_days = 90
+        max_oos_period_days = max(30, min(365, max_oos_period_days))
+
+        try:
+            min_oos_trades = int(data.get("wf_min_oos_trades", 5))
+        except (TypeError, ValueError):
+            min_oos_trades = 5
+        min_oos_trades = max(2, min(50, min_oos_trades))
+
+        try:
+            check_interval_trades = int(data.get("wf_check_interval_trades", 3))
+        except (TypeError, ValueError):
+            check_interval_trades = 3
+        check_interval_trades = max(1, min(20, check_interval_trades))
+
+        try:
+            cusum_threshold = float(data.get("wf_cusum_threshold", 5.0))
+        except (TypeError, ValueError):
+            cusum_threshold = 5.0
+        cusum_threshold = max(1.0, min(20.0, cusum_threshold))
+
+        try:
+            dd_threshold_multiplier = float(data.get("wf_dd_threshold_multiplier", 1.5))
+        except (TypeError, ValueError):
+            dd_threshold_multiplier = 1.5
+        dd_threshold_multiplier = max(1.0, min(5.0, dd_threshold_multiplier))
+
+        try:
+            inactivity_multiplier = float(data.get("wf_inactivity_multiplier", 5.0))
+        except (TypeError, ValueError):
+            inactivity_multiplier = 5.0
+        inactivity_multiplier = max(2.0, min(20.0, inactivity_multiplier))
+
         try:
             store_top_n_trials = int(data.get("wf_store_top_n_trials", 50))
         except (TypeError, ValueError):
@@ -423,7 +465,35 @@ def register_routes(app):
             dsr_config=dsr_config,
             stress_test_config=st_config,
             store_top_n_trials=store_top_n_trials,
+            adaptive_mode=adaptive_mode,
+            max_oos_period_days=max_oos_period_days,
+            min_oos_trades=min_oos_trades,
+            check_interval_trades=check_interval_trades,
+            cusum_threshold=cusum_threshold,
+            dd_threshold_multiplier=dd_threshold_multiplier,
+            inactivity_multiplier=inactivity_multiplier,
         )
+
+        base_template["adaptive_mode"] = adaptive_mode
+        base_template["max_oos_period_days"] = max_oos_period_days
+        base_template["min_oos_trades"] = min_oos_trades
+        base_template["check_interval_trades"] = check_interval_trades
+        base_template["cusum_threshold"] = cusum_threshold
+        base_template["dd_threshold_multiplier"] = dd_threshold_multiplier
+        base_template["inactivity_multiplier"] = inactivity_multiplier
+
+        base_template["wfa"] = {
+            "is_period_days": is_period_days,
+            "oos_period_days": oos_period_days,
+            "store_top_n_trials": store_top_n_trials,
+            "adaptive_mode": adaptive_mode,
+            "max_oos_period_days": max_oos_period_days,
+            "min_oos_trades": min_oos_trades,
+            "check_interval_trades": check_interval_trades,
+            "cusum_threshold": cusum_threshold,
+            "dd_threshold_multiplier": dd_threshold_multiplier,
+            "inactivity_multiplier": inactivity_multiplier,
+        }
         engine = WalkForwardEngine(wf_config, base_template, optuna_settings, csv_file_path=data_path)
 
         db_apply_error = _apply_db_target_from_form(data)
@@ -441,6 +511,13 @@ def register_routes(app):
                     "is_period_days": is_period_days,
                     "oos_period_days": oos_period_days,
                     "store_top_n_trials": store_top_n_trials,
+                    "adaptive_mode": adaptive_mode,
+                    "max_oos_period_days": max_oos_period_days,
+                    "min_oos_trades": min_oos_trades,
+                    "check_interval_trades": check_interval_trades,
+                    "cusum_threshold": cusum_threshold,
+                    "dd_threshold_multiplier": dd_threshold_multiplier,
+                    "inactivity_multiplier": inactivity_multiplier,
                 },
             }
         )

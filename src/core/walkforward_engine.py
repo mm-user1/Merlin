@@ -45,6 +45,15 @@ class WFConfig:
     stress_test_config: Optional[StressTestConfig] = None
     store_top_n_trials: int = 50
 
+    # Adaptive mode
+    adaptive_mode: bool = False
+    max_oos_period_days: int = 90
+    min_oos_trades: int = 5
+    check_interval_trades: int = 3
+    cusum_threshold: float = 5.0
+    dd_threshold_multiplier: float = 1.5
+    inactivity_multiplier: float = 5.0
+
 
 @dataclass
 class WindowSplit:
@@ -140,6 +149,13 @@ class WindowResult:
     oos_ulcer_index: Optional[float] = None
     oos_consistency_score: Optional[float] = None
 
+    # Adaptive WFA metadata (None for fixed mode)
+    trigger_type: Optional[str] = None
+    cusum_final: Optional[float] = None
+    cusum_threshold: Optional[float] = None
+    dd_threshold: Optional[float] = None
+    oos_actual_days: Optional[float] = None
+
 
 @dataclass
 class StitchWindow:
@@ -148,6 +164,46 @@ class StitchWindow:
     oos_timestamps: List[pd.Timestamp]
     oos_total_trades: int
     oos_start: pd.Timestamp
+
+
+@dataclass
+class TriggerResult:
+    """Result of adaptive trigger scan for one OOS segment."""
+
+    triggered: bool
+    trigger_type: str
+    trigger_trade_idx: Optional[int]
+    trigger_time: Optional[pd.Timestamp]
+    cusum_final: float
+    cusum_threshold: float
+    dd_peak: float
+    dd_threshold: float
+    oos_actual_trades: int
+    oos_actual_days: float
+
+
+@dataclass
+class ISPipelineResult:
+    """Selected IS candidate and module-chain artifacts for one window."""
+
+    best_result: Any
+    best_params: Dict[str, Any]
+    param_id: str
+    best_trial_number: Optional[int]
+    best_params_source: str
+    is_pareto_optimal: Optional[bool]
+    constraints_satisfied: Optional[bool]
+    available_modules: List[str]
+    module_status: Dict[str, Any]
+    selection_chain: Dict[str, Any]
+    optimization_start: pd.Timestamp
+    optimization_end: pd.Timestamp
+    ft_start: Optional[pd.Timestamp]
+    ft_end: Optional[pd.Timestamp]
+    optuna_is_trials: Optional[List[Dict[str, Any]]]
+    dsr_trials: Optional[List[Dict[str, Any]]]
+    forward_test_trials: Optional[List[Dict[str, Any]]]
+    stress_test_trials: Optional[List[Dict[str, Any]]]
 
 
 @dataclass
@@ -362,6 +418,9 @@ class WalkForwardEngine:
         3. Stitch OOS equity and compute summary metrics
         4. Return results
         """
+        if self.config.adaptive_mode:
+            return self._run_adaptive_wfa(df)
+
         print("Starting Walk-Forward Analysis...")
         start_time = time.time()
 
@@ -775,6 +834,905 @@ class WalkForwardEngine:
 
         return wf_result, study_id
 
+    def _resolve_trading_bounds(self, df: pd.DataFrame) -> Tuple[pd.Timestamp, pd.Timestamp]:
+        fixed_params = self.base_config_template.get("fixed_params", {})
+        use_date_filter = fixed_params.get("dateFilter", False)
+        start_date = fixed_params.get("start")
+        end_date = fixed_params.get("end")
+
+        if use_date_filter and start_date is not None and end_date is not None:
+            from .backtest_engine import align_date_bounds
+
+            trading_start, trading_end = align_date_bounds(df.index, start_date, end_date)
+            if trading_start is None or trading_end is None:
+                raise ValueError("Invalid date filter range for walk-forward.")
+        else:
+            trading_start = df.index[0]
+            trading_end = df.index[-1]
+
+        if trading_start.tzinfo is None:
+            trading_start = trading_start.tz_localize("UTC")
+        if trading_end.tzinfo is None:
+            trading_end = trading_end.tz_localize("UTC")
+
+        return trading_start, trading_end
+
+    def _run_period_backtest(
+        self,
+        df: pd.DataFrame,
+        start: pd.Timestamp,
+        end: pd.Timestamp,
+        params: Dict[str, Any],
+    ) -> Any:
+        df_prepared, trade_start_idx = prepare_dataset_with_warmup(
+            df, start, end, self.config.warmup_bars
+        )
+
+        run_params = params.copy()
+        run_params["dateFilter"] = True
+        run_params["start"] = start
+        run_params["end"] = end
+        return self.strategy_class.run(df_prepared, run_params, trade_start_idx)
+
+    def _run_window_is_pipeline(
+        self,
+        df: pd.DataFrame,
+        is_start: pd.Timestamp,
+        is_end: pd.Timestamp,
+        window_id: int,
+    ) -> ISPipelineResult:
+        available_modules = ["optuna_is"]
+        module_status: Dict[str, Any] = {
+            "optuna_is": {"enabled": True, "ran": True, "reason": None}
+        }
+        selection_chain: Dict[str, Any] = {}
+
+        ft_config = self.config.post_process
+        optimization_start = is_start
+        optimization_end = is_end
+        training_end = None
+        ft_start = None
+        ft_end = None
+
+        if ft_config and ft_config.enabled:
+            available_modules.append("forward_test")
+            module_status["forward_test"] = {
+                "enabled": True,
+                "ran": False,
+                "reason": None,
+            }
+            is_days = (is_end - is_start).days
+            ft_days = int(ft_config.ft_period_days)
+            if ft_days > 0 and ft_days < is_days and self.csv_file_path:
+                training_end = is_end - pd.Timedelta(days=ft_days)
+                if training_end > is_start:
+                    optimization_end = training_end
+                    ft_start = training_end
+                    ft_end = is_end
+                else:
+                    module_status["forward_test"]["reason"] = "insufficient_is_period"
+            else:
+                module_status["forward_test"]["reason"] = "insufficient_is_period_or_missing_csv"
+                logger.warning(
+                    "Skipping FT for window %s: insufficient IS period or missing CSV path.",
+                    window_id,
+                )
+
+        optimization_results, optimization_all_results = self._run_optuna_on_window(
+            df, optimization_start, optimization_end
+        )
+        if not optimization_results:
+            raise ValueError(f"No optimization results for window {window_id}.")
+
+        best_result = optimization_results[0]
+        best_params_source = "optuna_is"
+
+        optuna_map: Dict[int, Any] = {}
+        for result in (optimization_all_results or optimization_results):
+            trial_num = getattr(result, "optuna_trial_number", None)
+            if trial_num is not None:
+                optuna_map[int(trial_num)] = result
+
+        optuna_is_trials = self._convert_optuna_results_for_storage(
+            optimization_results, int(self.config.store_top_n_trials)
+        )
+        if optuna_is_trials:
+            optuna_is_trials[0]["is_selected"] = True
+            selection_chain["optuna_is"] = optuna_is_trials[0].get("trial_number")
+
+        is_pareto_optimal = getattr(best_result, "is_pareto_optimal", None)
+        constraints_satisfied = getattr(best_result, "constraints_satisfied", None)
+
+        dsr_results = []
+        dsr_trials = None
+        dsr_config = self.config.dsr_config
+        if dsr_config and dsr_config.enabled and optimization_results:
+            available_modules.append("dsr")
+            module_status["dsr"] = {"enabled": True, "ran": False, "reason": None}
+            fixed_params = {
+                "dateFilter": True,
+                "start": optimization_start.isoformat(),
+                "end": optimization_end.isoformat(),
+            }
+            try:
+                dsr_results, _summary = run_dsr_analysis(
+                    optuna_results=optimization_results,
+                    all_results=optimization_all_results or optimization_results,
+                    config=dsr_config,
+                    n_trials_total=len(optimization_all_results or optimization_results),
+                    csv_path=self.csv_file_path,
+                    strategy_id=self.config.strategy_id,
+                    fixed_params=fixed_params,
+                    warmup_bars=self.config.warmup_bars,
+                    score_config=deepcopy(self.base_config_template.get("score_config", {})),
+                    filter_min_profit=bool(self.base_config_template.get("filter_min_profit")),
+                    min_profit_threshold=float(
+                        self.base_config_template.get("min_profit_threshold") or 0.0
+                    ),
+                    df=df,
+                )
+                module_status["dsr"]["ran"] = True
+            except Exception as exc:
+                module_status["dsr"]["reason"] = str(exc)
+                logger.warning("DSR analysis failed for window %s: %s", window_id, exc)
+
+            dsr_trials = self._convert_dsr_results_for_storage(
+                dsr_results, int(self.config.store_top_n_trials)
+            )
+
+            if dsr_trials:
+                dsr_trials[0]["is_selected"] = True
+                selection_chain["dsr"] = dsr_trials[0].get("trial_number")
+            if dsr_results:
+                best_result = dsr_results[0].original_result
+                best_params_source = "dsr"
+                is_pareto_optimal = getattr(best_result, "is_pareto_optimal", None)
+                constraints_satisfied = getattr(best_result, "constraints_satisfied", None)
+
+        ft_results = []
+        ft_trials = None
+        if ft_config and ft_config.enabled and training_end and best_result:
+            worker_count = int(self.base_config_template.get("worker_processes", 1))
+            ft_candidates = optimization_results
+            if dsr_results:
+                ft_candidates = [item.original_result for item in dsr_results]
+            ft_results = run_forward_test(
+                csv_path=self.csv_file_path,
+                strategy_id=self.config.strategy_id,
+                optuna_results=ft_candidates,
+                config=ft_config,
+                is_period_days=max(0, (training_end - is_start).days),
+                ft_period_days=int(ft_config.ft_period_days),
+                ft_start_date=training_end.strftime("%Y-%m-%d"),
+                ft_end_date=is_end.strftime("%Y-%m-%d"),
+                n_workers=worker_count,
+            )
+            module_status["forward_test"]["ran"] = True
+            if ft_results:
+                best_result = ft_results[0]
+                best_params_source = "forward_test"
+                selection_chain["forward_test"] = ft_results[0].trial_number
+            ft_trials = self._convert_ft_results_for_storage(
+                ft_results, int(self.config.store_top_n_trials), optuna_map
+            )
+            if ft_trials:
+                ft_trials[0]["is_selected"] = True
+
+        st_results = []
+        st_trials = None
+        st_config = self.config.stress_test_config
+        if st_config and st_config.enabled and best_result:
+            available_modules.append("stress_test")
+            module_status["stress_test"] = {"enabled": True, "ran": False, "reason": None}
+            worker_count = int(self.base_config_template.get("worker_processes", 1))
+            stress_start = optimization_start or is_start
+            stress_end = optimization_end or is_end
+            fixed_params = {
+                "dateFilter": True,
+                "start": stress_start.isoformat(),
+                "end": stress_end.isoformat(),
+            }
+            st_candidates: List[Any] = optimization_results
+            if ft_results:
+                st_candidates = ft_results
+            elif dsr_results:
+                st_candidates = dsr_results
+
+            try:
+                from strategies import get_strategy_config
+
+                strategy_config_json = get_strategy_config(self.config.strategy_id)
+            except Exception as exc:
+                strategy_config_json = {}
+                logger.warning("Failed to load strategy config for stress test: %s", exc)
+
+            try:
+                st_results, _summary = run_stress_test(
+                    csv_path=self.csv_file_path,
+                    strategy_id=self.config.strategy_id,
+                    source_results=st_candidates,
+                    config=st_config,
+                    is_start_date=stress_start.isoformat() if stress_start else None,
+                    is_end_date=stress_end.isoformat() if stress_end else None,
+                    fixed_params=fixed_params,
+                    config_json=strategy_config_json,
+                    n_workers=worker_count,
+                )
+                module_status["stress_test"]["ran"] = True
+            except Exception as exc:
+                module_status["stress_test"]["reason"] = str(exc)
+                logger.warning("Stress test failed for window %s: %s", window_id, exc)
+
+            candidate_map: Dict[int, Any] = {}
+            trial_to_params: Dict[int, Dict[str, Any]] = {}
+            for candidate in st_candidates:
+                trial_num = getattr(candidate, "trial_number", None)
+                if trial_num is None:
+                    trial_num = getattr(candidate, "optuna_trial_number", None)
+                if trial_num is None:
+                    continue
+                trial_num = int(trial_num)
+                candidate_map[trial_num] = candidate
+                trial_to_params[trial_num] = getattr(candidate, "params", {}) or {}
+
+            if st_results:
+                selected = candidate_map.get(st_results[0].trial_number)
+                if selected is not None:
+                    best_result = selected
+                    best_params_source = "stress_test"
+                    selection_chain["stress_test"] = st_results[0].trial_number
+
+            st_trials = self._convert_st_results_for_storage(
+                st_results, int(self.config.store_top_n_trials), trial_to_params, optuna_map
+            )
+            if st_trials:
+                st_trials[0]["is_selected"] = True
+
+        if best_params_source in {"forward_test", "stress_test"}:
+            best_trial_number = getattr(best_result, "trial_number", None)
+            optuna_result = optuna_map.get(best_trial_number)
+            if optuna_result:
+                is_pareto_optimal = getattr(optuna_result, "is_pareto_optimal", None)
+                constraints_satisfied = getattr(optuna_result, "constraints_satisfied", None)
+
+        best_params = self._result_to_params(best_result)
+        param_id = self._create_param_id(best_params)
+        best_trial_number = getattr(best_result, "optuna_trial_number", None)
+        if best_trial_number is None and hasattr(best_result, "trial_number"):
+            best_trial_number = getattr(best_result, "trial_number")
+
+        return ISPipelineResult(
+            best_result=best_result,
+            best_params=best_params,
+            param_id=param_id,
+            best_trial_number=best_trial_number,
+            best_params_source=best_params_source,
+            is_pareto_optimal=is_pareto_optimal,
+            constraints_satisfied=constraints_satisfied,
+            available_modules=available_modules,
+            module_status=module_status,
+            selection_chain=selection_chain,
+            optimization_start=optimization_start,
+            optimization_end=optimization_end,
+            ft_start=ft_start,
+            ft_end=ft_end,
+            optuna_is_trials=optuna_is_trials,
+            dsr_trials=dsr_trials,
+            forward_test_trials=ft_trials,
+            stress_test_trials=st_trials,
+        )
+
+    @staticmethod
+    def _duration_days(start: pd.Timestamp, end: pd.Timestamp) -> float:
+        return max(0.0, (end - start).total_seconds() / 86400.0)
+
+    def _compute_is_baseline(self, is_result: Any, is_period_days: int) -> Dict[str, Any]:
+        closed_trades = [
+            trade
+            for trade in list(getattr(is_result, "trades", None) or [])
+            if getattr(trade, "exit_time", None) is not None
+        ]
+        closed_trades.sort(key=lambda trade: getattr(trade, "exit_time"))
+
+        balance_curve = list(getattr(is_result, "balance_curve", None) or [])
+        peak = balance_curve[0] if balance_curve else 100.0
+        is_max_dd = 0.0
+        for balance in balance_curve:
+            if balance > peak:
+                peak = balance
+            if peak > 0:
+                drawdown = (peak - balance) / peak * 100.0
+                if drawdown > is_max_dd:
+                    is_max_dd = drawdown
+
+        baseline: Dict[str, Any] = {
+            "mu": 0.0,
+            "sigma": 0.0,
+            "h": float(self.config.cusum_threshold),
+            "is_max_dd": is_max_dd,
+            "dd_limit": is_max_dd * float(self.config.dd_threshold_multiplier),
+            "is_avg_trade_interval": None,
+            "max_trade_interval": None,
+            "cusum_enabled": False,
+            "drawdown_enabled": False,
+            "inactivity_enabled": False,
+        }
+
+        if not closed_trades:
+            return baseline
+
+        baseline["drawdown_enabled"] = True
+
+        trade_profits = [
+            float(getattr(trade, "profit_pct"))
+            for trade in closed_trades
+            if getattr(trade, "profit_pct", None) is not None
+        ]
+        if len(trade_profits) >= 2:
+            baseline["mu"] = float(pd.Series(trade_profits).mean())
+            baseline["sigma"] = float(pd.Series(trade_profits).std(ddof=0))
+            baseline["cusum_enabled"] = baseline["sigma"] > 0.0
+        elif len(trade_profits) == 1:
+            baseline["mu"] = trade_profits[0]
+
+        if len(closed_trades) == 1:
+            avg_interval_days = float(is_period_days) / 2.0
+            baseline["is_avg_trade_interval"] = avg_interval_days
+            baseline["max_trade_interval"] = avg_interval_days
+            baseline["inactivity_enabled"] = True
+            return baseline
+
+        intervals = []
+        for idx in range(1, len(closed_trades)):
+            prev_exit = getattr(closed_trades[idx - 1], "exit_time")
+            curr_exit = getattr(closed_trades[idx], "exit_time")
+            if prev_exit is None or curr_exit is None:
+                continue
+            intervals.append(self._duration_days(prev_exit, curr_exit))
+
+        if intervals:
+            avg_interval_days = float(pd.Series(intervals).mean())
+            baseline["is_avg_trade_interval"] = avg_interval_days
+            baseline["max_trade_interval"] = avg_interval_days * float(
+                self.config.inactivity_multiplier
+            )
+            baseline["inactivity_enabled"] = True
+
+        return baseline
+
+    def _scan_triggers(
+        self,
+        trades: List[Any],
+        balance_curve: List[float],
+        timestamps: List[pd.Timestamp],
+        baseline: Dict[str, Any],
+        oos_start: pd.Timestamp,
+        oos_max_end: pd.Timestamp,
+    ) -> TriggerResult:
+        closed_trades = [
+            trade
+            for trade in list(trades or [])
+            if getattr(trade, "exit_time", None) is not None
+        ]
+        closed_trades.sort(key=lambda trade: getattr(trade, "exit_time"))
+
+        h = float(baseline.get("h") or 0.0)
+        dd_limit = float(baseline.get("dd_limit") or 0.0)
+        mu = float(baseline.get("mu") or 0.0)
+        sigma = float(baseline.get("sigma") or 0.0)
+        max_trade_interval = baseline.get("max_trade_interval")
+        cusum_enabled = bool(baseline.get("cusum_enabled"))
+        drawdown_enabled = bool(baseline.get("drawdown_enabled"))
+        inactivity_enabled = bool(baseline.get("inactivity_enabled"))
+
+        if max_trade_interval is None:
+            inactivity_enabled = False
+        else:
+            max_trade_interval = float(max_trade_interval)
+
+        balance_points = list(balance_curve or [])
+        time_points = list(timestamps or [])
+        dd_by_index: List[float] = []
+        if balance_points:
+            peak = balance_points[0]
+            for balance in balance_points:
+                if balance > peak:
+                    peak = balance
+                if peak > 0:
+                    dd_by_index.append((peak - balance) / peak * 100.0)
+                else:
+                    dd_by_index.append(0.0)
+
+        def _drawdown_at(ts: pd.Timestamp) -> float:
+            if not dd_by_index or not time_points:
+                return 0.0
+            time_index = pd.DatetimeIndex(time_points)
+            idx = int(time_index.searchsorted(ts, side="right") - 1)
+            if idx < 0:
+                idx = 0
+            if idx >= len(dd_by_index):
+                idx = len(dd_by_index) - 1
+            return float(dd_by_index[idx])
+
+        def _inactivity_trigger_time(anchor: pd.Timestamp) -> pd.Timestamp:
+            trigger_time = anchor + pd.Timedelta(days=max_trade_interval or 0.0)
+            return min(trigger_time, oos_max_end)
+
+        s = 0.0
+
+        if not closed_trades:
+            if inactivity_enabled and self._duration_days(oos_start, oos_max_end) > float(max_trade_interval):
+                trigger_time = _inactivity_trigger_time(oos_start)
+                return TriggerResult(
+                    triggered=True,
+                    trigger_type="inactivity",
+                    trigger_trade_idx=None,
+                    trigger_time=trigger_time,
+                    cusum_final=s,
+                    cusum_threshold=h,
+                    dd_peak=0.0,
+                    dd_threshold=dd_limit,
+                    oos_actual_trades=0,
+                    oos_actual_days=self._duration_days(oos_start, trigger_time),
+                )
+
+            return TriggerResult(
+                triggered=False,
+                trigger_type="max_period",
+                trigger_trade_idx=None,
+                trigger_time=oos_max_end,
+                cusum_final=s,
+                cusum_threshold=h,
+                dd_peak=0.0,
+                dd_threshold=dd_limit,
+                oos_actual_trades=0,
+                oos_actual_days=self._duration_days(oos_start, oos_max_end),
+            )
+
+        first_exit = getattr(closed_trades[0], "exit_time")
+        if (
+            inactivity_enabled
+            and first_exit is not None
+            and self._duration_days(oos_start, first_exit) > float(max_trade_interval)
+        ):
+            trigger_time = _inactivity_trigger_time(oos_start)
+            return TriggerResult(
+                triggered=True,
+                trigger_type="inactivity",
+                trigger_trade_idx=None,
+                trigger_time=trigger_time,
+                cusum_final=s,
+                cusum_threshold=h,
+                dd_peak=0.0,
+                dd_threshold=dd_limit,
+                oos_actual_trades=0,
+                oos_actual_days=self._duration_days(oos_start, trigger_time),
+            )
+
+        min_oos_trades = max(1, int(self.config.min_oos_trades))
+        check_interval = max(1, int(self.config.check_interval_trades))
+
+        for idx, trade in enumerate(closed_trades):
+            exit_time = getattr(trade, "exit_time")
+            if exit_time is None:
+                continue
+
+            if idx > 0 and inactivity_enabled:
+                prev_exit = getattr(closed_trades[idx - 1], "exit_time")
+                if (
+                    prev_exit is not None
+                    and self._duration_days(prev_exit, exit_time) > float(max_trade_interval)
+                ):
+                    trigger_time = _inactivity_trigger_time(prev_exit)
+                    return TriggerResult(
+                        triggered=True,
+                        trigger_type="inactivity",
+                        trigger_trade_idx=idx - 1,
+                        trigger_time=trigger_time,
+                        cusum_final=s,
+                        cusum_threshold=h,
+                        dd_peak=_drawdown_at(prev_exit),
+                        dd_threshold=dd_limit,
+                        oos_actual_trades=idx,
+                        oos_actual_days=self._duration_days(oos_start, trigger_time),
+                    )
+
+            current_dd = _drawdown_at(exit_time)
+            if drawdown_enabled and current_dd > dd_limit:
+                return TriggerResult(
+                    triggered=True,
+                    trigger_type="drawdown",
+                    trigger_trade_idx=idx,
+                    trigger_time=exit_time,
+                    cusum_final=s,
+                    cusum_threshold=h,
+                    dd_peak=current_dd,
+                    dd_threshold=dd_limit,
+                    oos_actual_trades=idx + 1,
+                    oos_actual_days=self._duration_days(oos_start, exit_time),
+                )
+
+            if cusum_enabled and sigma > 0.0:
+                trade_profit = float(getattr(trade, "profit_pct") or 0.0)
+                z = (trade_profit - mu) / sigma
+                s = max(0.0, s - z)
+
+                closed_count = idx + 1
+                is_checkpoint = (
+                    closed_count >= min_oos_trades
+                    and (closed_count - min_oos_trades) % check_interval == 0
+                )
+                if is_checkpoint and s > h:
+                    return TriggerResult(
+                        triggered=True,
+                        trigger_type="cusum",
+                        trigger_trade_idx=idx,
+                        trigger_time=exit_time,
+                        cusum_final=s,
+                        cusum_threshold=h,
+                        dd_peak=current_dd,
+                        dd_threshold=dd_limit,
+                        oos_actual_trades=idx + 1,
+                        oos_actual_days=self._duration_days(oos_start, exit_time),
+                    )
+
+        last_exit = getattr(closed_trades[-1], "exit_time")
+        if (
+            inactivity_enabled
+            and last_exit is not None
+            and self._duration_days(last_exit, oos_max_end) > float(max_trade_interval)
+        ):
+            trigger_time = _inactivity_trigger_time(last_exit)
+            return TriggerResult(
+                triggered=True,
+                trigger_type="inactivity",
+                trigger_trade_idx=len(closed_trades) - 1,
+                trigger_time=trigger_time,
+                cusum_final=s,
+                cusum_threshold=h,
+                dd_peak=_drawdown_at(last_exit),
+                dd_threshold=dd_limit,
+                oos_actual_trades=len(closed_trades),
+                oos_actual_days=self._duration_days(oos_start, trigger_time),
+            )
+
+        return TriggerResult(
+            triggered=False,
+            trigger_type="max_period",
+            trigger_trade_idx=len(closed_trades) - 1,
+            trigger_time=oos_max_end,
+            cusum_final=s,
+            cusum_threshold=h,
+            dd_peak=_drawdown_at(oos_max_end),
+            dd_threshold=dd_limit,
+            oos_actual_trades=len(closed_trades),
+            oos_actual_days=self._duration_days(oos_start, oos_max_end),
+        )
+
+    def _truncate_oos_result(
+        self,
+        oos_result: Any,
+        trigger_result: TriggerResult,
+        oos_max_end: pd.Timestamp,
+    ) -> Tuple[Any, pd.Timestamp]:
+        trigger_time = trigger_result.trigger_time or oos_max_end
+
+        closed_trades = [
+            trade
+            for trade in list(getattr(oos_result, "trades", None) or [])
+            if getattr(trade, "exit_time", None) is not None
+        ]
+        closed_trades.sort(key=lambda trade: getattr(trade, "exit_time"))
+
+        trade_idx = trigger_result.trigger_trade_idx
+        if trade_idx is None or trade_idx < 0:
+            truncated_trades = []
+        else:
+            max_idx = min(int(trade_idx), len(closed_trades) - 1)
+            truncated_trades = closed_trades[: max_idx + 1]
+
+        oos_timestamps = list(getattr(oos_result, "timestamps", None) or [])
+        oos_balance = list(getattr(oos_result, "balance_curve", None) or [])
+        oos_equity = list(getattr(oos_result, "equity_curve", None) or [])
+
+        if not oos_timestamps:
+            return (
+                type(oos_result)(
+                    trades=truncated_trades,
+                    equity_curve=[],
+                    balance_curve=[],
+                    timestamps=[],
+                ),
+                trigger_time,
+            )
+
+        time_index = pd.DatetimeIndex(oos_timestamps)
+        cutoff_idx = int(time_index.searchsorted(trigger_time, side="right") - 1)
+        if cutoff_idx < 0:
+            cutoff_idx = 0
+        if cutoff_idx >= len(oos_timestamps):
+            cutoff_idx = len(oos_timestamps) - 1
+
+        truncated_timestamps = oos_timestamps[: cutoff_idx + 1]
+        truncated_balance = oos_balance[: cutoff_idx + 1] if oos_balance else []
+        truncated_equity = oos_equity[: cutoff_idx + 1] if oos_equity else []
+
+        return (
+            type(oos_result)(
+                trades=truncated_trades,
+                equity_curve=truncated_equity,
+                balance_curve=truncated_balance,
+                timestamps=truncated_timestamps,
+            ),
+            trigger_time,
+        )
+
+    def _run_adaptive_wfa(self, df: pd.DataFrame) -> tuple[WFResult, Optional[str]]:
+        print("Starting Walk-Forward Analysis (adaptive mode)...")
+        start_time = time.time()
+
+        if self.config.max_oos_period_days <= 0:
+            raise ValueError("max_oos_period_days must be positive for adaptive WFA.")
+        if self.config.min_oos_trades <= 0:
+            raise ValueError("min_oos_trades must be positive for adaptive WFA.")
+        if self.config.check_interval_trades <= 0:
+            raise ValueError("check_interval_trades must be positive for adaptive WFA.")
+
+        trading_start, trading_end = self._resolve_trading_bounds(df)
+        trading_start_normalized = trading_start.normalize()
+        trading_end_normalized = trading_end.normalize() + pd.Timedelta(days=1)
+
+        start_idx = df.index.searchsorted(trading_start_normalized, side="left")
+        if start_idx >= len(df):
+            raise ValueError(
+                f"Normalized trading start {trading_start_normalized.date()} "
+                "is beyond available data range"
+            )
+
+        current_start_idx = start_idx
+        current_start = df.index[current_start_idx]
+
+        window_results: List[WindowResult] = []
+        dense_stitch_windows: List[StitchWindow] = []
+        compact_stitch_windows: List[StitchWindow] = []
+        window_id = 1
+
+        while True:
+            if current_start >= trading_end:
+                break
+
+            is_start_target = current_start
+            is_end_target = is_start_target + pd.Timedelta(days=self.config.is_period_days)
+            oos_start_target = is_end_target
+
+            if oos_start_target >= trading_end_normalized:
+                break
+
+            is_start_idx = df.index.searchsorted(is_start_target, side="left")
+            is_end_idx = df.index.searchsorted(is_end_target, side="left") - 1
+            oos_start_idx = df.index.searchsorted(oos_start_target, side="left")
+
+            if (
+                is_start_idx >= len(df)
+                or is_end_idx >= len(df)
+                or oos_start_idx >= len(df)
+                or is_end_idx < is_start_idx
+            ):
+                break
+
+            is_start = df.index[is_start_idx]
+            is_end = df.index[is_end_idx]
+            oos_start = df.index[oos_start_idx]
+
+            oos_max_end_target = min(
+                oos_start_target + pd.Timedelta(days=self.config.max_oos_period_days),
+                trading_end_normalized,
+            )
+            oos_max_end_idx = df.index.searchsorted(oos_max_end_target, side="left") - 1
+            if oos_max_end_idx < oos_start_idx or oos_max_end_idx >= len(df):
+                break
+            oos_max_end = df.index[oos_max_end_idx]
+
+            print(f"\n--- Adaptive Window {window_id} ---")
+            print(f"IS optimization: dates {is_start.date()} to {is_end.date()}")
+
+            is_pipeline = self._run_window_is_pipeline(
+                df=df,
+                is_start=is_start,
+                is_end=is_end,
+                window_id=window_id,
+            )
+            print(f"Best param ID: {is_pipeline.param_id}")
+
+            is_result = self._run_period_backtest(
+                df=df,
+                start=is_start,
+                end=is_end,
+                params=is_pipeline.best_params,
+            )
+            is_basic = metrics.calculate_basic(is_result, initial_balance=100.0)
+            is_adv = metrics.calculate_advanced(is_result, initial_balance=100.0)
+            baseline = self._compute_is_baseline(is_result, self.config.is_period_days)
+
+            if not (
+                baseline.get("cusum_enabled")
+                or baseline.get("drawdown_enabled")
+                or baseline.get("inactivity_enabled")
+            ):
+                logger.warning(
+                    "Adaptive triggers disabled in window %s due to no IS trades; "
+                    "window will end by max period.",
+                    window_id,
+                )
+
+            print(f"OOS validation (adaptive max): dates {oos_start.date()} to {oos_max_end.date()}")
+            oos_result = self._run_period_backtest(
+                df=df,
+                start=oos_start,
+                end=oos_max_end,
+                params=is_pipeline.best_params,
+            )
+
+            trigger_result = self._scan_triggers(
+                trades=list(getattr(oos_result, "trades", None) or []),
+                balance_curve=list(getattr(oos_result, "balance_curve", None) or []),
+                timestamps=list(getattr(oos_result, "timestamps", None) or []),
+                baseline=baseline,
+                oos_start=oos_start,
+                oos_max_end=oos_max_end,
+            )
+            truncated_oos_result, oos_actual_end = self._truncate_oos_result(
+                oos_result=oos_result,
+                trigger_result=trigger_result,
+                oos_max_end=oos_max_end,
+            )
+            oos_basic = metrics.calculate_basic(truncated_oos_result, initial_balance=100.0)
+            oos_adv = metrics.calculate_advanced(truncated_oos_result, initial_balance=100.0)
+
+            if oos_basic.total_trades == 0:
+                print(
+                    "Warning: Window "
+                    f"{window_id} produced no OOS trades before trigger."
+                )
+
+            dense_stitch_windows.append(
+                StitchWindow(
+                    window_id=window_id,
+                    oos_equity_curve=list(truncated_oos_result.balance_curve or []),
+                    oos_timestamps=list(truncated_oos_result.timestamps or []),
+                    oos_total_trades=oos_basic.total_trades,
+                    oos_start=oos_start,
+                )
+            )
+
+            window_split = WindowSplit(
+                window_id=window_id,
+                is_start=is_start,
+                is_end=is_end,
+                oos_start=oos_start,
+                oos_end=oos_actual_end,
+            )
+            compact_equity, compact_timestamps = self._build_compact_oos_curve(
+                truncated_oos_result, window_split
+            )
+            compact_stitch_windows.append(
+                StitchWindow(
+                    window_id=window_id,
+                    oos_equity_curve=compact_equity,
+                    oos_timestamps=compact_timestamps,
+                    oos_total_trades=oos_basic.total_trades,
+                    oos_start=oos_start,
+                )
+            )
+
+            window_results.append(
+                WindowResult(
+                    window_id=window_id,
+                    is_start=is_start,
+                    is_end=is_end,
+                    oos_start=oos_start,
+                    oos_end=oos_actual_end,
+                    best_params=is_pipeline.best_params,
+                    param_id=is_pipeline.param_id,
+                    is_net_profit_pct=is_basic.net_profit_pct,
+                    is_max_drawdown_pct=is_basic.max_drawdown_pct,
+                    is_total_trades=is_basic.total_trades,
+                    is_best_trial_number=is_pipeline.best_trial_number,
+                    is_equity_curve=None,
+                    is_timestamps=None,
+                    oos_net_profit_pct=oos_basic.net_profit_pct,
+                    oos_max_drawdown_pct=oos_basic.max_drawdown_pct,
+                    oos_total_trades=oos_basic.total_trades,
+                    oos_equity_curve=[],
+                    oos_timestamps=[],
+                    is_pareto_optimal=is_pipeline.is_pareto_optimal,
+                    constraints_satisfied=is_pipeline.constraints_satisfied,
+                    best_params_source=is_pipeline.best_params_source,
+                    available_modules=is_pipeline.available_modules,
+                    optuna_is_trials=is_pipeline.optuna_is_trials,
+                    dsr_trials=is_pipeline.dsr_trials,
+                    forward_test_trials=is_pipeline.forward_test_trials,
+                    stress_test_trials=is_pipeline.stress_test_trials,
+                    module_status=is_pipeline.module_status,
+                    selection_chain=is_pipeline.selection_chain,
+                    optimization_start=is_pipeline.optimization_start,
+                    optimization_end=is_pipeline.optimization_end,
+                    ft_start=is_pipeline.ft_start,
+                    ft_end=is_pipeline.ft_end,
+                    is_win_rate=is_basic.win_rate,
+                    is_max_consecutive_losses=is_basic.max_consecutive_losses,
+                    is_romad=is_adv.romad,
+                    is_sharpe_ratio=is_adv.sharpe_ratio,
+                    is_profit_factor=is_adv.profit_factor,
+                    is_sqn=is_adv.sqn,
+                    is_ulcer_index=is_adv.ulcer_index,
+                    is_consistency_score=is_adv.consistency_score,
+                    is_composite_score=getattr(is_pipeline.best_result, "score", None),
+                    oos_win_rate=oos_basic.win_rate,
+                    oos_max_consecutive_losses=oos_basic.max_consecutive_losses,
+                    oos_romad=oos_adv.romad,
+                    oos_sharpe_ratio=oos_adv.sharpe_ratio,
+                    oos_profit_factor=oos_adv.profit_factor,
+                    oos_sqn=oos_adv.sqn,
+                    oos_ulcer_index=oos_adv.ulcer_index,
+                    oos_consistency_score=oos_adv.consistency_score,
+                    trigger_type=trigger_result.trigger_type,
+                    cusum_final=trigger_result.cusum_final,
+                    cusum_threshold=trigger_result.cusum_threshold,
+                    dd_threshold=trigger_result.dd_threshold,
+                    oos_actual_days=trigger_result.oos_actual_days,
+                )
+            )
+
+            shift = oos_actual_end - oos_start
+            if shift <= pd.Timedelta(0):
+                shift = pd.Timedelta(days=1)
+
+            next_start_target = current_start + shift
+            next_start_idx = df.index.searchsorted(next_start_target.normalize(), side="left")
+            if next_start_idx <= current_start_idx:
+                next_start_idx = current_start_idx + 1
+            if next_start_idx >= len(df):
+                break
+
+            current_start_idx = next_start_idx
+            current_start = df.index[current_start_idx]
+            window_id += 1
+
+        if not window_results:
+            raise ValueError("Failed to create any adaptive walk-forward windows.")
+
+        stitched_oos = self._build_stitched_oos_equity(
+            window_results,
+            dense_windows=dense_stitch_windows,
+            compact_windows=compact_stitch_windows,
+        )
+
+        wf_result = WFResult(
+            config=self.config,
+            windows=window_results,
+            stitched_oos=stitched_oos,
+            strategy_id=self.config.strategy_id,
+            total_windows=len(window_results),
+            trading_start_date=trading_start,
+            trading_end_date=trading_end,
+            warmup_bars=self.config.warmup_bars,
+        )
+
+        study_id = None
+        if self.csv_file_path:
+            study_id = save_wfa_study_to_db(
+                wf_result=wf_result,
+                config=self.base_config_template,
+                csv_file_path=self.csv_file_path,
+                start_time=start_time,
+                score_config=self.base_config_template.get("score_config")
+                if isinstance(self.base_config_template, dict)
+                else None,
+            )
+
+        return wf_result, study_id
+
     def _build_compact_oos_curve(
         self,
         result: Any,
@@ -909,14 +1867,27 @@ class WalkForwardEngine:
 
         if windows:
             avg_is_profit = sum(w.is_net_profit_pct for w in windows) / len(windows)
-            avg_oos_profit = sum(w.oos_net_profit_pct for w in windows) / len(windows)
-
             days_per_year = 365.0
             is_annual_factor = days_per_year / self.config.is_period_days
-            oos_annual_factor = days_per_year / self.config.oos_period_days
 
             annualized_is = avg_is_profit * is_annual_factor
-            annualized_oos = avg_oos_profit * oos_annual_factor
+            if self.config.adaptive_mode:
+                total_oos_profit = sum(w.oos_net_profit_pct for w in windows)
+                total_oos_days = 0.0
+                for window in windows:
+                    oos_days = getattr(window, "oos_actual_days", None)
+                    if oos_days is None:
+                        oos_days = self._duration_days(window.oos_start, window.oos_end)
+                    if oos_days > 0:
+                        total_oos_days += float(oos_days)
+                if total_oos_days > 0:
+                    annualized_oos = (total_oos_profit / total_oos_days) * days_per_year
+                else:
+                    annualized_oos = 0.0
+            else:
+                avg_oos_profit = sum(w.oos_net_profit_pct for w in windows) / len(windows)
+                oos_annual_factor = days_per_year / self.config.oos_period_days
+                annualized_oos = avg_oos_profit * oos_annual_factor
 
             if annualized_is != 0:
                 wfe = (annualized_oos / annualized_is) * 100.0

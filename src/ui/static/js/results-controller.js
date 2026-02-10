@@ -572,9 +572,23 @@ async function applyStudyPayload(data) {
   ResultsState.dataPath = study.csv_file_path || ResultsState.dataPath;
 
   const config = study.config_json || {};
+  const configWfa = config.wfa || {};
+  const adaptiveModeRaw = study.adaptive_mode ?? configWfa.adaptive_mode ?? config.adaptive_mode;
   ResultsState.wfa = {
     ...(ResultsState.wfa || {}),
-    postProcess: config.postProcess || {}
+    postProcess: config.postProcess || {},
+    isPeriodDays: study.is_period_days ?? configWfa.is_period_days ?? ResultsState.wfa.isPeriodDays ?? null,
+    oosPeriodDays: configWfa.oos_period_days ?? ResultsState.wfa.oosPeriodDays ?? null,
+    storeTopNTrials: configWfa.store_top_n_trials ?? ResultsState.wfa.storeTopNTrials ?? null,
+    adaptiveMode: adaptiveModeRaw === undefined || adaptiveModeRaw === null
+      ? false
+      : Boolean(adaptiveModeRaw),
+    maxOosPeriodDays: study.max_oos_period_days ?? configWfa.max_oos_period_days ?? config.max_oos_period_days ?? null,
+    minOosTrades: study.min_oos_trades ?? configWfa.min_oos_trades ?? config.min_oos_trades ?? null,
+    checkIntervalTrades: study.check_interval_trades ?? configWfa.check_interval_trades ?? config.check_interval_trades ?? null,
+    cusumThreshold: study.cusum_threshold ?? configWfa.cusum_threshold ?? config.cusum_threshold ?? null,
+    ddThresholdMultiplier: study.dd_threshold_multiplier ?? configWfa.dd_threshold_multiplier ?? config.dd_threshold_multiplier ?? null,
+    inactivityMultiplier: study.inactivity_multiplier ?? configWfa.inactivity_multiplier ?? config.inactivity_multiplier ?? null
   };
   ResultsState.fixedParams = config.fixed_params || ResultsState.fixedParams;
   ResultsState.dateFilter = Boolean(ResultsState.fixedParams.dateFilter ?? ResultsState.dateFilter);

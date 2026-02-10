@@ -173,6 +173,13 @@ def _create_schema(conn: sqlite3.Connection) -> None:
             ft_start_date TEXT,
             ft_end_date TEXT,
             is_period_days INTEGER,
+            adaptive_mode INTEGER DEFAULT 0,
+            max_oos_period_days INTEGER,
+            min_oos_trades INTEGER,
+            check_interval_trades INTEGER,
+            cusum_threshold REAL,
+            dd_threshold_multiplier REAL,
+            inactivity_multiplier REAL,
 
             dsr_enabled INTEGER DEFAULT 0,
             dsr_top_k INTEGER,
@@ -425,6 +432,13 @@ def _ensure_columns(conn: sqlite3.Connection) -> None:
     ensure("studies", "stitched_oos_max_drawdown_pct", "REAL")
     ensure("studies", "stitched_oos_total_trades", "INTEGER")
     ensure("studies", "stitched_oos_win_rate", "REAL")
+    ensure("studies", "adaptive_mode", "INTEGER DEFAULT 0")
+    ensure("studies", "max_oos_period_days", "INTEGER")
+    ensure("studies", "min_oos_trades", "INTEGER")
+    ensure("studies", "check_interval_trades", "INTEGER")
+    ensure("studies", "cusum_threshold", "REAL")
+    ensure("studies", "dd_threshold_multiplier", "REAL")
+    ensure("studies", "inactivity_multiplier", "REAL")
 
     ensure("trials", "max_consecutive_losses", "INTEGER")
     ensure("trials", "ft_max_consecutive_losses", "INTEGER")
@@ -565,6 +579,11 @@ def _ensure_wfa_schema_updated(conn: sqlite3.Connection) -> None:
     add_col("ALTER TABLE wfa_windows ADD COLUMN oos_sqn REAL;", "oos_sqn")
     add_col("ALTER TABLE wfa_windows ADD COLUMN oos_ulcer_index REAL;", "oos_ulcer_index")
     add_col("ALTER TABLE wfa_windows ADD COLUMN oos_consistency_score REAL;", "oos_consistency_score")
+    add_col("ALTER TABLE wfa_windows ADD COLUMN trigger_type TEXT;", "trigger_type")
+    add_col("ALTER TABLE wfa_windows ADD COLUMN cusum_final REAL;", "cusum_final")
+    add_col("ALTER TABLE wfa_windows ADD COLUMN cusum_threshold REAL;", "cusum_threshold")
+    add_col("ALTER TABLE wfa_windows ADD COLUMN dd_threshold REAL;", "dd_threshold")
+    add_col("ALTER TABLE wfa_windows ADD COLUMN oos_actual_days REAL;", "oos_actual_days")
 
     conn.commit()
 
@@ -1101,6 +1120,15 @@ def save_wfa_study_to_db(
                 stitched_total_trades = getattr(stitched, "total_trades", None)
                 stitched_win_rate = getattr(stitched, "oos_win_rate", None)
 
+            wf_cfg = getattr(wf_result, "config", None)
+            adaptive_mode = 1 if bool(getattr(wf_cfg, "adaptive_mode", False)) else 0
+            max_oos_period_days = getattr(wf_cfg, "max_oos_period_days", None)
+            min_oos_trades = getattr(wf_cfg, "min_oos_trades", None)
+            check_interval_trades = getattr(wf_cfg, "check_interval_trades", None)
+            cusum_threshold = getattr(wf_cfg, "cusum_threshold", None)
+            dd_threshold_multiplier = getattr(wf_cfg, "dd_threshold_multiplier", None)
+            inactivity_multiplier = getattr(wf_cfg, "inactivity_multiplier", None)
+
             conn.execute(
                 """
                 INSERT INTO studies (
@@ -1115,13 +1143,16 @@ def save_wfa_study_to_db(
                     score_config_json, config_json,
                     csv_file_path, csv_file_name,
                     dataset_start_date, dataset_end_date, warmup_bars,
+                    adaptive_mode, max_oos_period_days, min_oos_trades,
+                    check_interval_trades, cusum_threshold,
+                    dd_threshold_multiplier, inactivity_multiplier,
                     completed_at,
                     filter_min_profit, min_profit_threshold,
                     stitched_oos_equity_curve, stitched_oos_timestamps_json,
                     stitched_oos_window_ids_json, stitched_oos_net_profit_pct,
                     stitched_oos_max_drawdown_pct, stitched_oos_total_trades,
                     stitched_oos_win_rate
-                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """,
                 (
                     study_id,
@@ -1156,6 +1187,13 @@ def save_wfa_study_to_db(
                     _format_date(wf_result.trading_start_date),
                     _format_date(wf_result.trading_end_date),
                     wf_result.warmup_bars,
+                    adaptive_mode,
+                    max_oos_period_days,
+                    min_oos_trades,
+                    check_interval_trades,
+                    cusum_threshold,
+                    dd_threshold_multiplier,
+                    inactivity_multiplier,
                     _utc_now_iso(),
                     1 if isinstance(config, dict) and config.get("filter_min_profit") else 0,
                     config.get("min_profit_threshold") if isinstance(config, dict) else None,
@@ -1230,6 +1268,11 @@ def save_wfa_study_to_db(
                         getattr(window, "oos_sqn", None),
                         getattr(window, "oos_ulcer_index", None),
                         getattr(window, "oos_consistency_score", None),
+                        getattr(window, "trigger_type", None),
+                        getattr(window, "cusum_final", None),
+                        getattr(window, "cusum_threshold", None),
+                        getattr(window, "dd_threshold", None),
+                        getattr(window, "oos_actual_days", None),
                         getattr(window, "wfe", None),
                     )
                 )
@@ -1256,8 +1299,9 @@ def save_wfa_study_to_db(
                         oos_equity_curve, oos_timestamps_json,
                         oos_win_rate, oos_max_consecutive_losses, oos_romad, oos_sharpe_ratio,
                         oos_profit_factor, oos_sqn, oos_ulcer_index, oos_consistency_score,
+                        trigger_type, cusum_final, cusum_threshold, dd_threshold, oos_actual_days,
                         wfe
-                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                     """,
                     window_rows,
                 )

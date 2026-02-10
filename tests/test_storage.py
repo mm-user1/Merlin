@@ -109,6 +109,11 @@ def test_wfa_window_new_columns():
     assert "ft_start_date" in columns
     assert "is_pareto_optimal" in columns
     assert "constraints_satisfied" in columns
+    assert "trigger_type" in columns
+    assert "cusum_final" in columns
+    assert "cusum_threshold" in columns
+    assert "dd_threshold" in columns
+    assert "oos_actual_days" in columns
 
 
 def test_studies_stitched_columns():
@@ -122,6 +127,13 @@ def test_studies_stitched_columns():
     assert "stitched_oos_max_drawdown_pct" in columns
     assert "stitched_oos_total_trades" in columns
     assert "stitched_oos_win_rate" in columns
+    assert "adaptive_mode" in columns
+    assert "max_oos_period_days" in columns
+    assert "min_oos_trades" in columns
+    assert "check_interval_trades" in columns
+    assert "cusum_threshold" in columns
+    assert "dd_threshold_multiplier" in columns
+    assert "inactivity_multiplier" in columns
 
 
 def test_save_wfa_study_with_trials():

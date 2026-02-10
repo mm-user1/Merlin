@@ -722,6 +722,11 @@ def register_routes(app):
             "selection_chain": window.get("selection_chain") or {},
             "is_metrics": _build_trial_metrics(window, "is_"),
             "oos_metrics": _build_trial_metrics(window, "oos_"),
+            "trigger_type": window.get("trigger_type"),
+            "cusum_final": window.get("cusum_final"),
+            "cusum_threshold": window.get("cusum_threshold"),
+            "dd_threshold": window.get("dd_threshold"),
+            "oos_actual_days": window.get("oos_actual_days"),
         }
 
         return jsonify({"window": _json_safe(window_payload), "modules": _json_safe(modules)})
