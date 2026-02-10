@@ -1,4 +1,5 @@
 import sys
+from types import SimpleNamespace
 from pathlib import Path
 
 import pandas as pd
@@ -7,7 +8,7 @@ import pytest
 sys.path.insert(0, str(Path(__file__).parent.parent / "src"))
 
 from core.backtest_engine import StrategyResult, TradeRecord
-from core.walkforward_engine import WFConfig, WalkForwardEngine, WindowResult
+from core.walkforward_engine import ISPipelineResult, WFConfig, WalkForwardEngine, WindowResult
 
 
 def _build_engine(**kwargs):
@@ -190,3 +191,75 @@ def test_adaptive_wfe_is_duration_weighted():
 
     stitched = engine._build_stitched_oos_equity(windows)
     assert stitched.wfe == pytest.approx(72.0, rel=1e-3)
+
+
+def test_adaptive_does_not_append_zero_day_last_window(monkeypatch):
+    index = pd.date_range("2025-01-01 00:00:00", "2025-01-20 23:30:00", freq="30min", tz="UTC")
+    df_full = pd.DataFrame(
+        {"Open": 1.0, "High": 1.0, "Low": 1.0, "Close": 1.0, "Volume": 1.0},
+        index=index,
+    )
+
+    # Mimics API pre-filtering with explicit end timestamp at 00:00 (single boundary bar).
+    end_ts = pd.Timestamp("2025-01-10 00:00:00", tz="UTC")
+    df = df_full[df_full.index <= end_ts].copy()
+
+    config = WFConfig(
+        strategy_id="s01_trailing_ma",
+        adaptive_mode=True,
+        is_period_days=3,
+        max_oos_period_days=2,
+        min_oos_trades=5,
+        check_interval_trades=3,
+    )
+    base_template = {
+        "fixed_params": {
+            "dateFilter": True,
+            "start": "2025-01-01T00:00",
+            "end": "2025-01-10T00:00",
+        },
+        "risk_per_trade_pct": 2.0,
+        "contract_size": 0.01,
+        "commission_rate": 0.0005,
+    }
+    engine = WalkForwardEngine(config, base_template, {})
+
+    def fake_pipeline(self, df, is_start, is_end, window_id):  # noqa: ARG001
+        return ISPipelineResult(
+            best_result=SimpleNamespace(score=0.0),
+            best_params={},
+            param_id=f"w{window_id}",
+            best_trial_number=window_id,
+            best_params_source="optuna_is",
+            is_pareto_optimal=None,
+            constraints_satisfied=None,
+            available_modules=["optuna_is"],
+            module_status={"optuna_is": {"enabled": True, "ran": True, "reason": None}},
+            selection_chain={},
+            optimization_start=is_start,
+            optimization_end=is_end,
+            ft_start=None,
+            ft_end=None,
+            optuna_is_trials=[],
+            dsr_trials=None,
+            forward_test_trials=None,
+            stress_test_trials=None,
+        )
+
+    def fake_backtest(self, df, start, end, params):  # noqa: ARG001
+        return StrategyResult(
+            trades=[],
+            equity_curve=[100.0, 100.0],
+            balance_curve=[100.0, 100.0],
+            timestamps=[start, end],
+        )
+
+    monkeypatch.setattr(WalkForwardEngine, "_run_window_is_pipeline", fake_pipeline)
+    monkeypatch.setattr(WalkForwardEngine, "_run_period_backtest", fake_backtest)
+
+    result, _study_id = engine.run_wf_optimization(df)
+
+    assert result.windows
+    assert result.windows[-1].oos_end <= end_ts
+    assert all((window.oos_end - window.oos_start).total_seconds() > 0 for window in result.windows)
+    assert all((window.oos_actual_days or 0.0) > 0.0 for window in result.windows)

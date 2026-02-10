@@ -1480,7 +1480,6 @@ class WalkForwardEngine:
 
         trading_start, trading_end = self._resolve_trading_bounds(df)
         trading_start_normalized = trading_start.normalize()
-        trading_end_normalized = trading_end.normalize() + pd.Timedelta(days=1)
 
         start_idx = df.index.searchsorted(trading_start_normalized, side="left")
         if start_idx >= len(df):
@@ -1505,7 +1504,7 @@ class WalkForwardEngine:
             is_end_target = is_start_target + pd.Timedelta(days=self.config.is_period_days)
             oos_start_target = is_end_target
 
-            if oos_start_target >= trading_end_normalized:
+            if oos_start_target >= trading_end:
                 break
 
             is_start_idx = df.index.searchsorted(is_start_target, side="left")
@@ -1526,12 +1525,14 @@ class WalkForwardEngine:
 
             oos_max_end_target = min(
                 oos_start_target + pd.Timedelta(days=self.config.max_oos_period_days),
-                trading_end_normalized,
+                trading_end,
             )
-            oos_max_end_idx = df.index.searchsorted(oos_max_end_target, side="left") - 1
+            oos_max_end_idx = df.index.searchsorted(oos_max_end_target, side="right") - 1
             if oos_max_end_idx < oos_start_idx or oos_max_end_idx >= len(df):
                 break
             oos_max_end = df.index[oos_max_end_idx]
+            if oos_max_end <= oos_start:
+                break
 
             print(f"\n--- Adaptive Window {window_id} ---")
             print(f"IS optimization: dates {is_start.date()} to {is_end.date()}")
