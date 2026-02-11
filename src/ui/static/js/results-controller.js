@@ -1,3 +1,6 @@
+let studiesListCache = [];
+let studiesSortByNameActive = false;
+
 function inferPostProcessSource(trials, key) {
   const values = new Set();
   (trials || []).forEach((trial) => {
@@ -20,6 +23,93 @@ function buildRankMapFromKey(trials, rankKey) {
     }
   });
   return map;
+}
+
+function parseTimeframeToMinutes(value) {
+  const token = String(value || '').trim().toLowerCase();
+  if (!token) return Number.POSITIVE_INFINITY;
+  const compact = token.replace(/\s+/g, '');
+  let match = compact.match(/^(\d+)(m|min|mins|minute|minutes)?$/);
+  if (match) return Number(match[1]);
+  match = compact.match(/^(\d+)(h|hr|hrs|hour|hours)$/);
+  if (match) return Number(match[1]) * 60;
+  match = compact.match(/^(\d+)(d|day|days)$/);
+  if (match) return Number(match[1]) * 1440;
+  match = compact.match(/^(\d+)(w|week|weeks)$/);
+  if (match) return Number(match[1]) * 10080;
+  return Number.POSITIVE_INFINITY;
+}
+
+function extractDatasetPrefixFromStudy(study) {
+  const csvFileName = String(study?.csv_file_name || '').trim();
+  const source = csvFileName || String(study?.study_name || '').trim();
+  if (!source) return '';
+  const stem = source.replace(/\.[^.]+$/, '');
+  const withoutStrategyPrefix = stem.replace(/^[^_]+_/, '');
+  const dateMatch = withoutStrategyPrefix.match(/\b\d{4}[.\-/]\d{2}[.\-/]\d{2}\b/);
+  if (!dateMatch || dateMatch.index === undefined) return withoutStrategyPrefix.trim();
+  return withoutStrategyPrefix.slice(0, dateMatch.index).trim();
+}
+
+function extractStudySortIdentity(study) {
+  const datasetPrefix = extractDatasetPrefixFromStudy(study);
+  const commaIndex = datasetPrefix.indexOf(',');
+  let symbolPart = datasetPrefix;
+  let timeframePart = '';
+  if (commaIndex >= 0) {
+    symbolPart = datasetPrefix.slice(0, commaIndex).trim();
+    timeframePart = datasetPrefix.slice(commaIndex + 1).trim().split(/\s+/)[0] || '';
+  } else {
+    const parts = datasetPrefix.split(/\s+/).filter(Boolean);
+    if (parts.length > 1) {
+      timeframePart = parts[parts.length - 1];
+      symbolPart = parts.slice(0, -1).join(' ');
+    }
+  }
+  const symbolTokens = symbolPart.split('_').filter(Boolean);
+  const ticker = (symbolTokens[symbolTokens.length - 1] || symbolPart || '').toLowerCase();
+  const timeframeRaw = String(timeframePart || '').trim().toLowerCase();
+  return {
+    ticker,
+    timeframeRaw,
+    timeframeMinutes: parseTimeframeToMinutes(timeframeRaw),
+  };
+}
+
+function compareStudiesByTickerAndTimeframe(left, right) {
+  const a = extractStudySortIdentity(left);
+  const b = extractStudySortIdentity(right);
+
+  const tickerCmp = a.ticker.localeCompare(b.ticker, undefined, { sensitivity: 'base' });
+  if (tickerCmp !== 0) return tickerCmp;
+
+  const aFinite = Number.isFinite(a.timeframeMinutes);
+  const bFinite = Number.isFinite(b.timeframeMinutes);
+  if (aFinite && bFinite && a.timeframeMinutes !== b.timeframeMinutes) {
+    return a.timeframeMinutes - b.timeframeMinutes;
+  }
+  if (aFinite !== bFinite) return aFinite ? -1 : 1;
+
+  const timeframeCmp = a.timeframeRaw.localeCompare(b.timeframeRaw, undefined, {
+    numeric: true,
+    sensitivity: 'base',
+  });
+  if (timeframeCmp !== 0) return timeframeCmp;
+
+  const aName = String(left?.study_name || '');
+  const bName = String(right?.study_name || '');
+  return aName.localeCompare(bName, undefined, { numeric: true, sensitivity: 'base' });
+}
+
+function getStudiesForRender(studies) {
+  const rows = Array.isArray(studies) ? studies.slice() : [];
+  if (!studiesSortByNameActive) return rows;
+  const enriched = rows.map((study, index) => ({ study, index }));
+  enriched.sort((a, b) => {
+    const cmp = compareStudiesByTickerAndTimeframe(a.study, b.study);
+    return cmp !== 0 ? cmp : a.index - b.index;
+  });
+  return enriched.map((item) => item.study);
 }
 
 function updateTabsVisibility() {
@@ -184,6 +274,12 @@ function syncStudiesManagerControls() {
     filterBtn.classList.toggle('active', ResultsState.filterActive);
   }
 
+  const sortBtn = document.getElementById('studySortNameBtn');
+  if (sortBtn) {
+    sortBtn.disabled = !ResultsState.filterActive;
+    sortBtn.classList.toggle('active', ResultsState.filterActive && studiesSortByNameActive);
+  }
+
   const filterRow = document.getElementById('studyFilterRow');
   if (filterRow) {
     filterRow.hidden = !ResultsState.filterActive;
@@ -340,15 +436,22 @@ function bindStudiesKeyboardNavigation() {
 async function loadStudiesList() {
   try {
     const data = await fetchStudiesList();
-    renderStudiesList(data.studies || []);
+    studiesListCache = Array.isArray(data.studies) ? data.studies : [];
+    renderStudiesList(getStudiesForRender(studiesListCache));
     syncStudiesManagerControls();
-    return data.studies || [];
+    return studiesListCache;
   } catch (error) {
     console.warn('Failed to load studies list', error);
+    studiesListCache = [];
     renderStudiesList([]);
     syncStudiesManagerControls();
     return [];
   }
+}
+
+function rerenderStudiesListFromCache() {
+  renderStudiesList(getStudiesForRender(studiesListCache));
+  syncStudiesManagerControls();
 }
 
 function resetForDbSwitch() {
@@ -1078,6 +1181,7 @@ function bindStudiesManager() {
   const selectBtn = document.getElementById('studySelectBtn');
   const deleteBtn = document.getElementById('studyDeleteBtn');
   const filterBtn = document.getElementById('studyFilterBtn');
+  const sortNameBtn = document.getElementById('studySortNameBtn');
   const filterInput = document.getElementById('studyFilterInput');
 
   syncStudiesManagerControls();
@@ -1098,9 +1202,9 @@ function bindStudiesManager() {
       ResultsState.filterActive = !ResultsState.filterActive;
       if (!ResultsState.filterActive) {
         ResultsState.filterText = '';
+        studiesSortByNameActive = false;
       }
-      syncStudiesManagerControls();
-      applyStudiesFilter();
+      rerenderStudiesListFromCache();
       if (ResultsState.filterActive) {
         filterInput.focus();
       }
@@ -1109,6 +1213,15 @@ function bindStudiesManager() {
     filterInput.addEventListener('input', () => {
       ResultsState.filterText = filterInput.value || '';
       applyStudiesFilter();
+    });
+  }
+
+  if (sortNameBtn && filterInput) {
+    sortNameBtn.addEventListener('click', () => {
+      if (!ResultsState.filterActive) return;
+      studiesSortByNameActive = !studiesSortByNameActive;
+      rerenderStudiesListFromCache();
+      filterInput.focus();
     });
   }
 

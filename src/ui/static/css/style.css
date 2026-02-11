@@ -1512,12 +1512,20 @@
     }
 
     .manager-filter-row:not([hidden]) {
-      display: flex;
-      justify-content: center;
+      display: grid;
+      grid-template-columns: repeat(3, minmax(0, 1fr));
+      gap: 8px;
+    }
+
+    .manager-filter-sort-btn {
+      width: 100%;
+      padding: 5px 8px;
+      font-size: 12px;
+      grid-column: 1;
     }
 
     .manager-filter-input {
-      width: clamp(110px, calc((100% - 16px) / 3), 240px);
+      width: 100%;
       padding: 5px 8px;
       border: 1px solid #b8b8b8;
       border-radius: 3px;
@@ -1526,6 +1534,7 @@
       background: #fff;
       box-sizing: border-box;
       outline: none;
+      grid-column: 2;
     }
 
     .manager-filter-input:focus {

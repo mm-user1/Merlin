@@ -40,7 +40,6 @@ from core.post_process import (
 )
 from core.testing import run_period_test_for_trials, select_oos_source_candidates
 from core.storage import (
-    create_new_db,
     delete_manual_test,
     delete_study,
     get_active_db_name,
@@ -139,12 +138,21 @@ def register_routes(app):
 
     def _apply_db_target_from_form(form_data) -> Optional[object]:
         db_target = (form_data.get("dbTarget") or "").strip()
-        db_label = (form_data.get("dbLabel") or "").strip()
         if not db_target:
             return None
         try:
             if db_target == "new":
-                create_new_db(db_label)
+                return (
+                    jsonify(
+                        {
+                            "error": (
+                                "Please create and select a database in Database Target "
+                                "before running optimization or Walk-Forward."
+                            )
+                        }
+                    ),
+                    HTTPStatus.BAD_REQUEST,
+                )
             elif db_target != get_active_db_name():
                 set_active_db(db_target)
         except ValueError as exc:
@@ -419,7 +427,7 @@ def register_routes(app):
             post_process_config = PostProcessConfig(
                 enabled=True,
                 ft_period_days=int(post_process_payload.get("ftPeriodDays", 15)),
-                top_k=int(post_process_payload.get("topK", 5)),
+                top_k=int(post_process_payload.get("topK", 10)),
                 sort_metric=str(post_process_payload.get("sortMetric", "profit_degradation")),
                 warmup_bars=warmup_bars,
             )
@@ -837,7 +845,7 @@ def register_routes(app):
         optimization_config.ft_enabled = ft_enabled
         if ft_enabled:
             optimization_config.ft_period_days = ft_days
-            optimization_config.ft_top_k = int(post_process_payload.get("topK", 20))
+            optimization_config.ft_top_k = int(post_process_payload.get("topK", 10))
             optimization_config.ft_sort_metric = post_process_payload.get("sortMetric", "profit_degradation")
             optimization_config.ft_start_date = ft_start.strftime("%Y-%m-%d") if ft_start else None
             optimization_config.ft_end_date = ft_end.strftime("%Y-%m-%d") if ft_end else None
@@ -999,7 +1007,7 @@ def register_routes(app):
             pp_config = PostProcessConfig(
                 enabled=True,
                 ft_period_days=int(ft_days or 0),
-                top_k=int(post_process_payload.get("topK", 20)),
+                top_k=int(post_process_payload.get("topK", 10)),
                 sort_metric=str(post_process_payload.get("sortMetric", "profit_degradation")),
                 warmup_bars=warmup_bars,
             )
@@ -1019,7 +1027,7 @@ def register_routes(app):
                 ft_results,
                 ft_enabled=True,
                 ft_period_days=int(ft_days or 0),
-                ft_top_k=int(post_process_payload.get("topK", 20)),
+                ft_top_k=int(post_process_payload.get("topK", 10)),
                 ft_sort_metric=str(post_process_payload.get("sortMetric", "profit_degradation")),
                 ft_start_date=ft_start.strftime("%Y-%m-%d") if ft_start else None,
                 ft_end_date=ft_end.strftime("%Y-%m-%d") if ft_end else None,

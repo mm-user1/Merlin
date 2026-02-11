@@ -204,3 +204,43 @@ def test_optimize_invalid_config_does_not_switch_database(client, isolated_stora
     )
     assert response.status_code == 400
     assert storage.get_active_db_name() == first
+
+
+def test_optimize_rejects_new_db_target_without_explicit_create(client, isolated_storage):
+    current = storage.create_new_db("current")
+    storage.set_active_db(current)
+
+    csv_path = isolated_storage / "input.csv"
+    csv_path.write_text("timestamp,open,high,low,close,volume\n", encoding="utf-8")
+    db_files_before = {path.name for path in isolated_storage.glob("*.db")}
+
+    response = client.post(
+        "/api/optimize",
+        data={
+            "strategy": "s01_trailing_ma",
+            "csvPath": str(csv_path),
+            "dbTarget": "new",
+            "dbLabel": "should-not-be-created",
+            "config": json.dumps(
+                {
+                    "strategy": "s01_trailing_ma",
+                    "enabled_params": {},
+                    "param_ranges": {},
+                    "fixed_params": {},
+                    "objectives": ["net_profit_pct"],
+                    "primary_objective": None,
+                    "optuna_budget_mode": "trials",
+                    "optuna_n_trials": 1,
+                    "optuna_time_limit": 60,
+                    "optuna_convergence": 10,
+                }
+            ),
+        },
+    )
+
+    assert response.status_code == 400
+    payload = response.get_json()
+    assert "create and select a database" in (payload.get("error") or "").lower()
+    assert storage.get_active_db_name() == current
+    db_files_after = {path.name for path in isolated_storage.glob("*.db")}
+    assert db_files_after == db_files_before

@@ -54,6 +54,44 @@ function toggleDbLabelVisibility() {
   labelGroup.style.display = select.value === 'new' ? 'flex' : 'none';
 }
 
+async function createAndSelectDatabase() {
+  const select = document.getElementById('dbTarget');
+  const labelInput = document.getElementById('dbLabel');
+  const createBtn = document.getElementById('dbCreateBtn');
+  const refreshBtn = document.getElementById('dbTargetRefreshBtn');
+  if (!select || !labelInput || !createBtn || typeof createDatabaseRequest !== 'function') return;
+
+  select.value = 'new';
+  toggleDbLabelVisibility();
+  const label = labelInput.value.trim();
+
+  try {
+    createBtn.disabled = true;
+    if (refreshBtn) refreshBtn.disabled = true;
+
+    const payload = await createDatabaseRequest(label);
+    await loadDatabasesList({ preserveSelection: false });
+
+    const createdName = payload && payload.filename ? String(payload.filename) : '';
+    if (createdName) {
+      select.value = createdName;
+      toggleDbLabelVisibility();
+      if (typeof showResultsMessage === 'function') {
+        showResultsMessage(`Database selected: ${createdName}`);
+      }
+    }
+  } catch (error) {
+    if (typeof showErrorMessage === 'function') {
+      showErrorMessage(error?.message || 'Failed to create database.');
+    } else {
+      alert(error?.message || 'Failed to create database.');
+    }
+  } finally {
+    createBtn.disabled = false;
+    if (refreshBtn) refreshBtn.disabled = false;
+  }
+}
+
 document.addEventListener('DOMContentLoaded', async () => {
   await loadStrategiesList();
   await loadDatabasesList();
@@ -120,6 +158,20 @@ document.addEventListener('DOMContentLoaded', async () => {
   if (dbTargetRefreshBtn) {
     dbTargetRefreshBtn.addEventListener('click', async () => {
       await loadDatabasesList({ preserveSelection: true });
+    });
+  }
+
+  const dbCreateBtn = document.getElementById('dbCreateBtn');
+  if (dbCreateBtn) {
+    dbCreateBtn.addEventListener('click', createAndSelectDatabase);
+  }
+
+  const dbLabelInput = document.getElementById('dbLabel');
+  if (dbLabelInput) {
+    dbLabelInput.addEventListener('keydown', async (event) => {
+      if (event.key !== 'Enter') return;
+      event.preventDefault();
+      await createAndSelectDatabase();
     });
   }
 

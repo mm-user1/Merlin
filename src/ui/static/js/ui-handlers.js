@@ -871,7 +871,7 @@ function buildOptunaConfig(state) {
   const selectedObjectives = objectiveConfig.objectives || [];
   const postProcessConfig = window.PostProcessUI
     ? window.PostProcessUI.collectConfig()
-    : { enabled: false, ftPeriodDays: 30, topK: 20, sortMetric: 'profit_degradation' };
+    : { enabled: false, ftPeriodDays: 30, topK: 10, sortMetric: 'profit_degradation' };
   const oosTestConfig = window.OosTestUI
     ? window.OosTestUI.collectConfig()
     : { enabled: false, periodDays: 30, topK: 20 };
@@ -912,10 +912,14 @@ function appendDatabaseTargetToFormData(formData) {
   const dbTarget = document.getElementById('dbTarget')?.value || '';
   if (!dbTarget) return;
   formData.append('dbTarget', dbTarget);
+}
+
+function getDatabaseTargetValidationError() {
+  const dbTarget = document.getElementById('dbTarget')?.value || '';
   if (dbTarget === 'new') {
-    const dbLabel = document.getElementById('dbLabel')?.value?.trim() || '';
-    formData.append('dbLabel', dbLabel);
+    return 'Please create and select a database in "Database Target" before running optimization or Walk-Forward.';
   }
+  return '';
 }
 
 async function runWalkForward({ sources, state }) {
@@ -939,6 +943,14 @@ async function runWalkForward({ sources, state }) {
   if (validationErrors.length) {
     if (wfStatusEl) {
       wfStatusEl.textContent = `Validation errors:\n${validationErrors.join('\n')}`;
+    }
+    return;
+  }
+
+  const dbTargetError = getDatabaseTargetValidationError();
+  if (dbTargetError) {
+    if (wfStatusEl) {
+      wfStatusEl.textContent = dbTargetError;
     }
     return;
   }
@@ -1319,6 +1331,15 @@ async function submitOptimization(event) {
   if (wfEnabled) {
     clearWFResults();
     await runWalkForward({ sources, state });
+    return;
+  }
+
+  const dbTargetError = getDatabaseTargetValidationError();
+  if (dbTargetError) {
+    optimizerResultsEl.textContent = dbTargetError;
+    optimizerResultsEl.classList.remove('ready');
+    optimizerResultsEl.classList.remove('loading');
+    optimizerResultsEl.style.display = 'block';
     return;
   }
 

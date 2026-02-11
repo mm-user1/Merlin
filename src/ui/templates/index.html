@@ -684,7 +684,7 @@
 
                 <div class="form-group">
                   <label for="ftTopK">Top Candidates:</label>
-                  <input type="number" id="ftTopK" value="20" min="1" max="10000" style="width: 100px;" />
+                  <input type="number" id="ftTopK" value="10" min="1" max="10000" style="width: 100px;" />
                 </div>
 
                 <div class="form-group">
@@ -858,6 +858,15 @@
               <div class="form-group" id="dbLabelGroup" style="display: none;">
                 <label for="dbLabel" style="min-width: 100px;">Label</label>
                 <input type="text" id="dbLabel" placeholder="optional label (e.g. link-15m)" style="flex: 1;" />
+                <button
+                  type="button"
+                  id="dbCreateBtn"
+                  class="db-target-refresh-btn"
+                  title="Create and select database"
+                  aria-label="Create and select database"
+                >
+                  &#10003;
+                </button>
               </div>
             </div>
 
