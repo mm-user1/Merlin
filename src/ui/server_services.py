@@ -969,22 +969,79 @@ def _resolve_wfa_period(
     window: Dict[str, Any],
     period: str,
 ) -> Tuple[Optional[str], Optional[str], Optional[str]]:
+    def _normalize_boundary(value: Any) -> Optional[str]:
+        if value in (None, ""):
+            return None
+        if hasattr(value, "isoformat"):
+            return value.isoformat()
+        return str(value)
+
+    def _resolve_boundary(*, ts_key: str, date_key: str, legacy_key: Optional[str] = None) -> Optional[str]:
+        exact = _normalize_boundary(window.get(ts_key))
+        if exact:
+            return exact
+        date_value = _normalize_boundary(window.get(date_key))
+        if date_value:
+            return date_value
+        if legacy_key:
+            return _normalize_boundary(window.get(legacy_key))
+        return None
+
     period = (period or "").lower()
     if period == "optuna_is":
-        start = window.get("optimization_start_date") or window.get("is_start_date")
-        end = window.get("optimization_end_date") or window.get("is_end_date")
+        start = _resolve_boundary(
+            ts_key="optimization_start_ts",
+            date_key="optimization_start_date",
+        ) or _resolve_boundary(
+            ts_key="is_start_ts",
+            date_key="is_start_date",
+        )
+        end = _resolve_boundary(
+            ts_key="optimization_end_ts",
+            date_key="optimization_end_date",
+        ) or _resolve_boundary(
+            ts_key="is_end_ts",
+            date_key="is_end_date",
+        )
     elif period == "is":
-        start = window.get("is_start_date")
-        end = window.get("is_end_date")
+        start = _resolve_boundary(
+            ts_key="is_start_ts",
+            date_key="is_start_date",
+        )
+        end = _resolve_boundary(
+            ts_key="is_end_ts",
+            date_key="is_end_date",
+        )
     elif period == "ft":
-        start = window.get("ft_start_date")
-        end = window.get("ft_end_date")
+        start = _resolve_boundary(
+            ts_key="ft_start_ts",
+            date_key="ft_start_date",
+        )
+        end = _resolve_boundary(
+            ts_key="ft_end_ts",
+            date_key="ft_end_date",
+        )
     elif period == "oos":
-        start = window.get("oos_start_date")
-        end = window.get("oos_end_date")
+        start = _resolve_boundary(
+            ts_key="oos_start_ts",
+            date_key="oos_start_date",
+            legacy_key="oos_start",
+        )
+        end = _resolve_boundary(
+            ts_key="oos_end_ts",
+            date_key="oos_end_date",
+            legacy_key="oos_end",
+        )
     elif period == "both":
-        start = window.get("is_start_date")
-        end = window.get("oos_end_date")
+        start = _resolve_boundary(
+            ts_key="is_start_ts",
+            date_key="is_start_date",
+        )
+        end = _resolve_boundary(
+            ts_key="oos_end_ts",
+            date_key="oos_end_date",
+            legacy_key="oos_end",
+        )
     else:
         return None, None, "Invalid period."
 

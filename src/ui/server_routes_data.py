@@ -124,6 +124,55 @@ except ImportError:
 
 
 def register_routes(app):
+    def _trade_time_ns(value: Any) -> int:
+        if value is None:
+            return -1
+        try:
+            return int(value.value)
+        except Exception:
+            return -1
+
+    def _normalize_wfa_oos_trades(
+        trades: List[Any],
+        *,
+        start: Any,
+        end: Any,
+        expected_total: Optional[Any] = None,
+    ) -> List[Any]:
+        """Normalize adaptive OOS trades to match stored window semantics."""
+        start_ts = parse_timestamp_utc(start)
+        end_ts = parse_timestamp_utc(end)
+
+        normalized: List[Any] = []
+        for trade in list(trades or []):
+            entry_time = getattr(trade, "entry_time", None)
+            exit_time = getattr(trade, "exit_time", None)
+            if entry_time is None or exit_time is None:
+                continue
+            if start_ts is not None and entry_time < start_ts:
+                continue
+            if end_ts is not None and entry_time > end_ts:
+                continue
+            if end_ts is not None and exit_time > end_ts:
+                continue
+            normalized.append(trade)
+
+        normalized.sort(
+            key=lambda trade: (
+                _trade_time_ns(getattr(trade, "exit_time", None)),
+                _trade_time_ns(getattr(trade, "entry_time", None)),
+            )
+        )
+
+        try:
+            limit = max(0, int(expected_total)) if expected_total is not None else None
+        except (TypeError, ValueError):
+            limit = None
+
+        if limit is not None and len(normalized) > limit:
+            normalized = normalized[:limit]
+
+        return normalized
 
     @app.route("/")
     def index() -> object:
@@ -863,6 +912,18 @@ def register_routes(app):
         if error:
             return jsonify({"error": error}), HTTPStatus.BAD_REQUEST
 
+        if (
+            bool(study.get("adaptive_mode"))
+            and (period or "").lower() == "oos"
+            and (not module_type or module_type == "oos_result")
+        ):
+            trades = _normalize_wfa_oos_trades(
+                trades or [],
+                start=start,
+                end=end,
+                expected_total=window.get("oos_total_trades"),
+            )
+
         module_label = module_type or "window"
         filename = (
             f"{study.get('study_name', 'study')}_wfa_window_{window_number}_"
@@ -911,10 +972,12 @@ def register_routes(app):
         except Exception as exc:
             return jsonify({"error": str(exc)}), HTTPStatus.BAD_REQUEST
 
+        adaptive_mode = bool(study.get("adaptive_mode"))
         all_trades = []
         for window in windows:
-            start_raw = window.get("oos_start_date") or window.get("oos_start")
-            end_raw = window.get("oos_end_date") or window.get("oos_end")
+            start_raw, end_raw, error = _resolve_wfa_period(window, "oos")
+            if error:
+                continue
             start, end = align_date_bounds(df.index, start_raw, end_raw)
             if start is None or end is None:
                 continue
@@ -936,15 +999,24 @@ def register_routes(app):
             except Exception as exc:
                 return jsonify({"error": str(exc)}), HTTPStatus.BAD_REQUEST
 
-            window_trades = [
-                trade
-                for trade in result.trades
-                if trade.entry_time and start <= trade.entry_time <= end
-            ]
+            if adaptive_mode:
+                window_trades = _normalize_wfa_oos_trades(
+                    result.trades or [],
+                    start=start,
+                    end=end,
+                    expected_total=window.get("oos_total_trades"),
+                )
+            else:
+                window_trades = [
+                    trade
+                    for trade in result.trades
+                    if trade.entry_time and start <= trade.entry_time <= end
+                ]
             all_trades.extend(window_trades)
 
 
-        all_trades.sort(key=lambda t: t.entry_time or pd.Timestamp.min)
+        if not adaptive_mode:
+            all_trades.sort(key=lambda t: t.entry_time or pd.Timestamp.min)
 
         from core.export import _extract_symbol_from_csv_filename
 

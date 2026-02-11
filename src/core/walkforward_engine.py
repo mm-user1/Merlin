@@ -1690,7 +1690,9 @@ class WalkForwardEngine:
                 shift = pd.Timedelta(days=1)
 
             next_start_target = current_start + shift
-            next_start_idx = df.index.searchsorted(next_start_target.normalize(), side="left")
+            # Start the next adaptive window on the first bar strictly after
+            # the previous OOS actual end to avoid same-day overlaps.
+            next_start_idx = df.index.searchsorted(next_start_target, side="right")
             if next_start_idx <= current_start_idx:
                 next_start_idx = current_start_idx + 1
             if next_start_idx >= len(df):

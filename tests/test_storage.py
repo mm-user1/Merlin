@@ -106,9 +106,15 @@ def test_wfa_window_new_columns():
     assert "best_params_source" in columns
     assert "available_modules" in columns
     assert "optimization_start_date" in columns
+    assert "optimization_start_ts" in columns
     assert "ft_start_date" in columns
+    assert "ft_start_ts" in columns
     assert "is_pareto_optimal" in columns
     assert "constraints_satisfied" in columns
+    assert "is_start_ts" in columns
+    assert "is_end_ts" in columns
+    assert "oos_start_ts" in columns
+    assert "oos_end_ts" in columns
     assert "trigger_type" in columns
     assert "cusum_final" in columns
     assert "cusum_threshold" in columns
@@ -171,3 +177,36 @@ def test_load_wfa_window_trials():
     assert "optuna_is" in modules
     assert modules["optuna_is"]
     assert modules["optuna_is"][0]["trial_number"] == 1
+
+
+def test_wfa_window_timestamp_precision_persisted():
+    wf_result = _build_dummy_wfa_result()
+    window = wf_result.windows[0]
+    window.is_start = pd.Timestamp("2025-01-01 00:00:00", tz="UTC")
+    window.is_end = pd.Timestamp("2025-01-10 09:15:00", tz="UTC")
+    window.oos_start = pd.Timestamp("2025-01-11 06:45:00", tz="UTC")
+    window.oos_end = pd.Timestamp("2025-01-15 12:30:00", tz="UTC")
+    window.optimization_start = pd.Timestamp("2025-01-01 00:00:00", tz="UTC")
+    window.optimization_end = pd.Timestamp("2025-01-09 23:00:00", tz="UTC")
+    window.ft_start = pd.Timestamp("2025-01-09 23:00:00", tz="UTC")
+    window.ft_end = pd.Timestamp("2025-01-10 09:15:00", tz="UTC")
+
+    study_id = save_wfa_study_to_db(
+        wf_result=wf_result,
+        config={},
+        csv_file_path="",
+        start_time=0.0,
+        score_config=None,
+    )
+    loaded = load_study_from_db(study_id)
+    assert loaded is not None
+    stored = loaded["windows"][0]
+
+    assert stored.get("is_start_ts") == "2025-01-01T00:00:00+00:00"
+    assert stored.get("is_end_ts") == "2025-01-10T09:15:00+00:00"
+    assert stored.get("oos_start_ts") == "2025-01-11T06:45:00+00:00"
+    assert stored.get("oos_end_ts") == "2025-01-15T12:30:00+00:00"
+    assert stored.get("optimization_start_ts") == "2025-01-01T00:00:00+00:00"
+    assert stored.get("optimization_end_ts") == "2025-01-09T23:00:00+00:00"
+    assert stored.get("ft_start_ts") == "2025-01-09T23:00:00+00:00"
+    assert stored.get("ft_end_ts") == "2025-01-10T09:15:00+00:00"
