@@ -1,5 +1,6 @@
 import json
 import sys
+import time
 from pathlib import Path
 
 import pandas as pd
@@ -161,6 +162,98 @@ def test_save_wfa_study_with_trials():
     assert window.get("best_params_source") == "optuna_is"
     assert window.get("is_pareto_optimal") is True
     assert window.get("constraints_satisfied") is False
+
+
+def test_save_wfa_study_persists_optuna_and_wfa_metadata():
+    wf_result = _build_dummy_wfa_result()
+    wf_result.config.is_period_days = 12
+    wf_result.config.adaptive_mode = True
+    wf_result.config.max_oos_period_days = 120
+    wf_result.config.min_oos_trades = 7
+    wf_result.config.check_interval_trades = 4
+    wf_result.config.cusum_threshold = 6.5
+    wf_result.config.dd_threshold_multiplier = 1.8
+    wf_result.config.inactivity_multiplier = 6.0
+
+    config = {
+        "sampler_type": "nsga2",
+        "population_size": 64,
+        "crossover_prob": 0.8,
+        "mutation_prob": 0.2,
+        "swapping_prob": 0.4,
+        "optuna_config": {
+            "budget_mode": "trials",
+            "n_trials": 300,
+            "time_limit": 1800,
+            "convergence_patience": 75,
+            "sampler": "nsga2",
+            "sampler_type": "nsga2",
+            "population_size": 64,
+            "crossover_prob": 0.8,
+            "mutation_prob": 0.2,
+            "swapping_prob": 0.4,
+            "pruner": "median",
+        },
+        "wfa": {
+            "is_period_days": 10,
+            "oos_period_days": 5,
+            "adaptive_mode": True,
+        },
+    }
+
+    study_id = save_wfa_study_to_db(
+        wf_result=wf_result,
+        config=config,
+        csv_file_path="",
+        start_time=0.0,
+        score_config=None,
+    )
+
+    loaded = load_study_from_db(study_id)
+    assert loaded is not None
+    study = loaded["study"]
+
+    assert study.get("is_period_days") == 12
+    assert study.get("sampler_type") == "nsga2"
+    assert study.get("population_size") == 64
+    assert study.get("crossover_prob") == 0.8
+    assert study.get("mutation_prob") == 0.2
+    assert study.get("swapping_prob") == 0.4
+    assert study.get("budget_mode") == "trials"
+    assert study.get("n_trials") == 300
+    assert study.get("time_limit") == 1800
+    assert study.get("convergence_patience") == 75
+
+    assert study.get("adaptive_mode") == 1
+    assert study.get("max_oos_period_days") == 120
+    assert study.get("min_oos_trades") == 7
+    assert study.get("check_interval_trades") == 4
+    assert study.get("cusum_threshold") == 6.5
+    assert study.get("dd_threshold_multiplier") == 1.8
+    assert study.get("inactivity_multiplier") == 6.0
+
+    config_json = study.get("config_json") or {}
+    assert config_json.get("optuna_config", {}).get("pruner") == "median"
+    assert config_json.get("wfa", {}).get("oos_period_days") == 5
+
+
+def test_save_wfa_study_persists_runtime_seconds():
+    wf_result = _build_dummy_wfa_result()
+    start_time = time.time() - 2.0
+    study_id = save_wfa_study_to_db(
+        wf_result=wf_result,
+        config={},
+        csv_file_path="",
+        start_time=start_time,
+        score_config=None,
+    )
+
+    loaded = load_study_from_db(study_id)
+    assert loaded is not None
+    runtime = loaded["study"].get("optimization_time_seconds")
+    assert runtime is not None
+    assert runtime >= 0
+    assert runtime < 600
 
 
 def test_load_wfa_window_trials():

@@ -678,20 +678,20 @@ async function applyStudyPayload(data) {
   const configWfa = config.wfa || {};
   const adaptiveModeRaw = study.adaptive_mode ?? configWfa.adaptive_mode ?? config.adaptive_mode;
   ResultsState.wfa = {
-    ...(ResultsState.wfa || {}),
     postProcess: config.postProcess || {},
-    isPeriodDays: study.is_period_days ?? configWfa.is_period_days ?? ResultsState.wfa.isPeriodDays ?? null,
-    oosPeriodDays: configWfa.oos_period_days ?? ResultsState.wfa.oosPeriodDays ?? null,
-    storeTopNTrials: configWfa.store_top_n_trials ?? ResultsState.wfa.storeTopNTrials ?? null,
+    isPeriodDays: study.is_period_days ?? configWfa.is_period_days ?? config.is_period_days ?? null,
+    oosPeriodDays: configWfa.oos_period_days ?? config.oos_period_days ?? null,
+    storeTopNTrials: configWfa.store_top_n_trials ?? null,
     adaptiveMode: adaptiveModeRaw === undefined || adaptiveModeRaw === null
-      ? false
+      ? null
       : Boolean(adaptiveModeRaw),
     maxOosPeriodDays: study.max_oos_period_days ?? configWfa.max_oos_period_days ?? config.max_oos_period_days ?? null,
     minOosTrades: study.min_oos_trades ?? configWfa.min_oos_trades ?? config.min_oos_trades ?? null,
     checkIntervalTrades: study.check_interval_trades ?? configWfa.check_interval_trades ?? config.check_interval_trades ?? null,
     cusumThreshold: study.cusum_threshold ?? configWfa.cusum_threshold ?? config.cusum_threshold ?? null,
     ddThresholdMultiplier: study.dd_threshold_multiplier ?? configWfa.dd_threshold_multiplier ?? config.dd_threshold_multiplier ?? null,
-    inactivityMultiplier: study.inactivity_multiplier ?? configWfa.inactivity_multiplier ?? config.inactivity_multiplier ?? null
+    inactivityMultiplier: study.inactivity_multiplier ?? configWfa.inactivity_multiplier ?? config.inactivity_multiplier ?? null,
+    runTimeSeconds: study.optimization_time_seconds ?? null
   };
   ResultsState.fixedParams = config.fixed_params || ResultsState.fixedParams;
   ResultsState.dateFilter = Boolean(ResultsState.fixedParams.dateFilter ?? ResultsState.dateFilter);
@@ -846,54 +846,56 @@ async function applyStudyPayload(data) {
     ?? optunaConfig.primary_objective
     ?? config.primary_objective
     ?? null;
-  const objectives = study.objectives || optunaConfig.objectives || study.objectives_json || [];
-  const constraints = study.constraints || optunaConfig.constraints || study.constraints_json || [];
+  const objectives = study.objectives ?? optunaConfig.objectives ?? study.objectives_json ?? [];
+  const constraints = study.constraints ?? optunaConfig.constraints ?? study.constraints_json ?? [];
   const sanitizeEnabledRaw = optunaConfig.sanitize_enabled ?? study.sanitize_enabled;
   const sanitizeEnabled = sanitizeEnabledRaw === undefined || sanitizeEnabledRaw === null
-    ? ResultsState.optuna.sanitizeEnabled
+    ? null
     : Boolean(sanitizeEnabledRaw);
   const sanitizeThresholdRaw = optunaConfig.sanitize_trades_threshold ?? study.sanitize_trades_threshold;
   const sanitizeThreshold = sanitizeThresholdRaw === undefined || sanitizeThresholdRaw === null
-    ? ResultsState.optuna.sanitizeTradesThreshold
+    ? null
     : sanitizeThresholdRaw;
   const filterMinProfitRaw = study.filter_min_profit ?? optunaConfig.filter_min_profit;
   const filterMinProfit = filterMinProfitRaw === undefined || filterMinProfitRaw === null
-    ? ResultsState.optuna.filterMinProfit
+    ? false
     : Boolean(filterMinProfitRaw);
   const minProfitThresholdRaw = study.min_profit_threshold ?? optunaConfig.min_profit_threshold;
   const minProfitThreshold = minProfitThresholdRaw === undefined || minProfitThresholdRaw === null
-    ? ResultsState.optuna.minProfitThreshold
+    ? null
     : minProfitThresholdRaw;
   const scoreConfig = study.score_config_json || optunaConfig.score_config || {};
   const scoreFilterRaw = scoreConfig ? scoreConfig.filter_enabled : null;
   const scoreFilterEnabled = scoreFilterRaw === undefined || scoreFilterRaw === null
-    ? ResultsState.optuna.scoreFilterEnabled
+    ? false
     : Boolean(scoreFilterRaw);
   const scoreThresholdRaw = scoreConfig ? scoreConfig.min_score_threshold : null;
   const scoreThreshold = scoreThresholdRaw === undefined || scoreThresholdRaw === null
-    ? ResultsState.optuna.scoreThreshold
+    ? null
     : scoreThresholdRaw;
   ResultsState.optuna = {
     objectives,
     primaryObjective,
     constraints,
-    budgetMode: optunaConfig.budget_mode || study.budget_mode || ResultsState.optuna.budgetMode,
-    nTrials: optunaConfig.n_trials || study.n_trials || ResultsState.optuna.nTrials,
-    timeLimit: optunaConfig.time_limit || study.time_limit || ResultsState.optuna.timeLimit,
-    convergence: optunaConfig.convergence_patience || study.convergence_patience || ResultsState.optuna.convergence,
+    budgetMode: optunaConfig.budget_mode ?? study.budget_mode ?? null,
+    nTrials: optunaConfig.n_trials ?? study.n_trials ?? null,
+    timeLimit: optunaConfig.time_limit ?? study.time_limit ?? null,
+    convergence: optunaConfig.convergence_patience ?? study.convergence_patience ?? null,
     sampler: (optunaConfig.sampler_config && optunaConfig.sampler_config.sampler_type)
       || optunaConfig.sampler_type
+      || optunaConfig.sampler
+      || config.sampler_type
       || study.sampler_type
-      || ResultsState.optuna.sampler,
-    pruner: optunaConfig.pruner || ResultsState.optuna.pruner,
-    workers: config.worker_processes || ResultsState.optuna.workers,
+      || null,
+    pruner: optunaConfig.pruner ?? null,
+    workers: config.worker_processes ?? null,
     sanitizeEnabled,
     sanitizeTradesThreshold: sanitizeThreshold,
     filterMinProfit,
     minProfitThreshold,
     scoreFilterEnabled,
     scoreThreshold,
-    optimizationTimeSeconds: study.optimization_time_seconds ?? ResultsState.optuna.optimizationTimeSeconds
+    optimizationTimeSeconds: study.optimization_time_seconds ?? null
   };
 
   updateResultsHeader();

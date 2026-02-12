@@ -362,6 +362,7 @@ def register_routes(app):
             "warmup_trials": int(getattr(optimization_config, "n_startup_trials", 20)),
             "save_study": bool(getattr(optimization_config, "optuna_save_study", False)),
         }
+        base_template["optuna_config"] = json.loads(json.dumps(optuna_settings))
 
         try:
             is_period_days = int(data.get("wf_is_period_days", 90))

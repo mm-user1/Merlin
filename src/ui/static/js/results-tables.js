@@ -99,6 +99,20 @@ function setElementVisible(id, visible) {
   if (el) el.style.display = visible ? 'block' : 'none';
 }
 
+function setSettingRowVisible(rowId, visible) {
+  const el = document.getElementById(rowId);
+  if (el) el.style.display = visible ? '' : 'none';
+}
+
+function setAdaptiveWfaRowsVisible(visible) {
+  setSettingRowVisible('wfa-max-oos-row', visible);
+  setSettingRowVisible('wfa-min-trades-row', visible);
+  setSettingRowVisible('wfa-check-interval-row', visible);
+  setSettingRowVisible('wfa-cusum-row', visible);
+  setSettingRowVisible('wfa-dd-mult-row', visible);
+  setSettingRowVisible('wfa-inactivity-row', visible);
+}
+
 function renderOptunaTable(results) {
   const tbody = document.querySelector('.data-table tbody');
   if (!tbody) return;
@@ -1145,8 +1159,12 @@ function updateSidebarSettings() {
     setElementVisible('wfa-settings-section', true);
     setText('wfa-is-days', ResultsState.wfa.isPeriodDays ?? ResultsState.wfa.is_period_days ?? '-');
     setText('wfa-oos-days', ResultsState.wfa.oosPeriodDays ?? ResultsState.wfa.oos_period_days ?? '-');
-    const adaptiveMode = Boolean(ResultsState.wfa.adaptiveMode ?? ResultsState.wfa.adaptive_mode);
-    setText('wfa-adaptive-mode', adaptiveMode ? 'On' : 'Off');
+    const adaptiveModeRaw = ResultsState.wfa.adaptiveMode ?? ResultsState.wfa.adaptive_mode;
+    const adaptiveModeLabel = adaptiveModeRaw === null || adaptiveModeRaw === undefined
+      ? '-'
+      : (Boolean(adaptiveModeRaw) ? 'On' : 'Off');
+    setText('wfa-adaptive-mode', adaptiveModeLabel);
+    setAdaptiveWfaRowsVisible(Boolean(adaptiveModeRaw));
     setText('wfa-max-oos-days', ResultsState.wfa.maxOosPeriodDays ?? ResultsState.wfa.max_oos_period_days ?? '-');
     setText('wfa-min-trades', ResultsState.wfa.minOosTrades ?? ResultsState.wfa.min_oos_trades ?? '-');
     setText('wfa-check-interval', ResultsState.wfa.checkIntervalTrades ?? ResultsState.wfa.check_interval_trades ?? '-');
@@ -1171,9 +1189,11 @@ function updateSidebarSettings() {
         ? Number(ResultsState.wfa.inactivityMultiplier ?? ResultsState.wfa.inactivity_multiplier).toFixed(2)
         : '-'
     );
+    setText('wfa-run-time', formatDuration(ResultsState.wfa.runTimeSeconds) || '-');
   } else {
     setElementVisible('wfa-progress-section', false);
     setElementVisible('wfa-settings-section', false);
+    setAdaptiveWfaRowsVisible(true);
   }
 
   setText('strategy-name', ResultsState.strategy.name || ResultsState.strategyId || '-');

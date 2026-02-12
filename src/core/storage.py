@@ -1082,10 +1082,25 @@ def save_wfa_study_to_db(
     objectives = []
     primary_objective = None
     constraints_payload: List[Dict[str, Any]] = []
+    optuna_config: Dict[str, Any] = {}
+    wfa_config: Dict[str, Any] = {}
     if isinstance(config, dict):
         objectives = list(config.get("objectives") or [])
         primary_objective = config.get("primary_objective")
         constraints_payload = list(config.get("constraints") or [])
+        optuna_candidate = config.get("optuna_config")
+        if isinstance(optuna_candidate, dict):
+            optuna_config = dict(optuna_candidate)
+        wfa_candidate = config.get("wfa")
+        if isinstance(wfa_candidate, dict):
+            wfa_config = dict(wfa_candidate)
+
+    optimization_time_seconds = None
+    if start_time:
+        try:
+            optimization_time_seconds = int(round(max(0, time.time() - float(start_time))))
+        except (TypeError, ValueError):
+            optimization_time_seconds = None
 
     with get_db_connection() as conn:
         try:
@@ -1133,6 +1148,9 @@ def save_wfa_study_to_db(
                 stitched_win_rate = getattr(stitched, "oos_win_rate", None)
 
             wf_cfg = getattr(wf_result, "config", None)
+            is_period_days = getattr(wf_cfg, "is_period_days", None)
+            if is_period_days is None:
+                is_period_days = wfa_config.get("is_period_days")
             adaptive_mode = 1 if bool(getattr(wf_cfg, "adaptive_mode", False)) else 0
             max_oos_period_days = getattr(wf_cfg, "max_oos_period_days", None)
             min_oos_trades = getattr(wf_cfg, "min_oos_trades", None)
@@ -1140,6 +1158,27 @@ def save_wfa_study_to_db(
             cusum_threshold = getattr(wf_cfg, "cusum_threshold", None)
             dd_threshold_multiplier = getattr(wf_cfg, "dd_threshold_multiplier", None)
             inactivity_multiplier = getattr(wf_cfg, "inactivity_multiplier", None)
+            sampler_type = (
+                optuna_config.get("sampler_type")
+                or optuna_config.get("sampler")
+                or (config.get("sampler_type") if isinstance(config, dict) else None)
+            )
+            population_size = optuna_config.get("population_size")
+            if population_size is None and isinstance(config, dict):
+                population_size = config.get("population_size")
+            crossover_prob = optuna_config.get("crossover_prob")
+            if crossover_prob is None and isinstance(config, dict):
+                crossover_prob = config.get("crossover_prob")
+            mutation_prob = optuna_config.get("mutation_prob")
+            if mutation_prob is None and isinstance(config, dict):
+                mutation_prob = config.get("mutation_prob")
+            swapping_prob = optuna_config.get("swapping_prob")
+            if swapping_prob is None and isinstance(config, dict):
+                swapping_prob = config.get("swapping_prob")
+            budget_mode = optuna_config.get("budget_mode")
+            n_trials = optuna_config.get("n_trials")
+            time_limit = optuna_config.get("time_limit")
+            convergence_patience = optuna_config.get("convergence_patience")
 
             conn.execute(
                 """
@@ -1155,16 +1194,18 @@ def save_wfa_study_to_db(
                     score_config_json, config_json,
                     csv_file_path, csv_file_name,
                     dataset_start_date, dataset_end_date, warmup_bars,
+                    is_period_days,
                     adaptive_mode, max_oos_period_days, min_oos_trades,
                     check_interval_trades, cusum_threshold,
                     dd_threshold_multiplier, inactivity_multiplier,
+                    optimization_time_seconds,
                     completed_at,
                     filter_min_profit, min_profit_threshold,
                     stitched_oos_equity_curve, stitched_oos_timestamps_json,
                     stitched_oos_window_ids_json, stitched_oos_net_profit_pct,
                     stitched_oos_max_drawdown_pct, stitched_oos_total_trades,
                     stitched_oos_win_rate
-                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """,
                 (
                     study_id,
@@ -1177,15 +1218,15 @@ def save_wfa_study_to_db(
                     None,
                     primary_objective,
                     json.dumps(constraints_payload) if constraints_payload else None,
-                    None,
-                    None,
-                    None,
-                    None,
-                    None,
-                    None,
-                    None,
-                    None,
-                    None,
+                    sampler_type,
+                    population_size,
+                    crossover_prob,
+                    mutation_prob,
+                    swapping_prob,
+                    budget_mode,
+                    n_trials,
+                    time_limit,
+                    convergence_patience,
                     wf_result.total_windows,
                     wf_result.total_windows,
                     0,
@@ -1199,6 +1240,7 @@ def save_wfa_study_to_db(
                     _format_date(wf_result.trading_start_date),
                     _format_date(wf_result.trading_end_date),
                     wf_result.warmup_bars,
+                    is_period_days,
                     adaptive_mode,
                     max_oos_period_days,
                     min_oos_trades,
@@ -1206,6 +1248,7 @@ def save_wfa_study_to_db(
                     cusum_threshold,
                     dd_threshold_multiplier,
                     inactivity_multiplier,
+                    optimization_time_seconds,
                     _utc_now_iso(),
                     1 if isinstance(config, dict) and config.get("filter_min_profit") else 0,
                     config.get("min_profit_threshold") if isinstance(config, dict) else None,
