@@ -112,6 +112,9 @@ function applyPresetValues(values, { clearResults = false } = {}) {
   syncMinProfitFilterUI();
   syncScoreFilterUI();
   updateScoreFormulaPreview();
+  if (typeof window.updateDatasetPreview === 'function') {
+    window.updateDatasetPreview();
+  }
 }
 
 function updateDefaults(values) {

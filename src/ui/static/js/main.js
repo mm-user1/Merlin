@@ -293,6 +293,35 @@ document.addEventListener('DOMContentLoaded', async () => {
     window.OosTestUI.bind();
   }
 
+  // Dataset Timeline Preview - bind listeners and initial render.
+  if (typeof window.updateDatasetPreview === 'function') {
+    const triggerDatasetPreviewUpdate = () => {
+      if (typeof window.requestAnimationFrame === 'function') {
+        window.requestAnimationFrame(() => window.updateDatasetPreview());
+      } else {
+        window.setTimeout(() => window.updateDatasetPreview(), 0);
+      }
+    };
+
+    const previewTriggerIds = [
+      'dateFilter', 'startDate', 'endDate',
+      'enableWF', 'enableAdaptiveWF', 'wfIsPeriodDays', 'wfOosPeriodDays',
+      'enablePostProcess', 'ftPeriodDays',
+      'enableOosTest', 'oosPeriodDays'
+    ];
+
+    previewTriggerIds.forEach((id) => {
+      const element = document.getElementById(id);
+      if (!element) return;
+      const eventType = element.type === 'checkbox'
+        ? 'change'
+        : (element.type === 'number' ? 'input' : 'change');
+      element.addEventListener(eventType, triggerDatasetPreviewUpdate);
+    });
+
+    triggerDatasetPreviewUpdate();
+  }
+
   await initializePresets();
 });
 
