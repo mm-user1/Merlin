@@ -14,6 +14,7 @@ Primary goals from the v2 plan were implemented with additional reliability hard
 - Constraint tooltip operator rendering fixed.
 - Label numbering uniqueness fixed.
 - Queue source handling supports both absolute paths and browser file uploads.
+- Post-audit cleanup removed redundant queue logic without reducing reliability.
 
 No backend routes were modified.
 
@@ -49,6 +50,13 @@ The implementation addresses the key previously identified issues:
    - cancellation between items still persists `status: cancelled`
    - all-failed queue runs persist `status: error` (not `completed`)
 
+8. **Post-audit code cleanup (items 1-5)**  
+   Applied targeted cleanup:
+   - removed duplicate cancelled state update in `runQueue()`
+   - removed duplicate cancel endpoint call from `submitOptimization()`
+   - removed unused legacy helper and fixed garbled queue error text
+   - removed legacy `csvPaths` migration fallback paths (queue now uses `sources[]` schema only)
+
 ## 3. Implemented Changes
 
 ## 3.1 New file
@@ -59,9 +67,7 @@ Implemented queue management end-to-end:
 
 - Storage and migration-safe loading:
   - `loadQueue()`, `saveQueue()`, `normalizeQueueItem()`
-  - Schema: `{ items, nextIndex }` with source model migration:
-    - legacy: `csvPaths[]`
-    - current: `sources[]` (`path` / `file`)
+  - Schema: `{ items, nextIndex }` with `sources[]` source model (`path` / `file`)
 - Validation and collection:
   - `collectQueueSources()`, `collectQueueItem()`
   - Auto-detects and stores:
@@ -90,7 +96,7 @@ Implemented queue management end-to-end:
   - `submitOptimization()` now:
     - Detects non-empty queue
     - Starts queue when idle
-    - Cancels queue when running (abort + best-effort server cancel API call)
+    - Cancels queue when running (abort only; queue runner performs best-effort server cancel once)
 
 - `src/ui/static/js/main.js`
   - Added queue initialization in `DOMContentLoaded`.
@@ -148,7 +154,6 @@ Implemented queue management end-to-end:
   - `PATH`: absolute filesystem path; request payload uses `csvPath`
   - `FILE`: browser-selected file blob; request payload uses multipart `file`
 - Mode selection is automatic during queue item collection.
-- Legacy queue entries using `csvPaths[]` are migrated to `sources[]` on load/save.
 
 ## 4.7 Queue File Blob Lifecycle
 
@@ -178,12 +183,12 @@ Result:
 Command:
 
 ```powershell
-py -m pytest -q tests/test_sanity.py tests/test_server.py tests/test_storage.py tests/test_walkforward.py
+C:\Users\mt\Desktop\Strategy\S_Python\.venv\Scripts\python.exe -m pytest -q tests/test_sanity.py tests/test_server.py tests/test_storage.py tests/test_walkforward.py
 ```
 
 Result:
 
-- `43 passed in 1.80s`
+- `43 passed in 1.95s`
 
 Notes:
 
@@ -194,35 +199,27 @@ Notes:
 Command:
 
 ```powershell
-py -m pytest -q
+C:\Users\mt\Desktop\Strategy\S_Python\.venv\Scripts\python.exe -m pytest -q
 ```
 
 Result:
 
-- `178 passed, 2 failed, 3 warnings` (27.27s)
-- Failing tests:
-  - `tests/test_dsr.py::test_calculate_expected_max_sharpe_basic`
-  - `tests/test_dsr.py::test_calculate_dsr_high_sharpe_track_length`
-- Failure cause in logs: missing SciPy dependency (`No module named 'scipy'`), which is unrelated to queue/frontend changes.
+- `180 passed, 3 warnings` (30.94s)
 
 ## 6. Errors Encountered During Implementation
 
-1. `pytest` command not available directly in shell (`pytest` not found).  
-   Resolved by using Python launcher:
-   - `py -m pytest ...`
-
-2. `python -m pytest` pointed to Windows Store stub path and was not reliable in this environment.  
-   Resolved by using `py` launcher explicitly.
-
-3. Full test suite includes DSR tests that require SciPy in this environment.  
-   Two DSR tests failed due missing optional dependency (`scipy`), not due queue implementation changes.
-
-4. During final audit, one queue terminal-state edge case was found and fixed in `runQueue()`:
+1. During final audit, one queue terminal-state edge case was found and fixed in `runQueue()`:
    - cancellation between items could leave stale `running` state
    - all-failed queue runs could incorrectly persist `completed`
 
-5. Browser file picker does not always expose absolute paths.  
+2. Browser file picker does not always expose absolute paths.  
    Resolved by introducing dual source model with IndexedDB-backed file storage for queue mode.
+
+3. Post-audit cleanup removed redundant/legacy code paths while preserving behavior:
+   - duplicate cancel endpoint call removed
+   - duplicate cancelled state update removed
+   - legacy `csvPaths` fallback removed
+   - garbled UI string corrected
 
 No code-level runtime or syntax errors remained after final verification.
 

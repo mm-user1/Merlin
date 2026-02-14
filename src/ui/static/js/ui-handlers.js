@@ -1289,13 +1289,6 @@ async function submitOptimization(event) {
       if (window.optimizationAbortController) {
         window.optimizationAbortController.abort();
       }
-      if (typeof cancelOptimizationRequest === 'function') {
-        try {
-          await cancelOptimizationRequest();
-        } catch (error) {
-          console.warn('Queue cancel: failed to notify server cancel endpoint', error);
-        }
-      }
       return;
     }
     await runQueue();

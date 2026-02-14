@@ -53,12 +53,6 @@ function buildSourceModeLabel(source) {
 }
 
 function normalizeQueueSource(rawSource, fallbackIndex) {
-  if (typeof rawSource === 'string') {
-    const path = rawSource.trim();
-    if (!path) return null;
-    return { type: 'path', path };
-  }
-
   if (!rawSource || typeof rawSource !== 'object') return null;
   const type = rawSource.type === 'file' ? 'file' : 'path';
 
@@ -86,9 +80,7 @@ function normalizeQueueSource(rawSource, fallbackIndex) {
 function getQueueSources(item) {
   if (!item || typeof item !== 'object') return [];
 
-  const rawSources = Array.isArray(item.sources)
-    ? item.sources
-    : (Array.isArray(item.csvPaths) ? item.csvPaths : []);
+  const rawSources = Array.isArray(item.sources) ? item.sources : [];
 
   const sources = [];
   rawSources.forEach((source, index) => {
@@ -146,8 +138,6 @@ function normalizeQueueItem(raw, fallbackIndex) {
     index,
     sources: cloneSourcesForStorage(sources)
   };
-
-  delete item.csvPaths;
 
   const cursorRaw = Number(raw.sourceCursor);
   item.sourceCursor = Number.isFinite(cursorRaw)
@@ -370,12 +360,6 @@ async function cleanupStaleQueueFiles() {
   }
 }
 
-function buildLegacyPathSource(path) {
-  const value = String(path || '').trim();
-  if (!value) return null;
-  return { type: 'path', path: value };
-}
-
 function setQueueControlsDisabled(disabled) {
   const addBtn = document.getElementById('addToQueueBtn');
   const clearBtn = document.getElementById('clearQueueBtn');
@@ -440,13 +424,12 @@ function collectQueueSources(itemId) {
     const fallback = String(window.selectedCsvPath || '').trim();
     if (!fallback) return [];
     if (isAbsoluteFilesystemPath(fallback)) {
-      const source = buildLegacyPathSource(fallback);
-      if (source) sources.push(source);
+      sources.push({ type: 'path', path: fallback });
       return sources;
     }
     showQueueError(
       'Queue cannot use a relative saved CSV name without file content.\n'
-      + 'Please reselect CSV files using "Выбрать файлы" before adding to queue.'
+      + 'Please reselect CSV files using "Choose files" before adding to queue.'
     );
     return null;
   }
@@ -1146,14 +1129,6 @@ async function runQueue() {
           cancelNotified = true;
           await requestServerCancelBestEffort();
         }
-        updateOptimizationState({
-          status: 'cancelled',
-          mode: lastMode,
-          study_id: lastStudyId,
-          summary: lastSummary || {},
-          dataPath: lastDataPath,
-          strategyId: lastStrategyId
-        });
         break;
       }
 
@@ -1272,3 +1247,5 @@ function initQueue() {
   updateRunButtonState();
   void cleanupStaleQueueFiles();
 }
+
+
