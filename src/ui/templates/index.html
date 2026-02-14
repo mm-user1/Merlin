@@ -872,6 +872,25 @@
               </div>
             </div>
 
+            <div
+              class="wf-section"
+              id="queueSection"
+              style="margin-top: 0; margin-bottom: 16px; padding: 20px; border: 2px solid #3498db; border-radius: 8px; background-color: #f8f9fa;"
+            >
+              <h3 style="color: #3498db; margin-bottom: 12px;">Run Queue</h3>
+
+              <div id="queueEmptyState" class="queue-empty-state">
+                Configure settings and click "Add to Queue" to schedule runs.
+              </div>
+
+              <div id="queueItemsList" class="queue-items-list" style="display: none;"></div>
+
+              <div class="queue-actions" style="margin-top: 12px; display: flex; gap: 8px;">
+                <button type="button" id="addToQueueBtn" class="secondary">+ Add to Queue</button>
+                <button type="button" id="clearQueueBtn" class="secondary" style="display: none;">Clear</button>
+              </div>
+            </div>
+
             <div class="opt-actions" style="margin-top: 20px;">
               <button type="button" id="runOptimizationBtn" onclick="document.getElementById('optimizerForm').requestSubmit()">Run Optimization</button>
             </div>
@@ -917,6 +936,7 @@
   <script src="/static/js/presets.js"></script>
   <script src="/static/js/post-process-ui.js"></script>
   <script src="/static/js/oos-test-ui.js"></script>
+  <script src="/static/js/queue.js"></script>
   <script src="/static/js/dataset-preview.js"></script>
   <script src="/static/js/main.js"></script>
 </body>

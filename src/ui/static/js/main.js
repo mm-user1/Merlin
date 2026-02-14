@@ -175,6 +175,29 @@ document.addEventListener('DOMContentLoaded', async () => {
     });
   }
 
+  if (typeof initQueue === 'function') {
+    initQueue();
+  }
+
+  const addToQueueBtn = document.getElementById('addToQueueBtn');
+  if (addToQueueBtn && typeof collectQueueItem === 'function' && typeof addToQueue === 'function') {
+    addToQueueBtn.addEventListener('click', async () => {
+      const item = collectQueueItem();
+      if (item) {
+        await addToQueue(item);
+      }
+    });
+  }
+
+  const clearQueueBtn = document.getElementById('clearQueueBtn');
+  if (clearQueueBtn && typeof clearQueue === 'function') {
+    clearQueueBtn.addEventListener('click', async () => {
+      if (window.confirm('Clear all items from the queue?')) {
+        await clearQueue();
+      }
+    });
+  }
+
   const csvFileInputEl = document.getElementById('csvFile');
   if (csvFileInputEl) {
     csvFileInputEl.addEventListener('change', () => {

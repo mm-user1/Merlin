@@ -1282,6 +1282,26 @@ async function runBacktestAndDownloadTrades(event) {
 async function submitOptimization(event) {
 
   event.preventDefault();
+
+  const queue = typeof loadQueue === 'function' ? loadQueue() : { items: [] };
+  if (queue.items.length > 0 && typeof runQueue === 'function') {
+    if (typeof isQueueRunning === 'function' && isQueueRunning()) {
+      if (window.optimizationAbortController) {
+        window.optimizationAbortController.abort();
+      }
+      if (typeof cancelOptimizationRequest === 'function') {
+        try {
+          await cancelOptimizationRequest();
+        } catch (error) {
+          console.warn('Queue cancel: failed to notify server cancel endpoint', error);
+        }
+      }
+      return;
+    }
+    await runQueue();
+    return;
+  }
+
   const optimizerResultsEl = document.getElementById('optimizerResults');
   const progressContainer = document.getElementById('optimizerProgress');
   const optunaProgress = document.getElementById('optunaProgress');
