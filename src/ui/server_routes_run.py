@@ -195,8 +195,15 @@ def register_routes(app):
                 original_csv_name = Path(resolved_path).name
             else:
                 return jsonify({"error": "CSV file is required."}), HTTPStatus.BAD_REQUEST
-        except (FileNotFoundError, IsADirectoryError, ValueError):
-            return jsonify({"error": "CSV file is required."}), HTTPStatus.BAD_REQUEST
+        except FileNotFoundError:
+            return jsonify({"error": "CSV file not found."}), HTTPStatus.BAD_REQUEST
+        except IsADirectoryError:
+            return jsonify({"error": "CSV path must point to a file."}), HTTPStatus.BAD_REQUEST
+        except PermissionError as exc:
+            return jsonify({"error": str(exc)}), HTTPStatus.FORBIDDEN
+        except ValueError as exc:
+            message = str(exc).strip() or "CSV file is required."
+            return jsonify({"error": message}), HTTPStatus.BAD_REQUEST
         except OSError:
             return jsonify({"error": "Failed to access CSV file."}), HTTPStatus.BAD_REQUEST
 
@@ -668,8 +675,11 @@ def register_routes(app):
                 return ("CSV file not found.", HTTPStatus.BAD_REQUEST)
             except IsADirectoryError:
                 return ("CSV path must point to a file.", HTTPStatus.BAD_REQUEST)
-            except ValueError:
-                return ("CSV file is required.", HTTPStatus.BAD_REQUEST)
+            except PermissionError as exc:
+                return (str(exc), HTTPStatus.FORBIDDEN)
+            except ValueError as exc:
+                message = str(exc).strip() or "CSV file is required."
+                return (message, HTTPStatus.BAD_REQUEST)
             except OSError:
                 return ("Failed to access CSV file.", HTTPStatus.BAD_REQUEST)
             data_source = str(resolved_path)

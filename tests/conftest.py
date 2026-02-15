@@ -80,3 +80,25 @@ def isolate_storage_for_test_session():
         _cleanup_dir(root)
         if TMP_TEST_DB_ROOT.exists() and not any(TMP_TEST_DB_ROOT.iterdir()):
             _cleanup_dir(TMP_TEST_DB_ROOT)
+
+
+@pytest.fixture(scope="session", autouse=True)
+def allow_test_csv_roots():
+    """
+    In tests, permit CSV paths under the repository working directory.
+
+    Production policy still uses configured roots; this only adjusts test runtime
+    globals to keep fixtures and sample data accessible.
+    """
+    try:
+        from ui import server_services
+    except Exception:
+        yield
+        return
+
+    original_roots = list(server_services.CSV_ALLOWED_ROOTS)
+    try:
+        server_services.CSV_ALLOWED_ROOTS = [Path.cwd().resolve()]
+        yield
+    finally:
+        server_services.CSV_ALLOWED_ROOTS = original_roots

@@ -328,9 +328,8 @@
       <div class="modal-body">
         <p><strong>File:</strong> <span id="missingCsvName">Unknown</span></p>
         <p><strong>Original path:</strong> <span id="missingCsvPath">Unknown</span></p>
-        <p class="modal-note">Select the CSV file or paste a new path to continue.</p>
-        <input type="file" id="missingCsvFile" accept=".csv" />
-        <input type="text" id="missingCsvInput" placeholder="Or paste CSV path" />
+        <p class="modal-note">Provide an absolute CSV path to continue.</p>
+        <input type="text" id="missingCsvInput" placeholder="C:\\path\\to\\dataset.csv" />
       </div>
       <div class="modal-actions">
         <button class="btn btn-primary" id="missingCsvUpdate">Update</button>
@@ -357,7 +356,7 @@
               New CSV
             </label>
           </div>
-          <input type="file" id="manualDataFile" accept=".csv" />
+          <input type="text" id="manualDataPath" placeholder="Absolute path: C:\\path\\to\\dataset.csv" />
         </div>
 
         <div class="modal-section">

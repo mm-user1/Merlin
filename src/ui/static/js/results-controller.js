@@ -40,6 +40,15 @@ function parseTimeframeToMinutes(value) {
   return Number.POSITIVE_INFINITY;
 }
 
+function isAbsoluteFilesystemPath(path) {
+  const value = String(path || '').trim();
+  if (!value) return false;
+  if (/^[A-Za-z]:[\\/]/.test(value)) return true; // Windows drive path
+  if (/^\\\\[^\\]/.test(value)) return true; // UNC path
+  if (value.startsWith('/')) return true; // POSIX path
+  return false;
+}
+
 function extractDatasetPrefixFromStudy(study) {
   const csvFileName = String(study?.csv_file_name || '').trim();
   const source = csvFileName || String(study?.study_name || '').trim();
@@ -946,7 +955,9 @@ function showMissingCsvDialog(studyId, originalPath, originalName) {
 
 function hideMissingCsvDialog() {
   const modal = document.getElementById('missingCsvModal');
+  const pathInput = document.getElementById('missingCsvInput');
   if (modal) modal.classList.remove('show');
+  if (pathInput) pathInput.value = '';
   MissingCsvState.studyId = '';
   MissingCsvState.originalPath = '';
   MissingCsvState.originalName = '';
@@ -956,7 +967,6 @@ function bindMissingCsvDialog() {
   const modal = document.getElementById('missingCsvModal');
   const cancelBtn = document.getElementById('missingCsvCancel');
   const updateBtn = document.getElementById('missingCsvUpdate');
-  const fileInput = document.getElementById('missingCsvFile');
   const pathInput = document.getElementById('missingCsvInput');
 
   if (cancelBtn) {
@@ -969,15 +979,16 @@ function bindMissingCsvDialog() {
     updateBtn.addEventListener('click', async () => {
       if (!MissingCsvState.studyId) return;
       const formData = new FormData();
-      if (fileInput && fileInput.files && fileInput.files.length) {
-        const file = fileInput.files[0];
-        formData.append('file', file, file.name);
-      } else if (pathInput && pathInput.value) {
-        formData.append('csvPath', pathInput.value.trim());
-      } else {
-        alert('Select a CSV file or provide a path.');
+      const csvPath = pathInput ? pathInput.value.trim() : '';
+      if (!csvPath) {
+        alert('Provide an absolute CSV path.');
         return;
       }
+      if (!isAbsoluteFilesystemPath(csvPath)) {
+        alert('CSV path must be absolute.');
+        return;
+      }
+      formData.append('csvPath', csvPath);
 
       try {
         const response = await updateStudyCsvPathRequest(MissingCsvState.studyId, formData);
@@ -1281,15 +1292,15 @@ function toggleStudySelection(studyId) {
 function openManualTestModal() {
   const modal = document.getElementById('manualTestModal');
   const selectedLabel = document.getElementById('manualSelectedLabel');
-  const dataFile = document.getElementById('manualDataFile');
+  const dataPath = document.getElementById('manualDataPath');
   const dataOriginal = document.getElementById('manualDataOriginal');
   if (selectedLabel) {
     selectedLabel.textContent = ResultsState.selectedRowId
       ? `Trial #${ResultsState.selectedRowId}`
       : 'Trial # -';
   }
-  if (dataFile && dataOriginal) {
-    dataFile.disabled = dataOriginal.checked;
+  if (dataPath && dataOriginal) {
+    dataPath.disabled = dataOriginal.checked;
   }
   if (modal) modal.classList.add('show');
 }
@@ -1302,10 +1313,10 @@ function closeManualTestModal() {
 function bindManualDataSourceToggle() {
   const dataOriginal = document.getElementById('manualDataOriginal');
   const dataNew = document.getElementById('manualDataNew');
-  const dataFile = document.getElementById('manualDataFile');
-  if (!dataFile) return;
+  const dataPath = document.getElementById('manualDataPath');
+  if (!dataPath) return;
   const sync = () => {
-    dataFile.disabled = dataOriginal && dataOriginal.checked;
+    dataPath.disabled = dataOriginal && dataOriginal.checked;
   };
   if (dataOriginal) dataOriginal.addEventListener('change', sync);
   if (dataNew) dataNew.addEventListener('change', sync);
@@ -1330,7 +1341,7 @@ function getManualTrialNumbers() {
 
 async function runManualTestFromModal() {
   const dataOriginal = document.getElementById('manualDataOriginal');
-  const dataFile = document.getElementById('manualDataFile');
+  const dataPathInput = document.getElementById('manualDataPath');
   const startInput = document.getElementById('manualStartDate');
   const endInput = document.getElementById('manualEndDate');
 
@@ -1346,14 +1357,13 @@ async function runManualTestFromModal() {
 
   let csvPath = null;
   if (dataSource === 'new_csv') {
-    const file = dataFile && dataFile.files && dataFile.files[0];
-    if (!file) {
-      alert('Select a CSV file for the manual test.');
+    csvPath = dataPathInput ? dataPathInput.value.trim() : '';
+    if (!csvPath) {
+      alert('Provide an absolute CSV path for the manual test.');
       return;
     }
-    csvPath = file.path || file.name || '';
-    if (!csvPath) {
-      alert('Unable to resolve CSV path for the selected file.');
+    if (!isAbsoluteFilesystemPath(csvPath)) {
+      alert('CSV path must be absolute.');
       return;
     }
   }

@@ -115,7 +115,7 @@ DEFAULT_CSV_ROOT = (
     or r"C:\Users\mt\Desktop\Strategy\S_Python\Market Data_PY"
 ).strip()
 CSV_ALLOWED_ROOTS = _collect_allowed_csv_roots(DEFAULT_CSV_ROOT)
-STRICT_CSV_PATH_MODE = _parse_env_bool("MERLIN_STRICT_CSV_PATH_MODE", False)
+STRICT_CSV_PATH_MODE = _parse_env_bool("MERLIN_STRICT_CSV_PATH_MODE", True)
 
 
 def _is_csv_path_allowed(path: Path) -> bool:
@@ -280,8 +280,11 @@ def _execute_backtest_request(strategy_id: str) -> Tuple[Optional[Dict[str, Any]
             return None, ("CSV file not found.", HTTPStatus.BAD_REQUEST)
         except IsADirectoryError:
             return None, ("CSV path must point to a file.", HTTPStatus.BAD_REQUEST)
-        except ValueError:
-            return None, ("CSV file is required.", HTTPStatus.BAD_REQUEST)
+        except PermissionError as exc:
+            return None, (str(exc), HTTPStatus.FORBIDDEN)
+        except ValueError as exc:
+            message = str(exc).strip() or "CSV file is required."
+            return None, (message, HTTPStatus.BAD_REQUEST)
         except OSError:
             return None, ("Failed to access CSV file.", HTTPStatus.BAD_REQUEST)
         try:
@@ -1025,13 +1028,15 @@ def _resolve_csv_path(raw_path: str) -> Path:
         raise ValueError("CSV path is empty.")
     candidate = Path(raw_value).expanduser()
     if not candidate.is_absolute():
-        candidate = Path.cwd() / candidate
+        raise ValueError("CSV path must be absolute.")
     try:
         resolved = candidate.resolve(strict=True)
     except FileNotFoundError as exc:
         raise FileNotFoundError(str(candidate)) from exc
     if not resolved.is_file():
         raise IsADirectoryError(str(resolved))
+    if not _is_csv_path_allowed(resolved):
+        raise PermissionError("CSV path is outside allowed roots.")
     return resolved
 
 
