@@ -64,12 +64,15 @@ from core.storage import (
 try:
     from .server_services import (
         DEFAULT_PRESET_NAME,
+        DEFAULT_CSV_ROOT,
+        STRICT_CSV_PATH_MODE,
         _build_optimization_config,
         _build_trial_metrics,
         _find_wfa_window,
         _get_optimization_state,
         _get_parameter_types,
         _json_safe,
+        _list_csv_directory,
         _list_presets,
         _load_preset,
         _normalize_preset_payload,
@@ -94,12 +97,15 @@ try:
 except ImportError:
     from server_services import (
         DEFAULT_PRESET_NAME,
+        DEFAULT_CSV_ROOT,
+        STRICT_CSV_PATH_MODE,
         _build_optimization_config,
         _build_trial_metrics,
         _find_wfa_window,
         _get_optimization_state,
         _get_parameter_types,
         _json_safe,
+        _list_csv_directory,
         _list_presets,
         _load_preset,
         _normalize_preset_payload,
@@ -183,6 +189,25 @@ def register_routes(app):
     @app.route("/results")
     def results_page() -> object:
         return render_template("results.html")
+
+
+    @app.get("/api/csv/browse")
+    def browse_csv_directory() -> object:
+        raw_path = (request.args.get("path") or "").strip()
+        target_path = raw_path or DEFAULT_CSV_ROOT
+        try:
+            payload = _list_csv_directory(target_path)
+        except FileNotFoundError:
+            return jsonify({"error": f"Directory not found: {target_path}"}), HTTPStatus.BAD_REQUEST
+        except NotADirectoryError:
+            return jsonify({"error": f"Path is not a directory: {target_path}"}), HTTPStatus.BAD_REQUEST
+        except PermissionError:
+            return jsonify({"error": "Directory is outside allowed roots."}), HTTPStatus.FORBIDDEN
+        except ValueError as exc:
+            return jsonify({"error": str(exc)}), HTTPStatus.BAD_REQUEST
+        except OSError:
+            return jsonify({"error": "Failed to access CSV directory."}), HTTPStatus.BAD_REQUEST
+        return jsonify(payload)
 
 
     @app.get("/api/databases")
@@ -278,6 +303,16 @@ def register_routes(app):
             csv_path_raw = request.form.get("csvPath")
 
         if csv_file and csv_file.filename:
+            if STRICT_CSV_PATH_MODE:
+                return (
+                    jsonify({
+                        "error": (
+                            "Direct CSV upload is disabled in strict path mode. "
+                            "Use an absolute csvPath from your CSV directory."
+                        )
+                    }),
+                    HTTPStatus.BAD_REQUEST,
+                )
             new_path = _persist_csv_upload(csv_file)
         elif csv_path_raw:
             try:

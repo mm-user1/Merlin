@@ -62,6 +62,7 @@ from core.storage import (
 try:
     from .server_services import (
         DEFAULT_PRESET_NAME,
+        STRICT_CSV_PATH_MODE,
         _build_optimization_config,
         _build_trial_metrics,
         _execute_backtest_request,
@@ -92,6 +93,7 @@ try:
 except ImportError:
     from server_services import (
         DEFAULT_PRESET_NAME,
+        STRICT_CSV_PATH_MODE,
         _build_optimization_config,
         _build_trial_metrics,
         _execute_backtest_request,
@@ -173,6 +175,16 @@ def register_routes(app):
 
         try:
             if csv_file and csv_file.filename:
+                if STRICT_CSV_PATH_MODE:
+                    return (
+                        jsonify({
+                            "error": (
+                                "Direct CSV upload is disabled in strict path mode. "
+                                "Set CSV Directory and select files via Choose Files."
+                            )
+                        }),
+                        HTTPStatus.BAD_REQUEST,
+                    )
                 data_path = _persist_csv_upload(csv_file)
                 data_source = data_path
                 original_csv_name = csv_file.filename
@@ -640,6 +652,12 @@ def register_routes(app):
         source_name = ""
 
         if csv_file and csv_file.filename:
+            if STRICT_CSV_PATH_MODE:
+                return (
+                    "Direct CSV upload is disabled in strict path mode. "
+                    "Set CSV Directory and select files via Choose Files.",
+                    HTTPStatus.BAD_REQUEST,
+                )
             data_path = _persist_csv_upload(csv_file)
             data_source = data_path
             source_name = csv_file.filename

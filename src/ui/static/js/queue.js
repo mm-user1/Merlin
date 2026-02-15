@@ -382,59 +382,30 @@ function requestServerCancelBestEffort() {
 }
 
 function collectQueueSources(itemId) {
-  const fileInput = document.getElementById('csvFile');
-  const files = fileInput ? Array.from(fileInput.files || []) : [];
+  void itemId;
+  const paths = typeof getSelectedCsvPaths === 'function'
+    ? getSelectedCsvPaths()
+    : (window.selectedCsvPath ? [window.selectedCsvPath] : []);
   const sources = [];
   const seen = new Set();
 
-  if (files.length > 0) {
-    files.forEach((file, index) => {
-      const candidatePath = String((file && file.path) || '').trim();
-      if (candidatePath && isAbsoluteFilesystemPath(candidatePath)) {
-        const identity = 'path:' + candidatePath.toLowerCase();
-        if (seen.has(identity)) return;
-        seen.add(identity);
-        sources.push({
-          type: 'path',
-          path: candidatePath
-        });
-        return;
-      }
-
-      const name = String((file && file.name) || ('source_' + (index + 1) + '.csv')).trim();
-      const size = Number(file && file.size) || 0;
-      const lastModified = Number(file && file.lastModified) || 0;
-      const identity = ['file', name, size, lastModified].join(':');
-      if (seen.has(identity)) return;
-      seen.add(identity);
-
-      sources.push({
-        type: 'file',
-        fileKey: makeQueueFileKey(itemId, index, name),
-        name,
-        size,
-        lastModified,
-        _file: file
-      });
-    });
-    return sources;
-  }
-
-  if (window.selectedCsvPath) {
-    const fallback = String(window.selectedCsvPath || '').trim();
-    if (!fallback) return [];
-    if (isAbsoluteFilesystemPath(fallback)) {
-      sources.push({ type: 'path', path: fallback });
-      return sources;
+  paths.forEach((path) => {
+    const value = String(path || '').trim();
+    if (!value) return;
+    if (!isAbsoluteFilesystemPath(value)) {
+      showQueueError(
+        'Queue requires absolute CSV paths.\n'
+        + 'Set CSV Directory and choose files from the browser before adding to queue.'
+      );
+      return;
     }
-    showQueueError(
-      'Queue cannot use a relative saved CSV name without file content.\n'
-      + 'Please reselect CSV files using "Choose files" before adding to queue.'
-    );
-    return null;
-  }
+    const identity = 'path:' + value.toLowerCase();
+    if (seen.has(identity)) return;
+    seen.add(identity);
+    sources.push({ type: 'path', path: value });
+  });
 
-  return [];
+  return sources;
 }
 
 async function persistQueueFilesForItem(item) {
@@ -483,7 +454,7 @@ function collectQueueItem() {
   if (!sources.length) {
     showQueueError(
       'Please select at least one CSV file before adding to queue.\n\n'
-      + 'Queue supports either absolute filesystem paths or browser-selected file data.'
+      + 'Set CSV Directory and use Choose Files to add data sources.'
     );
     return null;
   }

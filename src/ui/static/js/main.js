@@ -198,19 +198,31 @@ document.addEventListener('DOMContentLoaded', async () => {
     });
   }
 
-  const csvFileInputEl = document.getElementById('csvFile');
-  if (csvFileInputEl) {
-    csvFileInputEl.addEventListener('change', () => {
-      const files = Array.from(csvFileInputEl.files || []);
-      if (files.length) {
-        const firstFile = files[0];
-        const derivedPath = (firstFile && (firstFile.path || firstFile.webkitRelativePath)) || '';
-        const fallbackName = firstFile && firstFile.name ? firstFile.name : '';
-        window.selectedCsvPath = (derivedPath || fallbackName || '').trim();
-      } else {
-        window.selectedCsvPath = '';
+  if (typeof bindCsvBrowserControls === 'function') {
+    bindCsvBrowserControls();
+  }
+
+  const chooseCsvBtnEl = document.getElementById('chooseCsvBtn');
+  if (chooseCsvBtnEl && typeof openCsvBrowserModal === 'function') {
+    chooseCsvBtnEl.addEventListener('click', () => {
+      openCsvBrowserModal();
+    });
+  }
+
+  const csvDirectoryEl = document.getElementById('csvDirectory');
+  if (csvDirectoryEl && typeof openCsvBrowserModal === 'function') {
+    csvDirectoryEl.addEventListener('keydown', (event) => {
+      if (event.key === 'Enter') {
+        event.preventDefault();
+        openCsvBrowserModal();
       }
-      renderSelectedFiles(files);
+    });
+  }
+
+  const clearSelectedCsvBtnEl = document.getElementById('clearSelectedCsvBtn');
+  if (clearSelectedCsvBtnEl && typeof setSelectedCsvPaths === 'function') {
+    clearSelectedCsvBtnEl.addEventListener('click', () => {
+      setSelectedCsvPaths([]);
     });
   }
 

@@ -99,10 +99,27 @@
                 <div id="datasetPreview" class="dataset-preview"></div>
 
                 <div class="form-group vertical">
-                  <label for="csvFile">CSV файл (OHLCV)</label>
-                  <input type="file" id="csvFile" accept=".csv" multiple />
+                  <label for="csvDirectory">CSV data directory</label>
+                  <div class="csv-directory-row">
+                    <input
+                      type="text"
+                      id="csvDirectory"
+                      value="C:\Users\mt\Desktop\Strategy\S_Python\Market Data_PY\base_pack_1"
+                      autocomplete="off"
+                    />
+                    <button type="button" id="chooseCsvBtn" class="btn-secondary">Choose Files</button>
+                  </div>
+                  <div class="csv-directory-note">
+                    Select files from the directory browser. Use Ctrl/Shift-click for multi-select.
+                  </div>
                   <div id="selectedFilesWrapper" class="selected-files">
-                    <div class="selected-files-title">Выбранные файлы</div>
+                    <div class="selected-files-header">
+                      <div class="selected-files-title-wrap">
+                        <div class="selected-files-title">Selected CSV files</div>
+                        <div id="selectedCsvCount" class="selected-files-count">· 0 selected</div>
+                      </div>
+                      <button type="button" id="clearSelectedCsvBtn" class="selected-files-clear-btn" disabled>Remove All</button>
+                    </div>
                     <ul id="selectedFilesList" class="selected-files-list"></ul>
                   </div>
                 </div>
@@ -927,6 +944,36 @@
     </div>
   </div>
 
+  <div id="csvBrowserModal" class="modal-overlay" aria-hidden="true">
+    <div class="modal-card csv-browser-modal-card">
+      <div class="modal-header">
+        <h3>Select CSV Files</h3>
+      </div>
+      <div class="modal-body">
+        <div class="modal-section">
+          <label for="csvBrowserPath">Current directory</label>
+          <input type="text" id="csvBrowserPath" readonly />
+          <div class="csv-browser-actions">
+            <button type="button" class="btn-secondary" id="csvBrowserUpBtn">Up</button>
+            <button type="button" class="btn-secondary" id="csvBrowserOpenBtn">Open Folder</button>
+            <button type="button" class="btn-secondary" id="csvBrowserRefreshBtn">Refresh</button>
+          </div>
+          <div class="modal-note">
+            Double-click folder to open. Select CSV files with Ctrl/Shift-click, then Add Selected.
+          </div>
+        </div>
+
+        <div class="modal-section">
+          <select id="csvBrowserList" class="csv-browser-list" multiple size="24"></select>
+        </div>
+        <div id="csvBrowserError" class="csv-browser-error" style="display: none;"></div>
+      </div>
+      <div class="modal-actions">
+        <button type="button" class="btn-secondary" id="csvBrowserCancelBtn">Cancel</button>
+        <button type="button" class="btn-primary" id="csvBrowserAddBtn">Add Selected</button>
+      </div>
+    </div>
+  </div>
   <!-- JavaScript modules -->
   <script src="/static/js/utils.js"></script>
   <script src="/static/js/api.js"></script>
@@ -941,5 +988,3 @@
   <script src="/static/js/main.js"></script>
 </body>
 </html>
-
-

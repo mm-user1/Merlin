@@ -1,6 +1,7 @@
 import io
 import json
 import math
+import os
 import re
 import sys
 import tempfile
@@ -69,6 +70,133 @@ LAST_OPTIMIZATION_STATE: Dict[str, Any] = {
 }
 
 
+def _parse_env_bool(name: str, default: bool) -> bool:
+    raw = os.getenv(name)
+    if raw is None:
+        return default
+    return str(raw).strip().lower() not in {"0", "false", "no", "off"}
+
+
+def _is_path_within_root(path: Path, root: Path) -> bool:
+    path_norm = os.path.normcase(str(path))
+    root_norm = os.path.normcase(str(root))
+    try:
+        return os.path.commonpath([path_norm, root_norm]) == root_norm
+    except ValueError:
+        return False
+
+
+def _collect_allowed_csv_roots(default_root: str) -> List[Path]:
+    env_value = os.getenv("MERLIN_CSV_ALLOWED_ROOTS", "")
+    raw_values = [item.strip() for item in re.split(r"[;\r\n]+", env_value) if item.strip()]
+    if default_root:
+        raw_values.append(default_root)
+
+    roots: List[Path] = []
+    seen: set[str] = set()
+    for raw in raw_values:
+        candidate = Path(raw).expanduser()
+        if not candidate.is_absolute():
+            candidate = Path.cwd() / candidate
+        try:
+            resolved = candidate.resolve(strict=False)
+        except OSError:
+            continue
+        key = os.path.normcase(str(resolved))
+        if key in seen:
+            continue
+        seen.add(key)
+        roots.append(resolved)
+    return roots
+
+
+DEFAULT_CSV_ROOT = (
+    os.getenv("MERLIN_DEFAULT_CSV_ROOT")
+    or r"C:\Users\mt\Desktop\Strategy\S_Python\Market Data_PY"
+).strip()
+CSV_ALLOWED_ROOTS = _collect_allowed_csv_roots(DEFAULT_CSV_ROOT)
+STRICT_CSV_PATH_MODE = _parse_env_bool("MERLIN_STRICT_CSV_PATH_MODE", False)
+
+
+def _is_csv_path_allowed(path: Path) -> bool:
+    if not CSV_ALLOWED_ROOTS:
+        return True
+    for root in CSV_ALLOWED_ROOTS:
+        if _is_path_within_root(path, root):
+            return True
+    return False
+
+
+def _resolve_csv_directory(raw_path: Optional[str]) -> Path:
+    raw_value = str(raw_path or DEFAULT_CSV_ROOT or "").strip()
+    if not raw_value:
+        raise ValueError("CSV directory path is empty.")
+    candidate = Path(raw_value).expanduser()
+    if not candidate.is_absolute():
+        candidate = Path.cwd() / candidate
+    try:
+        resolved = candidate.resolve(strict=True)
+    except FileNotFoundError as exc:
+        raise FileNotFoundError(str(candidate)) from exc
+    if not resolved.is_dir():
+        raise NotADirectoryError(str(resolved))
+    if not _is_csv_path_allowed(resolved):
+        raise PermissionError("CSV directory is outside allowed roots.")
+    return resolved
+
+
+def _list_csv_directory(raw_path: Optional[str]) -> Dict[str, Any]:
+    directory = _resolve_csv_directory(raw_path)
+    entries: List[Dict[str, Any]] = []
+
+    for child in directory.iterdir():
+        try:
+            stat = child.stat()
+        except OSError:
+            continue
+
+        if child.is_dir():
+            entries.append(
+                {
+                    "name": child.name,
+                    "path": str(child),
+                    "kind": "dir",
+                    "size": None,
+                    "modified": datetime.fromtimestamp(stat.st_mtime, tz=timezone.utc).isoformat(),
+                }
+            )
+            continue
+
+        if not child.is_file() or child.suffix.lower() != ".csv":
+            continue
+
+        entries.append(
+            {
+                "name": child.name,
+                "path": str(child),
+                "kind": "file",
+                "size": int(stat.st_size),
+                "modified": datetime.fromtimestamp(stat.st_mtime, tz=timezone.utc).isoformat(),
+            }
+        )
+
+    entries.sort(key=lambda item: (0 if item["kind"] == "dir" else 1, item["name"].lower()))
+
+    parent_path: Optional[str] = None
+    parent = directory.parent
+    if parent != directory and _is_csv_path_allowed(parent):
+        parent_path = str(parent)
+
+    return {
+        "current_path": str(directory),
+        "parent_path": parent_path,
+        "entries": entries,
+        "default_root": DEFAULT_CSV_ROOT,
+        "strict_path_mode": STRICT_CSV_PATH_MODE,
+        "allowed_roots": [str(root) for root in CSV_ALLOWED_ROOTS],
+    }
+
+
 
 
 def _get_logger():
@@ -134,6 +262,15 @@ def _execute_backtest_request(strategy_id: str) -> Tuple[Optional[Dict[str, Any]
         opened_file = None
 
     if csv_file and csv_file.filename:
+        if STRICT_CSV_PATH_MODE:
+            return (
+                None,
+                (
+                    "Direct CSV upload is disabled in strict path mode. "
+                    "Set CSV Directory and select files via Choose Files.",
+                    HTTPStatus.BAD_REQUEST,
+                ),
+            )
         data_source = csv_file
         csv_name = csv_file.filename
     elif csv_path_raw:

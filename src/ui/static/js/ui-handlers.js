@@ -84,11 +84,215 @@ function getStrategySummary() {
   };
 }
 
+function normalizeSelectedCsvPaths(paths) {
+  const items = Array.isArray(paths) ? paths : [];
+  const unique = [];
+  const seen = new Set();
+  items.forEach((item) => {
+    const value = String(item || '').trim();
+    if (!value) return;
+    const key = value.toLowerCase();
+    if (seen.has(key)) return;
+    seen.add(key);
+    unique.push(value);
+  });
+  return unique;
+}
+
+function getSelectedCsvPaths() {
+  if (Array.isArray(window.selectedCsvPaths) && window.selectedCsvPaths.length) {
+    return normalizeSelectedCsvPaths(window.selectedCsvPaths);
+  }
+  const fallback = String(window.selectedCsvPath || '').trim();
+  return fallback ? [fallback] : [];
+}
+
+function setSelectedCsvPaths(paths) {
+  const normalized = normalizeSelectedCsvPaths(paths);
+  window.selectedCsvPaths = normalized;
+  window.selectedCsvPath = normalized[0] || '';
+  if (!window.uiState || typeof window.uiState !== 'object') {
+    window.uiState = {};
+  }
+  window.uiState.csvPath = window.selectedCsvPath;
+  renderSelectedFiles([]);
+}
+
+const csvBrowserState = {
+  currentPath: '',
+  entries: []
+};
+
+function csvBrowserElements() {
+  return {
+    modal: document.getElementById('csvBrowserModal'),
+    pathInput: document.getElementById('csvBrowserPath'),
+    list: document.getElementById('csvBrowserList'),
+    error: document.getElementById('csvBrowserError'),
+    rootInput: document.getElementById('csvDirectory'),
+    upBtn: document.getElementById('csvBrowserUpBtn'),
+    openBtn: document.getElementById('csvBrowserOpenBtn'),
+    refreshBtn: document.getElementById('csvBrowserRefreshBtn'),
+    cancelBtn: document.getElementById('csvBrowserCancelBtn'),
+    addBtn: document.getElementById('csvBrowserAddBtn')
+  };
+}
+
+function showCsvBrowserError(message) {
+  const { error } = csvBrowserElements();
+  if (!error) return;
+  const text = String(message || '').trim();
+  if (!text) {
+    error.textContent = '';
+    error.style.display = 'none';
+    return;
+  }
+  error.textContent = text;
+  error.style.display = 'block';
+}
+
+function renderCsvBrowserEntries(entries) {
+  const { list } = csvBrowserElements();
+  if (!list) return;
+  list.innerHTML = '';
+  const fragment = document.createDocumentFragment();
+  entries.forEach((entry) => {
+    const option = document.createElement('option');
+    option.value = entry.path;
+    option.dataset.kind = entry.kind;
+    option.textContent = entry.kind === 'dir'
+      ? `[DIR] ${entry.name}`
+      : `      ${entry.name}`;
+    fragment.appendChild(option);
+  });
+  list.appendChild(fragment);
+}
+
+async function loadCsvBrowserDirectory(path) {
+  const { pathInput } = csvBrowserElements();
+  const targetPath = String(path || '').trim();
+  showCsvBrowserError('');
+  try {
+    const payload = await browseCsvDirectoryRequest(targetPath);
+    csvBrowserState.currentPath = payload.current_path || '';
+    csvBrowserState.entries = Array.isArray(payload.entries) ? payload.entries : [];
+    if (pathInput) {
+      pathInput.value = csvBrowserState.currentPath;
+    }
+    renderCsvBrowserEntries(csvBrowserState.entries);
+  } catch (error) {
+    showCsvBrowserError(error.message || 'Failed to load directory.');
+  }
+}
+
+function closeCsvBrowserModal() {
+  const { modal } = csvBrowserElements();
+  if (!modal) return;
+  modal.classList.remove('show');
+  modal.setAttribute('aria-hidden', 'true');
+}
+
+async function openCsvBrowserModal() {
+  const { modal, rootInput } = csvBrowserElements();
+  if (!modal) return;
+  const rootPath = String(rootInput?.value || '').trim();
+  await loadCsvBrowserDirectory(rootPath);
+  modal.classList.add('show');
+  modal.setAttribute('aria-hidden', 'false');
+}
+
+async function openSelectedCsvBrowserDirectory() {
+  const { list } = csvBrowserElements();
+  if (!list) return;
+  const selected = Array.from(list.selectedOptions || []);
+  if (selected.length !== 1) {
+    showCsvBrowserError('Select exactly one folder to open.');
+    return;
+  }
+  const option = selected[0];
+  if (option.dataset.kind !== 'dir') {
+    showCsvBrowserError('Selected entry is not a folder.');
+    return;
+  }
+  await loadCsvBrowserDirectory(option.value);
+}
+
+async function moveCsvBrowserUp() {
+  const current = csvBrowserState.currentPath;
+  if (!current) return;
+  const lastSlash = Math.max(current.lastIndexOf('\\'), current.lastIndexOf('/'));
+  if (lastSlash <= 2) {
+    await loadCsvBrowserDirectory(current);
+    return;
+  }
+  const parent = current.slice(0, lastSlash);
+  await loadCsvBrowserDirectory(parent);
+}
+
+function addSelectedCsvFilesFromBrowser() {
+  const { list, rootInput } = csvBrowserElements();
+  if (!list) return;
+  const selected = Array.from(list.selectedOptions || []);
+  const filePaths = selected
+    .filter((item) => item.dataset.kind === 'file')
+    .map((item) => String(item.value || '').trim())
+    .filter(Boolean);
+
+  if (!filePaths.length) {
+    showCsvBrowserError('Select at least one CSV file.');
+    return;
+  }
+
+  const merged = normalizeSelectedCsvPaths([...getSelectedCsvPaths(), ...filePaths]);
+  setSelectedCsvPaths(merged);
+  if (rootInput && csvBrowserState.currentPath) {
+    rootInput.value = csvBrowserState.currentPath;
+  }
+  closeCsvBrowserModal();
+}
+
+function bindCsvBrowserControls() {
+  const { modal, list, upBtn, openBtn, refreshBtn, cancelBtn, addBtn } = csvBrowserElements();
+  if (!modal || !list || !upBtn || !openBtn || !refreshBtn || !cancelBtn || !addBtn) {
+    return;
+  }
+
+  if (modal.dataset.bound === '1') {
+    return;
+  }
+  modal.dataset.bound = '1';
+
+  upBtn.addEventListener('click', moveCsvBrowserUp);
+  openBtn.addEventListener('click', openSelectedCsvBrowserDirectory);
+  refreshBtn.addEventListener('click', () => loadCsvBrowserDirectory(csvBrowserState.currentPath));
+  cancelBtn.addEventListener('click', closeCsvBrowserModal);
+  addBtn.addEventListener('click', addSelectedCsvFilesFromBrowser);
+
+  list.addEventListener('dblclick', (event) => {
+    const target = event.target;
+    if (!target || target.tagName !== 'OPTION') return;
+    if (target.dataset.kind === 'dir') {
+      loadCsvBrowserDirectory(target.value);
+    }
+  });
+
+  modal.addEventListener('click', (event) => {
+    if (event.target === modal) {
+      closeCsvBrowserModal();
+    }
+  });
+
+  document.addEventListener('keydown', (event) => {
+    if (event.key === 'Escape' && modal.classList.contains('show')) {
+      closeCsvBrowserModal();
+    }
+  });
+}
+
 function getDatasetLabel() {
-  const fileInput = document.getElementById('csvFile');
-  const file = fileInput && fileInput.files && fileInput.files[0];
-  if (file && file.name) return file.name;
-  if (window.selectedCsvPath) return window.selectedCsvPath;
+  const selectedPaths = getSelectedCsvPaths();
+  if (selectedPaths.length === 1) return selectedPaths[0];
+  if (selectedPaths.length > 1) return `${selectedPaths.length} CSV files selected`;
   return '';
 }
 
@@ -1137,16 +1341,13 @@ async function runWalkForward({ sources, state }) {
   }
 }
 
-function buildBacktestRequestFormData(primaryFile, payload) {
+function buildBacktestRequestFormData(csvPath, payload) {
   const formData = new FormData();
   formData.append('strategy', window.currentStrategyId);
   const warmupInput = document.getElementById('warmupBars');
   formData.append('warmupBars', warmupInput ? warmupInput.value : '1000');
-  if (primaryFile) {
-    formData.append('file', primaryFile, primaryFile.name);
-  }
-  if (window.selectedCsvPath) {
-    formData.append('csvPath', window.selectedCsvPath);
+  if (csvPath) {
+    formData.append('csvPath', csvPath);
   }
   formData.append('payload', JSON.stringify(payload));
   return formData;
@@ -1180,18 +1381,17 @@ async function executeBacktestRun({ event = null, downloadTrades = false } = {})
   }
   const resultsEl = document.getElementById('results');
   const errorEl = document.getElementById('error');
-  const fileInput = document.getElementById('csvFile');
-  if (!resultsEl || !errorEl || !fileInput) {
+  if (!resultsEl || !errorEl) {
     return;
   }
 
   errorEl.style.display = 'none';
   resultsEl.classList.remove('ready');
 
-  const selectedFiles = Array.from(fileInput.files || []);
-  const primaryFile = selectedFiles.length ? selectedFiles[0] : null;
+  const selectedPaths = getSelectedCsvPaths();
+  const primaryPath = selectedPaths.length ? selectedPaths[0] : '';
 
-  if (!primaryFile && !window.selectedCsvPath) {
+  if (!primaryPath) {
     errorEl.textContent = 'Please select a CSV data file or use a saved path.';
     errorEl.style.display = 'block';
     return;
@@ -1221,17 +1421,13 @@ async function executeBacktestRun({ event = null, downloadTrades = false } = {})
   resultsEl.classList.add('loading');
 
   const aggregatedResults = [];
-  if (primaryFile) {
-    renderSelectedFiles(selectedFiles);
-  } else {
-    renderSelectedFiles([]);
-  }
+  renderSelectedFiles([]);
 
   for (let index = 0; index < combinations.length; index += 1) {
     const combo = combinations[index];
     const payload = { ...state.payload, ...combo };
 
-    const formData = buildBacktestRequestFormData(primaryFile, payload);
+    const formData = buildBacktestRequestFormData(primaryPath, payload);
 
     resultsEl.textContent = `Running calculation... (${index + 1}/${combinations.length})`;
 
@@ -1249,7 +1445,7 @@ async function executeBacktestRun({ event = null, downloadTrades = false } = {})
     if (downloadTrades) {
       try {
         const tradesResponse = await downloadBacktestTradesRequest(
-          buildBacktestRequestFormData(primaryFile, payload)
+          buildBacktestRequestFormData(primaryPath, payload)
         );
         await triggerDownloadFromResponse(
           tradesResponse,
@@ -1304,11 +1500,10 @@ async function submitOptimization(event) {
   const optunaCurrentTrial = document.getElementById('optunaCurrentTrial');
   const optunaEta = document.getElementById('optunaEta');
 
-  const fileInput = document.getElementById('csvFile');
-  const fileList = fileInput ? Array.from(fileInput.files || []) : [];
-  const sources = fileList.length ? fileList : (window.selectedCsvPath ? [{ path: window.selectedCsvPath }] : []);
+  const selectedPaths = getSelectedCsvPaths();
+  const sources = selectedPaths.map((path) => ({ path }));
   if (!sources.length) {
-    optimizerResultsEl.textContent = 'Please select at least one CSV file or saved path before running optimization.';
+    optimizerResultsEl.textContent = 'Please select at least one CSV file before running optimization.';
     optimizerResultsEl.classList.remove('ready');
     optimizerResultsEl.style.display = 'block';
     return;
@@ -1356,11 +1551,7 @@ async function submitOptimization(event) {
     return;
   }
 
-  if (fileList.length) {
-    renderSelectedFiles(fileList);
-  } else {
-    renderSelectedFiles([]);
-  }
+  renderSelectedFiles([]);
 
   const config = buildOptunaConfig(state);
   const hasEnabledParams = Object.values(config.enabled_params || {}).some(Boolean);

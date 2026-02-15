@@ -105,6 +105,31 @@ async function fetchStudiesList() {
   return response.json();
 }
 
+async function browseCsvDirectoryRequest(path = '') {
+  const params = new URLSearchParams();
+  if (path) {
+    params.set('path', path);
+  }
+  const url = params.toString() ? `/api/csv/browse?${params.toString()}` : '/api/csv/browse';
+  const response = await fetch(url);
+  if (!response.ok) {
+    let message = 'Failed to browse CSV directory.';
+    try {
+      const payload = await response.json();
+      if (payload && payload.error) {
+        message = payload.error;
+      }
+    } catch (error) {
+      const fallback = await response.text();
+      if (fallback) {
+        message = fallback;
+      }
+    }
+    throw new Error(message);
+  }
+  return response.json();
+}
+
 async function fetchStudyDetails(studyId) {
   const response = await fetch(`/api/studies/${encodeURIComponent(studyId)}`);
   if (!response.ok) {

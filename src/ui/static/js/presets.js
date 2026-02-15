@@ -19,6 +19,7 @@ const DEFAULT_PRESET = {
 
 window.knownPresets = [];
 window.selectedCsvPath = '';
+window.selectedCsvPaths = [];
 window.defaults = clonePreset(DEFAULT_PRESET);
 window.uiState = {
   csvPath: ''
@@ -90,6 +91,11 @@ function applyPresetValues(values, { clearResults = false } = {}) {
   if (clearResults) {
     if (csvFileInputEl) {
       csvFileInputEl.value = '';
+    }
+    window.selectedCsvPath = '';
+    window.selectedCsvPaths = [];
+    if (window.uiState && typeof window.uiState === 'object') {
+      window.uiState.csvPath = '';
     }
     const resultsEl = document.getElementById('results');
     if (resultsEl) {

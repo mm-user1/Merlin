@@ -114,9 +114,92 @@ function showResultsMessage(message) {
   }
 }
 
+function splitCsvPathSegments(path) {
+  return String(path || '')
+    .split(/[\\/]+/)
+    .filter(Boolean);
+}
+
+function buildCsvPathDisplayEntries(paths) {
+  const items = (Array.isArray(paths) ? paths : [])
+    .map((rawPath) => {
+      const fullPath = String(rawPath || '').trim();
+      if (!fullPath) return null;
+      const segments = splitCsvPathSegments(fullPath);
+      const fileName = segments.length ? segments[segments.length - 1] : fullPath;
+      const parents = segments.slice(0, -1);
+      return { fullPath, fileName, parents };
+    })
+    .filter(Boolean);
+
+  if (!items.length) {
+    return [];
+  }
+
+  const groups = new Map();
+  items.forEach((item, idx) => {
+    const key = String(item.fileName || '').toLowerCase();
+    if (!groups.has(key)) {
+      groups.set(key, []);
+    }
+    groups.get(key).push(idx);
+  });
+
+  const labels = new Array(items.length).fill('');
+  groups.forEach((indexes) => {
+    if (indexes.length === 1) {
+      const index = indexes[0];
+      labels[index] = items[index].fileName || items[index].fullPath;
+      return;
+    }
+
+    const maxDepth = indexes.reduce((maxValue, index) => {
+      return Math.max(maxValue, items[index].parents.length);
+    }, 0);
+
+    let depth = 1;
+    while (depth <= maxDepth) {
+      const seen = new Set();
+      let unique = true;
+      indexes.forEach((index) => {
+        const tail = items[index].parents.slice(-depth).join('\\') || '.';
+        const key = tail.toLowerCase();
+        if (seen.has(key)) {
+          unique = false;
+          return;
+        }
+        seen.add(key);
+      });
+      if (unique) {
+        break;
+      }
+      depth += 1;
+    }
+
+    const collisionCounter = new Map();
+    indexes.forEach((index) => {
+      const tail = items[index].parents.slice(-depth).join('\\') || '.';
+      const candidate = `${items[index].fileName} [${tail}]`;
+      const candidateKey = candidate.toLowerCase();
+      const counter = (collisionCounter.get(candidateKey) || 0) + 1;
+      collisionCounter.set(candidateKey, counter);
+      labels[index] = counter === 1 ? candidate : `${candidate} #${counter}`;
+    });
+  });
+
+  return items.map((item, idx) => {
+    return {
+      label: labels[idx] || item.fileName || item.fullPath,
+      title: item.fullPath
+    };
+  });
+}
+
 function renderSelectedFiles(files) {
   const selectedFilesWrapper = document.getElementById('selectedFilesWrapper');
   const selectedFilesList = document.getElementById('selectedFilesList');
+  const clearSelectedCsvBtn = document.getElementById('clearSelectedCsvBtn');
+  const selectedCsvCount = document.getElementById('selectedCsvCount');
 
   if (!selectedFilesWrapper || !selectedFilesList) {
     return;
@@ -125,22 +208,36 @@ function renderSelectedFiles(files) {
   const entries = [];
   if (files && files.length) {
     files.forEach((file) => {
-      entries.push(file.name);
+      entries.push({
+        label: file.name,
+        title: file.name
+      });
     });
+  } else if (Array.isArray(window.selectedCsvPaths) && window.selectedCsvPaths.length) {
+    entries.push(...buildCsvPathDisplayEntries(window.selectedCsvPaths));
   } else if (window.selectedCsvPath) {
-    entries.push(window.selectedCsvPath);
+    entries.push(...buildCsvPathDisplayEntries([window.selectedCsvPath]));
   }
 
   selectedFilesList.innerHTML = '';
+  if (selectedCsvCount) {
+    selectedCsvCount.textContent = `· ${entries.length} selected`;
+  }
+  if (clearSelectedCsvBtn) {
+    clearSelectedCsvBtn.disabled = entries.length === 0;
+  }
   if (!entries.length) {
     selectedFilesWrapper.style.display = 'none';
     return;
   }
 
   const fragment = document.createDocumentFragment();
-  entries.forEach((label) => {
+  entries.forEach((entry) => {
     const item = document.createElement('li');
-    item.textContent = label;
+    item.textContent = entry.label;
+    if (entry.title) {
+      item.title = entry.title;
+    }
     fragment.appendChild(item);
   });
 
