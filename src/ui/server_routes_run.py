@@ -62,7 +62,6 @@ from core.storage import (
 try:
     from .server_services import (
         DEFAULT_PRESET_NAME,
-        STRICT_CSV_PATH_MODE,
         _build_optimization_config,
         _build_trial_metrics,
         _execute_backtest_request,
@@ -74,7 +73,6 @@ try:
         _load_preset,
         _normalize_preset_payload,
         _parse_csv_parameter_block,
-        _persist_csv_upload,
         _preset_path,
         _resolve_csv_path,
         _resolve_strategy_id_from_request,
@@ -93,7 +91,6 @@ try:
 except ImportError:
     from server_services import (
         DEFAULT_PRESET_NAME,
-        STRICT_CSV_PATH_MODE,
         _build_optimization_config,
         _build_trial_metrics,
         _execute_backtest_request,
@@ -105,7 +102,6 @@ except ImportError:
         _load_preset,
         _normalize_preset_payload,
         _parse_csv_parameter_block,
-        _persist_csv_upload,
         _preset_path,
         _resolve_csv_path,
         _resolve_strategy_id_from_request,
@@ -167,34 +163,19 @@ def register_routes(app):
     def run_walkforward_optimization() -> object:
         """Run Walk-Forward Analysis"""
         data = request.form
-        csv_file = request.files.get("file")
         csv_path_raw = (data.get("csvPath") or "").strip()
         data_source = None
         data_path = ""
         original_csv_name = ""
 
+        if not csv_path_raw:
+            return jsonify({"error": "CSV path is required."}), HTTPStatus.BAD_REQUEST
+
         try:
-            if csv_file and csv_file.filename:
-                if STRICT_CSV_PATH_MODE:
-                    return (
-                        jsonify({
-                            "error": (
-                                "Direct CSV upload is disabled in strict path mode. "
-                                "Set CSV Directory and select files via Choose Files."
-                            )
-                        }),
-                        HTTPStatus.BAD_REQUEST,
-                    )
-                data_path = _persist_csv_upload(csv_file)
-                data_source = data_path
-                original_csv_name = csv_file.filename
-            elif csv_path_raw:
-                resolved_path = _resolve_csv_path(csv_path_raw)
-                data_source = str(resolved_path)
-                data_path = str(resolved_path)
-                original_csv_name = Path(resolved_path).name
-            else:
-                return jsonify({"error": "CSV file is required."}), HTTPStatus.BAD_REQUEST
+            resolved_path = _resolve_csv_path(csv_path_raw)
+            data_source = str(resolved_path)
+            data_path = str(resolved_path)
+            original_csv_name = Path(resolved_path).name
         except FileNotFoundError:
             return jsonify({"error": "CSV file not found."}), HTTPStatus.BAD_REQUEST
         except IsADirectoryError:
@@ -202,7 +183,7 @@ def register_routes(app):
         except PermissionError as exc:
             return jsonify({"error": str(exc)}), HTTPStatus.FORBIDDEN
         except ValueError as exc:
-            message = str(exc).strip() or "CSV file is required."
+            message = str(exc).strip() or "CSV path is required."
             return jsonify({"error": message}), HTTPStatus.BAD_REQUEST
         except OSError:
             return jsonify({"error": "Failed to access CSV file."}), HTTPStatus.BAD_REQUEST
@@ -653,40 +634,29 @@ def register_routes(app):
 
     @app.post("/api/optimize")
     def run_optimization_endpoint() -> object:
-        csv_file = request.files.get("file")
         csv_path_raw = (request.form.get("csvPath") or "").strip()
         data_path = ""
         source_name = ""
 
-        if csv_file and csv_file.filename:
-            if STRICT_CSV_PATH_MODE:
-                return (
-                    "Direct CSV upload is disabled in strict path mode. "
-                    "Set CSV Directory and select files via Choose Files.",
-                    HTTPStatus.BAD_REQUEST,
-                )
-            data_path = _persist_csv_upload(csv_file)
-            data_source = data_path
-            source_name = csv_file.filename
-        elif csv_path_raw:
-            try:
-                resolved_path = _resolve_csv_path(csv_path_raw)
-            except FileNotFoundError:
-                return ("CSV file not found.", HTTPStatus.BAD_REQUEST)
-            except IsADirectoryError:
-                return ("CSV path must point to a file.", HTTPStatus.BAD_REQUEST)
-            except PermissionError as exc:
-                return (str(exc), HTTPStatus.FORBIDDEN)
-            except ValueError as exc:
-                message = str(exc).strip() or "CSV file is required."
-                return (message, HTTPStatus.BAD_REQUEST)
-            except OSError:
-                return ("Failed to access CSV file.", HTTPStatus.BAD_REQUEST)
-            data_source = str(resolved_path)
-            data_path = str(resolved_path)
-            source_name = Path(resolved_path).name
-        else:
-            return ("CSV file is required.", HTTPStatus.BAD_REQUEST)
+        if not csv_path_raw:
+            return ("CSV path is required.", HTTPStatus.BAD_REQUEST)
+
+        try:
+            resolved_path = _resolve_csv_path(csv_path_raw)
+        except FileNotFoundError:
+            return ("CSV file not found.", HTTPStatus.BAD_REQUEST)
+        except IsADirectoryError:
+            return ("CSV path must point to a file.", HTTPStatus.BAD_REQUEST)
+        except PermissionError as exc:
+            return (str(exc), HTTPStatus.FORBIDDEN)
+        except ValueError as exc:
+            message = str(exc).strip() or "CSV path is required."
+            return (message, HTTPStatus.BAD_REQUEST)
+        except OSError:
+            return ("Failed to access CSV file.", HTTPStatus.BAD_REQUEST)
+        data_source = str(resolved_path)
+        data_path = str(resolved_path)
+        source_name = Path(resolved_path).name
 
         config_raw = request.form.get("config")
         if not config_raw:

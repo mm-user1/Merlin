@@ -65,7 +65,6 @@ try:
     from .server_services import (
         DEFAULT_PRESET_NAME,
         DEFAULT_CSV_ROOT,
-        STRICT_CSV_PATH_MODE,
         _build_optimization_config,
         _build_trial_metrics,
         _find_wfa_window,
@@ -77,7 +76,6 @@ try:
         _load_preset,
         _normalize_preset_payload,
         _parse_csv_parameter_block,
-        _persist_csv_upload,
         _preset_path,
         _resolve_csv_path,
         _resolve_strategy_id_from_request,
@@ -98,7 +96,6 @@ except ImportError:
     from server_services import (
         DEFAULT_PRESET_NAME,
         DEFAULT_CSV_ROOT,
-        STRICT_CSV_PATH_MODE,
         _build_optimization_config,
         _build_trial_metrics,
         _find_wfa_window,
@@ -110,7 +107,6 @@ except ImportError:
         _load_preset,
         _normalize_preset_payload,
         _parse_csv_parameter_block,
-        _persist_csv_upload,
         _preset_path,
         _resolve_csv_path,
         _resolve_strategy_id_from_request,
@@ -317,7 +313,6 @@ def register_routes(app):
         if not study_data:
             return jsonify({"error": "Study not found."}), HTTPStatus.NOT_FOUND
 
-        csv_file = request.files.get("file")
         csv_path_raw = None
         if request.is_json:
             payload = request.get_json(silent=True) or {}
@@ -326,28 +321,13 @@ def register_routes(app):
         if csv_path_raw is None:
             csv_path_raw = request.form.get("csvPath")
 
-        if csv_file and csv_file.filename:
-            if STRICT_CSV_PATH_MODE:
-                return (
-                    jsonify({
-                        "error": (
-                            "Direct CSV upload is disabled in strict path mode. "
-                            "Use an absolute csvPath from your CSV directory."
-                        )
-                    }),
-                    HTTPStatus.BAD_REQUEST,
-                )
-            new_path = _persist_csv_upload(csv_file)
-        elif csv_path_raw:
-            new_path, error_response = _resolve_csv_path_for_response(
-                csv_path_raw,
-                missing_error="CSV file or path is required.",
-                not_found_error="CSV file not found.",
-            )
-            if error_response:
-                return error_response
-        else:
-            return jsonify({"error": "CSV file or path is required."}), HTTPStatus.BAD_REQUEST
+        new_path, error_response = _resolve_csv_path_for_response(
+            csv_path_raw,
+            missing_error="csvPath is required.",
+            not_found_error="CSV file not found.",
+        )
+        if error_response:
+            return error_response
 
         is_valid, warnings, error = _validate_csv_for_study(new_path, study_data["study"])
         if not is_valid:

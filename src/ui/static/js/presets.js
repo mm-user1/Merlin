@@ -68,7 +68,6 @@ function applyPresetValues(values, { clearResults = false } = {}) {
   }
 
   const normalized = normalizePresetValues(values);
-  const csvFileInputEl = document.getElementById('csvFile');
   const optimizerResultsEl = document.getElementById('optimizerResults');
   const progressContainer = document.getElementById('optimizerProgress');
 
@@ -89,9 +88,6 @@ function applyPresetValues(values, { clearResults = false } = {}) {
   applyDynamicBacktestParams(normalized);
 
   if (clearResults) {
-    if (csvFileInputEl) {
-      csvFileInputEl.value = '';
-    }
     window.selectedCsvPath = '';
     window.selectedCsvPaths = [];
     if (window.uiState && typeof window.uiState === 'object') {
@@ -113,8 +109,7 @@ function applyPresetValues(values, { clearResults = false } = {}) {
     }
   }
 
-  const currentFiles = csvFileInputEl ? Array.from(csvFileInputEl.files || []) : [];
-  renderSelectedFiles(currentFiles);
+  renderSelectedFiles([]);
   syncMinProfitFilterUI();
   syncScoreFilterUI();
   updateScoreFormulaPreview();

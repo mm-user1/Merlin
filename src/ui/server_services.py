@@ -4,9 +4,7 @@ import math
 import os
 import re
 import sys
-import tempfile
 import threading
-import time
 from datetime import datetime, timezone
 from http import HTTPStatus
 from pathlib import Path
@@ -70,13 +68,6 @@ LAST_OPTIMIZATION_STATE: Dict[str, Any] = {
 }
 
 
-def _parse_env_bool(name: str, default: bool) -> bool:
-    raw = os.getenv(name)
-    if raw is None:
-        return default
-    return str(raw).strip().lower() not in {"0", "false", "no", "off"}
-
-
 def _is_path_within_root(path: Path, root: Path) -> bool:
     path_norm = os.path.normcase(str(path))
     root_norm = os.path.normcase(str(root))
@@ -115,7 +106,8 @@ DEFAULT_CSV_ROOT = (
     or r"C:\Users\mt\Desktop\Strategy\S_Python\Market Data_PY"
 ).strip()
 CSV_ALLOWED_ROOTS = _collect_allowed_csv_roots(DEFAULT_CSV_ROOT)
-STRICT_CSV_PATH_MODE = _parse_env_bool("MERLIN_STRICT_CSV_PATH_MODE", True)
+# Kept as a public flag for API metadata, but absolute csvPath is now mandatory.
+STRICT_CSV_PATH_MODE = True
 
 
 def _is_csv_path_allowed(path: Path) -> bool:
@@ -219,19 +211,6 @@ def _get_optimization_state() -> Dict[str, Any]:
         return json.loads(json.dumps(LAST_OPTIMIZATION_STATE))
 
 
-def _persist_csv_upload(file_storage) -> str:
-    temp_dir = Path(tempfile.gettempdir()) / "merlin_uploads"
-    temp_dir.mkdir(exist_ok=True)
-    suffix = Path(file_storage.filename or "upload.csv").suffix or ".csv"
-    temp_path = temp_dir / f"upload_{int(time.time())}_{id(file_storage)}{suffix}"
-    file_storage.seek(0)
-    content = file_storage.read()
-    if isinstance(content, str):
-        content = content.encode("utf-8")
-    temp_path.write_bytes(content)
-    return str(temp_path)
-
-
 def _parse_warmup_bars(raw_value: Any, default: int = 1000) -> int:
     try:
         warmup_bars = int(raw_value)
@@ -245,7 +224,6 @@ def _execute_backtest_request(strategy_id: str) -> Tuple[Optional[Dict[str, Any]
 
     warmup_bars = _parse_warmup_bars(request.form.get("warmupBars", "1000"))
 
-    csv_file = request.files.get("file")
     csv_path_raw = (request.form.get("csvPath") or "").strip()
     data_source = None
     opened_file = None
@@ -261,40 +239,28 @@ def _execute_backtest_request(strategy_id: str) -> Tuple[Optional[Dict[str, Any]
             pass
         opened_file = None
 
-    if csv_file and csv_file.filename:
-        if STRICT_CSV_PATH_MODE:
-            return (
-                None,
-                (
-                    "Direct CSV upload is disabled in strict path mode. "
-                    "Set CSV Directory and select files via Choose Files.",
-                    HTTPStatus.BAD_REQUEST,
-                ),
-            )
-        data_source = csv_file
-        csv_name = csv_file.filename
-    elif csv_path_raw:
-        try:
-            resolved_path = _resolve_csv_path(csv_path_raw)
-        except FileNotFoundError:
-            return None, ("CSV file not found.", HTTPStatus.BAD_REQUEST)
-        except IsADirectoryError:
-            return None, ("CSV path must point to a file.", HTTPStatus.BAD_REQUEST)
-        except PermissionError as exc:
-            return None, (str(exc), HTTPStatus.FORBIDDEN)
-        except ValueError as exc:
-            message = str(exc).strip() or "CSV file is required."
-            return None, (message, HTTPStatus.BAD_REQUEST)
-        except OSError:
-            return None, ("Failed to access CSV file.", HTTPStatus.BAD_REQUEST)
-        try:
-            opened_file = resolved_path.open("rb")
-        except OSError:
-            return None, ("Failed to access CSV file.", HTTPStatus.BAD_REQUEST)
-        data_source = opened_file
-        csv_name = resolved_path.name
-    else:
-        return None, ("CSV file is required.", HTTPStatus.BAD_REQUEST)
+    if not csv_path_raw:
+        return None, ("CSV path is required.", HTTPStatus.BAD_REQUEST)
+
+    try:
+        resolved_path = _resolve_csv_path(csv_path_raw)
+    except FileNotFoundError:
+        return None, ("CSV file not found.", HTTPStatus.BAD_REQUEST)
+    except IsADirectoryError:
+        return None, ("CSV path must point to a file.", HTTPStatus.BAD_REQUEST)
+    except PermissionError as exc:
+        return None, (str(exc), HTTPStatus.FORBIDDEN)
+    except ValueError as exc:
+        message = str(exc).strip() or "CSV path is required."
+        return None, (message, HTTPStatus.BAD_REQUEST)
+    except OSError:
+        return None, ("Failed to access CSV file.", HTTPStatus.BAD_REQUEST)
+    try:
+        opened_file = resolved_path.open("rb")
+    except OSError:
+        return None, ("Failed to access CSV file.", HTTPStatus.BAD_REQUEST)
+    data_source = opened_file
+    csv_name = resolved_path.name
 
     payload_raw = request.form.get("payload", "{}")
     try:
