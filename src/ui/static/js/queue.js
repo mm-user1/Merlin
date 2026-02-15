@@ -4,13 +4,9 @@
  */
 
 const QUEUE_STORAGE_KEY = 'merlinRunQueue';
-const QUEUE_FILE_DB_NAME = 'merlinQueueFiles';
-const QUEUE_FILE_STORE = 'files';
-const QUEUE_FILE_DB_VERSION = 1;
 const CONSTRAINT_LE_METRICS = ['max_drawdown_pct', 'max_consecutive_losses', 'ulcer_index'];
 
 let queueRunning = false;
-let queueFileDbPromise = null;
 
 function isAbsoluteFilesystemPath(path) {
   const value = String(path || '').trim();
@@ -25,56 +21,30 @@ function getPathFileName(path) {
   return String(path || '').split(/[/\\]/).pop() || '';
 }
 
-function isBlobLike(value) {
-  return Boolean(
-    value
-      && typeof value === 'object'
-      && typeof value.size === 'number'
-      && typeof value.type === 'string'
-      && typeof value.arrayBuffer === 'function'
-  );
-}
-
-function makeQueueFileKey(itemId, sourceIndex, fileName) {
-  const safeName = String(fileName || 'file').replace(/[^A-Za-z0-9._-]/g, '_').slice(0, 64);
-  return itemId + '_' + sourceIndex + '_' + Date.now() + '_' + safeName;
-}
-
 function buildSourceDisplayLabel(source, fallbackIndex = 0) {
   if (!source || typeof source !== 'object') return 'source_' + (fallbackIndex + 1);
-  if (source.type === 'path') {
-    return getPathFileName(source.path) || String(source.path || '').trim() || ('source_' + (fallbackIndex + 1));
-  }
-  return String(source.name || '').trim() || ('source_' + (fallbackIndex + 1) + '.csv');
+  return getPathFileName(source.path) || String(source.path || '').trim() || ('source_' + (fallbackIndex + 1));
 }
 
 function buildSourceModeLabel(source) {
-  return source && source.type === 'file' ? 'FILE' : 'PATH';
+  void source;
+  return 'PATH';
 }
 
 function normalizeQueueSource(rawSource, fallbackIndex) {
-  if (!rawSource || typeof rawSource !== 'object') return null;
-  const type = rawSource.type === 'file' ? 'file' : 'path';
-
-  if (type === 'path') {
-    const path = String(rawSource.path || '').trim();
-    if (!path) return null;
-    return { type: 'path', path };
+  let path = '';
+  if (typeof rawSource === 'string') {
+    path = rawSource;
+  } else if (rawSource && typeof rawSource === 'object') {
+    path = rawSource.path || rawSource.csvPath || '';
+  } else {
+    return null;
   }
 
-  const fileKey = String(rawSource.fileKey || '').trim();
-  if (!fileKey) return null;
-
-  const name = String(rawSource.name || '').trim() || ('source_' + (fallbackIndex + 1) + '.csv');
-  const sizeRaw = Number(rawSource.size);
-  const lastModifiedRaw = Number(rawSource.lastModified);
-  return {
-    type: 'file',
-    fileKey,
-    name,
-    size: Number.isFinite(sizeRaw) && sizeRaw >= 0 ? Math.floor(sizeRaw) : 0,
-    lastModified: Number.isFinite(lastModifiedRaw) && lastModifiedRaw >= 0 ? Math.floor(lastModifiedRaw) : 0
-  };
+  const normalizedPath = String(path || '').trim();
+  if (!normalizedPath) return null;
+  if (!isAbsoluteFilesystemPath(normalizedPath)) return null;
+  return { type: 'path', path: normalizedPath };
 }
 
 function getQueueSources(item) {
@@ -86,9 +56,6 @@ function getQueueSources(item) {
   rawSources.forEach((source, index) => {
     const normalized = normalizeQueueSource(source, index);
     if (normalized) {
-      if (source && typeof source === 'object' && source.type === 'file' && source._file) {
-        normalized._file = source._file;
-      }
       sources.push(normalized);
     }
   });
@@ -100,26 +67,11 @@ function cloneSourcesForStorage(sources) {
     .map((source, index) => normalizeQueueSource(source, index))
     .filter(Boolean)
     .map((source) => {
-      if (source.type === 'file') {
-        return {
-          type: 'file',
-          fileKey: source.fileKey,
-          name: source.name,
-          size: source.size || 0,
-          lastModified: source.lastModified || 0
-        };
-      }
       return {
         type: 'path',
         path: source.path
       };
     });
-}
-
-function collectFileKeysFromItem(item) {
-  return getQueueSources(item)
-    .filter((source) => source.type === 'file' && source.fileKey)
-    .map((source) => source.fileKey);
 }
 
 function normalizeQueueItem(raw, fallbackIndex) {
@@ -157,6 +109,20 @@ function normalizeQueueItem(raw, fallbackIndex) {
   return item;
 }
 
+function computeQueueNextIndex(items, candidateNextIndex) {
+  const normalizedItems = Array.isArray(items) ? items : [];
+  if (normalizedItems.length === 0) {
+    return 1;
+  }
+
+  const maxIndex = normalizedItems.reduce((acc, item) => Math.max(acc, Number(item.index) || 0), 0);
+  const candidate = Number(candidateNextIndex);
+  if (Number.isFinite(candidate) && candidate > maxIndex) {
+    return Math.floor(candidate);
+  }
+  return Math.max(1, maxIndex + 1);
+}
+
 function loadQueue() {
   try {
     const raw = localStorage.getItem(QUEUE_STORAGE_KEY);
@@ -170,15 +136,9 @@ function loadQueue() {
       if (normalized) items.push(normalized);
     });
 
-    const maxIndex = items.reduce((acc, item) => Math.max(acc, Number(item.index) || 0), 0);
-    const parsedNext = Number(parsed && parsed.nextIndex);
-    const nextIndex = Number.isFinite(parsedNext) && parsedNext > maxIndex
-      ? Math.floor(parsedNext)
-      : (maxIndex + 1);
-
     return {
       items,
-      nextIndex: Math.max(1, nextIndex)
+      nextIndex: computeQueueNextIndex(items, parsed && parsed.nextIndex)
     };
   } catch (error) {
     console.warn('Failed to load queue from localStorage', error);
@@ -198,14 +158,9 @@ function saveQueue(queue) {
         };
       }).filter(Boolean)
       : [];
-    const maxIndex = items.reduce((acc, item) => Math.max(acc, Number(item.index) || 0), 0);
-    const nextRaw = Number(queue && queue.nextIndex);
-    const nextIndex = Number.isFinite(nextRaw) && nextRaw > maxIndex
-      ? Math.floor(nextRaw)
-      : (maxIndex + 1);
     localStorage.setItem(QUEUE_STORAGE_KEY, JSON.stringify({
       items,
-      nextIndex: Math.max(1, nextIndex)
+      nextIndex: computeQueueNextIndex(items, queue && queue.nextIndex)
     }));
   } catch (error) {
     console.warn('Failed to save queue to localStorage', error);
@@ -214,150 +169,6 @@ function saveQueue(queue) {
 
 function isQueueRunning() {
   return queueRunning;
-}
-
-function supportsQueueFileStorage() {
-  return typeof indexedDB !== 'undefined';
-}
-
-function openQueueFileDb() {
-  if (!supportsQueueFileStorage()) {
-    return Promise.reject(new Error('IndexedDB is not available in this environment.'));
-  }
-  if (queueFileDbPromise) return queueFileDbPromise;
-
-  queueFileDbPromise = new Promise((resolve, reject) => {
-    const request = indexedDB.open(QUEUE_FILE_DB_NAME, QUEUE_FILE_DB_VERSION);
-
-    request.onupgradeneeded = () => {
-      const db = request.result;
-      if (!db.objectStoreNames.contains(QUEUE_FILE_STORE)) {
-        db.createObjectStore(QUEUE_FILE_STORE);
-      }
-    };
-
-    request.onsuccess = () => resolve(request.result);
-    request.onerror = () => {
-      queueFileDbPromise = null;
-      reject(request.error || new Error('Failed to open queue file storage.'));
-    };
-    request.onblocked = () => {
-      queueFileDbPromise = null;
-      reject(new Error('Queue file storage is blocked.'));
-    };
-  });
-
-  return queueFileDbPromise;
-}
-
-function withQueueFileStore(mode, handler) {
-  return openQueueFileDb().then((db) => new Promise((resolve, reject) => {
-    const tx = db.transaction(QUEUE_FILE_STORE, mode);
-    const store = tx.objectStore(QUEUE_FILE_STORE);
-    let settled = false;
-    let hasResult = false;
-    let resultValue;
-
-    const fail = (error) => {
-      if (settled) return;
-      settled = true;
-      reject(error);
-    };
-
-    const done = (error, value) => {
-      if (error) {
-        fail(error);
-        return;
-      }
-      hasResult = true;
-      resultValue = value;
-    };
-
-    tx.oncomplete = () => {
-      if (settled) return;
-      settled = true;
-      resolve(hasResult ? resultValue : undefined);
-    };
-    tx.onabort = () => fail(tx.error || new Error('Queue file storage transaction aborted.'));
-    tx.onerror = () => fail(tx.error || new Error('Queue file storage transaction failed.'));
-
-    try {
-      handler(store, done);
-    } catch (error) {
-      fail(error);
-    }
-  }));
-}
-
-function putQueuedFileBlob(fileKey, fileBlob) {
-  return withQueueFileStore('readwrite', (store, done) => {
-    const request = store.put(fileBlob, fileKey);
-    request.onsuccess = () => done(null, true);
-    request.onerror = () => done(request.error || new Error('Failed to store queued file.'));
-  });
-}
-
-function getQueuedFileBlob(fileKey) {
-  return withQueueFileStore('readonly', (store, done) => {
-    const request = store.get(fileKey);
-    request.onsuccess = () => done(null, request.result || null);
-    request.onerror = () => done(request.error || new Error('Failed to load queued file.'));
-  });
-}
-
-function deleteQueuedFileBlob(fileKey) {
-  return withQueueFileStore('readwrite', (store, done) => {
-    const request = store.delete(fileKey);
-    request.onsuccess = () => done(null, true);
-    request.onerror = () => done(request.error || new Error('Failed to delete queued file.'));
-  });
-}
-
-async function deleteQueuedFileKeys(keys) {
-  if (!supportsQueueFileStorage()) return;
-  const uniqueKeys = Array.from(new Set((keys || []).map((key) => String(key || '').trim()).filter(Boolean)));
-  for (const key of uniqueKeys) {
-    try {
-      await deleteQueuedFileBlob(key);
-    } catch (error) {
-      console.warn('Failed to clean queued file key:', key, error);
-    }
-  }
-}
-
-function listQueuedFileKeys() {
-  if (!supportsQueueFileStorage()) return Promise.resolve([]);
-  return withQueueFileStore('readonly', (store, done) => {
-    const keys = [];
-    const request = store.openCursor();
-    request.onsuccess = (event) => {
-      const cursor = event.target.result;
-      if (!cursor) {
-        done(null, keys);
-        return;
-      }
-      keys.push(String(cursor.key || ''));
-      cursor.continue();
-    };
-    request.onerror = () => done(request.error || new Error('Failed to list queued file keys.'));
-  });
-}
-
-async function cleanupStaleQueueFiles() {
-  if (!supportsQueueFileStorage()) return;
-  const queue = loadQueue();
-  const validKeys = new Set();
-  queue.items.forEach((item) => {
-    collectFileKeysFromItem(item).forEach((key) => validKeys.add(key));
-  });
-
-  try {
-    const storedKeys = await listQueuedFileKeys();
-    const staleKeys = storedKeys.filter((key) => !validKeys.has(key));
-    await deleteQueuedFileKeys(staleKeys);
-  } catch (error) {
-    console.warn('Failed to clean stale queue file blobs', error);
-  }
 }
 
 function setQueueControlsDisabled(disabled) {
@@ -381,8 +192,7 @@ function requestServerCancelBestEffort() {
   });
 }
 
-function collectQueueSources(itemId) {
-  void itemId;
+function collectQueueSources() {
   const paths = typeof getSelectedCsvPaths === 'function'
     ? getSelectedCsvPaths()
     : (window.selectedCsvPath ? [window.selectedCsvPath] : []);
@@ -408,45 +218,9 @@ function collectQueueSources(itemId) {
   return sources;
 }
 
-async function persistQueueFilesForItem(item) {
-  const sources = getQueueSources(item);
-  const fileSources = sources.filter((source) => source.type === 'file');
-  if (!fileSources.length) {
-    item.sources = cloneSourcesForStorage(sources);
-    return true;
-  }
-
-  if (!supportsQueueFileStorage()) {
-    showQueueError(
-      'Queue file mode requires browser IndexedDB support.\n'
-      + 'Please use absolute CSV paths or run without queue.'
-    );
-    return false;
-  }
-
-  const persistedKeys = [];
-  try {
-    for (const source of fileSources) {
-      const fileBlob = source._file;
-      if (!isBlobLike(fileBlob)) {
-        throw new Error('Selected file data is no longer available. Please reselect CSV files.');
-      }
-      await putQueuedFileBlob(source.fileKey, fileBlob);
-      persistedKeys.push(source.fileKey);
-      delete source._file;
-    }
-    item.sources = cloneSourcesForStorage(sources);
-    return true;
-  } catch (error) {
-    await deleteQueuedFileKeys(persistedKeys);
-    showQueueError('Failed to store selected CSV files for queue: ' + (error?.message || 'Unknown error.'));
-    return false;
-  }
-}
-
 function collectQueueItem() {
   const itemId = 'q_' + Date.now() + '_' + Math.random().toString(36).slice(2, 6);
-  const sources = collectQueueSources(itemId);
+  const sources = collectQueueSources();
   if (sources === null) {
     return null;
   }
@@ -584,9 +358,6 @@ async function addToQueue(item) {
     item.label = generateQueueLabel(item);
   }
 
-  const persisted = await persistQueueFilesForItem(item);
-  if (!persisted) return false;
-
   queue.items.push(item);
   queue.nextIndex = Math.max(queue.nextIndex || 1, item.index + 1);
   saveQueue(queue);
@@ -598,18 +369,13 @@ async function addToQueue(item) {
 async function removeFromQueue(itemId) {
   if (queueRunning) return;
   const queue = loadQueue();
-  let removedItem = null;
   queue.items = queue.items.filter((item) => {
-    if (item.id === itemId && !removedItem) {
-      removedItem = item;
+    if (item.id === itemId) {
       return false;
     }
     return true;
   });
   saveQueue(queue);
-  if (removedItem) {
-    await deleteQueuedFileKeys(collectFileKeysFromItem(removedItem));
-  }
   renderQueue();
   updateRunButtonState();
 }
@@ -617,14 +383,9 @@ async function removeFromQueue(itemId) {
 async function clearQueue() {
   if (queueRunning) return;
   const queue = loadQueue();
-  const fileKeys = [];
-  queue.items.forEach((item) => {
-    collectFileKeysFromItem(item).forEach((key) => fileKeys.push(key));
-  });
   queue.items = [];
-  // Keep nextIndex monotonic to avoid label reuse across clears.
+  // Empty queue resets label numbering to keep UX predictable.
   saveQueue(queue);
-  await deleteQueuedFileKeys(fileKeys);
   renderQueue();
   updateRunButtonState();
 }
@@ -637,9 +398,7 @@ function buildQueueTooltip(item) {
   lines.push('Strategy: ' + strategyName + (strategyVersion ? (' v' + strategyVersion) : ''));
 
   const sources = getQueueSources(item);
-  const pathCount = sources.filter((source) => source.type === 'path').length;
-  const fileCount = sources.filter((source) => source.type === 'file').length;
-  lines.push('CSV Sources: ' + sources.length + ' file(s) [PATH: ' + pathCount + ', FILE: ' + fileCount + ']');
+  lines.push('CSV Sources: ' + sources.length + ' path(s)');
   const maxShow = 5;
   sources.slice(0, maxShow).forEach((source, index) => {
     const fileName = buildSourceDisplayLabel(source, index);
@@ -950,7 +709,6 @@ async function runQueue() {
         const updatedQueue = loadQueue();
         updatedQueue.items = updatedQueue.items.filter((entry) => entry.id !== item.id);
         saveQueue(updatedQueue);
-        await deleteQueuedFileKeys(collectFileKeysFromItem(item));
         continue;
       }
 
@@ -1003,48 +761,8 @@ async function runQueue() {
           formData.append('dbTarget', item.dbTarget);
         }
 
-        if (source.type === 'path') {
-          const csvPath = String(source.path || '').trim();
-          if (!isAbsoluteFilesystemPath(csvPath)) {
-            itemFailure += 1;
-            processedCursor = sourceIndex + 1;
-            persistItemProgress(item.id, {
-              sourceCursor: processedCursor,
-              successCount: itemSuccess,
-              failureCount: itemFailure
-            });
-            continue;
-          }
-          formData.append('csvPath', csvPath);
-        } else if (source.type === 'file') {
-          let fileBlob;
-          try {
-            fileBlob = await getQueuedFileBlob(source.fileKey);
-          } catch (error) {
-            console.error('Queue file load failed for key:', source.fileKey, error);
-            fileBlob = null;
-          }
-
-          if (!isBlobLike(fileBlob)) {
-            itemFailure += 1;
-            processedCursor = sourceIndex + 1;
-            if (optimizerResultsEl) {
-              optimizerResultsEl.textContent = (
-                'Queue item: ' + item.label + '\n'
-                + 'Source ' + (sourceIndex + 1) + '/' + totalSources + ': [' + sourceMode + '] ' + sourceName + ' - failed (file data missing).'
-              );
-            }
-            persistItemProgress(item.id, {
-              sourceCursor: processedCursor,
-              successCount: itemSuccess,
-              failureCount: itemFailure
-            });
-            continue;
-          }
-
-          const uploadName = source.name || ('source_' + (sourceIndex + 1) + '.csv');
-          formData.append('file', fileBlob, uploadName);
-        } else {
+        const csvPath = String(source.path || '').trim();
+        if (!isAbsoluteFilesystemPath(csvPath)) {
           itemFailure += 1;
           processedCursor = sourceIndex + 1;
           persistItemProgress(item.id, {
@@ -1054,6 +772,7 @@ async function runQueue() {
           });
           continue;
         }
+        formData.append('csvPath', csvPath);
 
         try {
           let data;
@@ -1136,7 +855,6 @@ async function runQueue() {
         return true;
       });
       saveQueue(updatedQueue);
-      await deleteQueuedFileKeys(collectFileKeysFromItem(item));
     }
 
     if (optimizerResultsEl) {
@@ -1216,7 +934,6 @@ async function runQueue() {
 function initQueue() {
   renderQueue();
   updateRunButtonState();
-  void cleanupStaleQueueFiles();
 }
 
 

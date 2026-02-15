@@ -84,6 +84,15 @@ function getStrategySummary() {
   };
 }
 
+function isAbsoluteFilesystemPath(path) {
+  const value = String(path || '').trim();
+  if (!value) return false;
+  if (/^[A-Za-z]:[\\/]/.test(value)) return true; // Windows drive path
+  if (/^\\\\[^\\]/.test(value)) return true; // UNC path
+  if (value.startsWith('/')) return true; // POSIX path
+  return false;
+}
+
 function normalizeSelectedCsvPaths(paths) {
   const items = Array.isArray(paths) ? paths : [];
   const unique = [];
@@ -1241,22 +1250,24 @@ async function runWalkForward({ sources, state }) {
 
   for (let index = 0; index < totalSources; index += 1) {
     const source = sources[index];
-    const isFileObject = typeof File !== 'undefined' && source instanceof File;
-    const rawSourceName = isFileObject ? source.name : source && source.path;
-    const sourceName = rawSourceName || (isFileObject ? 'Unnamed file' : 'Saved path');
+    const sourcePath = String(source?.path || '').trim();
+    const sourceName = sourcePath || ('source_' + (index + 1));
     const sourceNumber = index + 1;
     const fileLabel = `Processing source ${sourceNumber} of ${totalSources}: ${sourceName}`;
 
     updateStatus(index, `${fileLabel} - running Walk-Forward...`);
 
+    if (!isAbsoluteFilesystemPath(sourcePath)) {
+      const message = 'CSV path must be absolute.';
+      errors.push({ file: sourceName, message });
+      updateStatus(index, `Error: Source ${sourceNumber} of ${totalSources} (${sourceName}) failed: ${message}`);
+      continue;
+    }
+
     const formData = new FormData();
     formData.append('strategy', window.currentStrategyId);
     formData.append('warmupBars', warmupValue);
-    if (isFileObject) {
-      formData.append('file', source, source.name);
-    } else if (source && source.path) {
-      formData.append('csvPath', source.path);
-    }
+    formData.append('csvPath', sourcePath);
 
     formData.append('config', JSON.stringify(config));
     formData.append('wf_is_period_days', wfIsPeriodDays);
@@ -1392,7 +1403,13 @@ async function executeBacktestRun({ event = null, downloadTrades = false } = {})
   const primaryPath = selectedPaths.length ? selectedPaths[0] : '';
 
   if (!primaryPath) {
-    errorEl.textContent = 'Please select a CSV data file or use a saved path.';
+    errorEl.textContent = 'Please select a CSV file before running.';
+    errorEl.style.display = 'block';
+    return;
+  }
+
+  if (!isAbsoluteFilesystemPath(primaryPath)) {
+    errorEl.textContent = 'CSV path must be absolute.';
     errorEl.style.display = 'block';
     return;
   }
@@ -1501,6 +1518,13 @@ async function submitOptimization(event) {
   const optunaEta = document.getElementById('optunaEta');
 
   const selectedPaths = getSelectedCsvPaths();
+  const invalidPath = selectedPaths.find((path) => !isAbsoluteFilesystemPath(path));
+  if (invalidPath) {
+    optimizerResultsEl.textContent = `CSV path must be absolute: ${invalidPath}`;
+    optimizerResultsEl.classList.remove('ready');
+    optimizerResultsEl.style.display = 'block';
+    return;
+  }
   const sources = selectedPaths.map((path) => ({ path }));
   if (!sources.length) {
     optimizerResultsEl.textContent = 'Please select at least one CSV file before running optimization.';
@@ -1645,9 +1669,8 @@ async function submitOptimization(event) {
 
   for (let index = 0; index < totalSources; index += 1) {
     const source = sources[index];
-    const isFileObject = typeof File !== 'undefined' && source instanceof File;
-    const rawSourceName = isFileObject ? source.name : source && source.path;
-    const sourceName = rawSourceName || (isFileObject ? 'Unnamed file' : 'Saved path');
+    const sourcePath = String(source?.path || '').trim();
+    const sourceName = sourcePath || ('source_' + (index + 1));
     const sourceNumber = index + 1;
     const fileLabel = `Processing source ${sourceNumber} of ${totalSources}: ${sourceName}`;
 
@@ -1669,11 +1692,13 @@ async function submitOptimization(event) {
     const formData = new FormData();
     formData.append('strategy', window.currentStrategyId);
     formData.append('warmupBars', warmupValue);
-    if (isFileObject) {
-      formData.append('file', source, source.name);
-    } else if (source && source.path) {
-      formData.append('csvPath', source.path);
+    if (!isAbsoluteFilesystemPath(sourcePath)) {
+      const message = 'CSV path must be absolute.';
+      errors.push({ file: sourceName, message });
+      updateStatus(index, `Error: Source ${sourceNumber} of ${totalSources} (${sourceName}) failed: ${message}`);
+      continue;
     }
+    formData.append('csvPath', sourcePath);
     formData.append('config', JSON.stringify(config));
     appendDatabaseTargetToFormData(formData);
 
