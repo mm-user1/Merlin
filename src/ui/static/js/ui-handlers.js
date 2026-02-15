@@ -66,6 +66,29 @@ function updateOptimizationState(patch) {
   return updated;
 }
 
+function generateOptimizationRunId(prefix = 'run') {
+  const normalizedPrefix = String(prefix || 'run').replace(/[^A-Za-z0-9_-]+/g, '') || 'run';
+  return normalizedPrefix + '_' + Date.now() + '_' + Math.random().toString(36).slice(2, 10);
+}
+
+function setCurrentOptimizationRunId(runId) {
+  const normalizedRunId = String(runId || '').trim();
+  window.activeOptimizationRunId = normalizedRunId;
+  updateOptimizationState({ run_id: normalizedRunId });
+}
+
+async function cancelCurrentRunBestEffort(runId) {
+  const normalizedRunId = String(runId || '').trim();
+  if (!normalizedRunId || typeof cancelOptimizationRequest !== 'function') {
+    return;
+  }
+  try {
+    await cancelOptimizationRequest(normalizedRunId);
+  } catch (error) {
+    console.warn('Cancel request failed', error);
+  }
+}
+
 function openResultsPage() {
   try {
     window.open('/results', '_blank', 'noopener');
@@ -1196,6 +1219,7 @@ async function runWalkForward({ sources, state }) {
   saveOptimizationState({
     status: 'running',
     mode: 'wfa',
+    run_id: '',
     strategy: strategySummary,
     dataset: {
       label: getDatasetLabel()
@@ -1247,6 +1271,7 @@ async function runWalkForward({ sources, state }) {
   const errors = [];
   let successCount = 0;
   let lastSuccessfulData = null;
+  let inFlightRunId = '';
 
   for (let index = 0; index < totalSources; index += 1) {
     const source = sources[index];
@@ -1280,6 +1305,9 @@ async function runWalkForward({ sources, state }) {
     formData.append('wf_cusum_threshold', wfCusumThreshold);
     formData.append('wf_dd_threshold_multiplier', wfDdThresholdMultiplier);
     formData.append('wf_inactivity_multiplier', wfInactivityMultiplier);
+    inFlightRunId = generateOptimizationRunId('wfa');
+    formData.append('runId', inFlightRunId);
+    setCurrentOptimizationRunId(inFlightRunId);
     appendDatabaseTargetToFormData(formData);
     try {
       const data = await runWalkForwardRequest(formData, optimizationAbortController.signal);
@@ -1287,16 +1315,23 @@ async function runWalkForward({ sources, state }) {
       updateStatus(index, `Success: Source ${sourceNumber} of ${totalSources} (${sourceName}) completed successfully.`);
       successCount += 1;
       lastSuccessfulData = data;
+      inFlightRunId = '';
+      setCurrentOptimizationRunId('');
     } catch (err) {
       if (err && err.name === 'AbortError') {
+        await cancelCurrentRunBestEffort(inFlightRunId);
+        inFlightRunId = '';
+        setCurrentOptimizationRunId('');
         updateStatus(index, `Cancelled: Source ${sourceNumber} of ${totalSources} (${sourceName}).`);
-        updateOptimizationState({ status: 'cancelled', mode: 'wfa' });
+        updateOptimizationState({ status: 'cancelled', mode: 'wfa', run_id: '' });
         break;
       }
       const message = err && err.message ? err.message : 'Walk-Forward failed.';
       console.error(`Walk-Forward failed for source ${sourceName}`, err);
       errors.push({ file: sourceName, message });
       updateStatus(index, `Error: Source ${sourceNumber} of ${totalSources} (${sourceName}) failed: ${message}`);
+      inFlightRunId = '';
+      setCurrentOptimizationRunId('');
     }
   }
 
@@ -1317,6 +1352,7 @@ async function runWalkForward({ sources, state }) {
       updateOptimizationState({
         status: 'completed',
         mode: 'wfa',
+        run_id: '',
         study_id: lastSuccessfulData.study_id || '',
         summary: lastSuccessfulData.summary || {},
         dataPath: lastSuccessfulData.data_path || '',
@@ -1333,6 +1369,7 @@ async function runWalkForward({ sources, state }) {
       updateOptimizationState({
         status: 'completed',
         mode: 'wfa',
+        run_id: '',
         study_id: lastSuccessfulData.study_id || '',
         summary: lastSuccessfulData.summary || {},
         dataPath: lastSuccessfulData.data_path || '',
@@ -1347,9 +1384,11 @@ async function runWalkForward({ sources, state }) {
     updateOptimizationState({
       status: 'error',
       mode: 'wfa',
+      run_id: '',
       error: 'All walk-forward runs failed.'
     });
   }
+  setCurrentOptimizationRunId('');
 }
 
 function buildBacktestRequestFormData(csvPath, payload) {
@@ -1496,14 +1535,18 @@ async function submitOptimization(event) {
 
   event.preventDefault();
 
-  const queue = typeof loadQueue === 'function' ? loadQueue() : { items: [] };
-  if (queue.items.length > 0 && typeof runQueue === 'function') {
-    if (typeof isQueueRunning === 'function' && isQueueRunning()) {
-      if (window.optimizationAbortController) {
-        window.optimizationAbortController.abort();
-      }
-      return;
+  if (typeof isQueueRunning === 'function' && isQueueRunning()) {
+    if (typeof requestQueueStopAfterCurrent === 'function') {
+      requestQueueStopAfterCurrent();
+    } else if (window.optimizationAbortController) {
+      window.optimizationAbortController.abort();
     }
+    return;
+  }
+
+  const queueLoaded = typeof isQueueLoaded === 'function' ? isQueueLoaded() : true;
+  const queue = queueLoaded && typeof loadQueue === 'function' ? loadQueue() : { items: [] };
+  if (queueLoaded && queue.items.length > 0 && typeof runQueue === 'function') {
     await runQueue();
     return;
   }
@@ -1595,6 +1638,7 @@ async function submitOptimization(event) {
   saveOptimizationState({
     status: 'running',
     mode: 'optuna',
+    run_id: '',
     strategy: strategySummary,
     dataset: {
       label: getDatasetLabel()
@@ -1664,6 +1708,7 @@ async function submitOptimization(event) {
   let lastStudyId = '';
   let lastSummary = null;
   let lastDataPath = '';
+  let inFlightRunId = '';
   const optunaBudgetMode = config.optuna_budget_mode;
   const plannedTrials = optunaBudgetMode === 'trials' ? config.optuna_n_trials : null;
 
@@ -1700,6 +1745,9 @@ async function submitOptimization(event) {
     }
     formData.append('csvPath', sourcePath);
     formData.append('config', JSON.stringify(config));
+    inFlightRunId = generateOptimizationRunId('opt');
+    formData.append('runId', inFlightRunId);
+    setCurrentOptimizationRunId(inFlightRunId);
     appendDatabaseTargetToFormData(formData);
 
     try {
@@ -1724,10 +1772,15 @@ async function submitOptimization(event) {
 
       updateStatus(index, `Success: Source ${sourceNumber} of ${totalSources} (${sourceName}) processed successfully.`);
       successCount += 1;
+      inFlightRunId = '';
+      setCurrentOptimizationRunId('');
     } catch (err) {
       if (err && err.name === 'AbortError') {
+        await cancelCurrentRunBestEffort(inFlightRunId);
+        inFlightRunId = '';
+        setCurrentOptimizationRunId('');
         updateStatus(index, `Cancelled: Source ${sourceNumber} of ${totalSources} (${sourceName}).`);
-        updateOptimizationState({ status: 'cancelled', mode: 'optuna' });
+        updateOptimizationState({ status: 'cancelled', mode: 'optuna', run_id: '' });
         break;
       }
       const message = err && err.message ? err.message : 'Optimization failed.';
@@ -1742,6 +1795,8 @@ async function submitOptimization(event) {
       }
 
       updateStatus(index, `Error: Source ${sourceNumber} of ${totalSources} (${sourceName}) failed: ${message}`);
+      inFlightRunId = '';
+      setCurrentOptimizationRunId('');
     }
   }
 
@@ -1760,6 +1815,7 @@ async function submitOptimization(event) {
       updateOptimizationState({
         status: 'completed',
         mode: 'optuna',
+        run_id: '',
         study_id: lastStudyId,
         summary: lastSummary || {},
         dataPath: lastDataPath,
@@ -1775,6 +1831,7 @@ async function submitOptimization(event) {
       updateOptimizationState({
         status: 'completed',
         mode: 'optuna',
+        run_id: '',
         study_id: lastStudyId,
         summary: lastSummary || {},
         dataPath: lastDataPath,
@@ -1786,9 +1843,11 @@ async function submitOptimization(event) {
     updateOptimizationState({
       status: 'error',
       mode: 'optuna',
+      run_id: '',
       error: 'Optimization failed for all selected data sources.'
     });
   }
+  setCurrentOptimizationRunId('');
   optimizerResultsEl.textContent = summaryMessages.join('\n');
 }
 

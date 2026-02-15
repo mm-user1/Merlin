@@ -64,16 +64,20 @@ try:
         DEFAULT_PRESET_NAME,
         _build_optimization_config,
         _build_trial_metrics,
+        _clear_cancelled_run,
         _execute_backtest_request,
         _find_wfa_window,
         _get_optimization_state,
         _get_parameter_types,
+        _is_run_cancelled,
         _json_safe,
         _list_presets,
         _load_preset,
+        _normalize_run_id,
         _normalize_preset_payload,
         _parse_csv_parameter_block,
         _preset_path,
+        _register_cancelled_run,
         _resolve_csv_path,
         _resolve_strategy_id_from_request,
         _resolve_wfa_period,
@@ -93,16 +97,20 @@ except ImportError:
         DEFAULT_PRESET_NAME,
         _build_optimization_config,
         _build_trial_metrics,
+        _clear_cancelled_run,
         _execute_backtest_request,
         _find_wfa_window,
         _get_optimization_state,
         _get_parameter_types,
+        _is_run_cancelled,
         _json_safe,
         _list_presets,
         _load_preset,
+        _normalize_run_id,
         _normalize_preset_payload,
         _parse_csv_parameter_block,
         _preset_path,
+        _register_cancelled_run,
         _resolve_csv_path,
         _resolve_strategy_id_from_request,
         _resolve_wfa_period,
@@ -129,10 +137,39 @@ def register_routes(app):
 
     @app.post("/api/optimization/cancel")
     def optimization_cancel() -> object:
+        requested_run_id = _normalize_run_id(
+            request.form.get("runId")
+            or request.form.get("run_id")
+            or request.args.get("run_id")
+        )
         state = _get_optimization_state()
+        active_run_id = _normalize_run_id(state.get("run_id") or state.get("runId"))
+        run_id = requested_run_id or active_run_id
+        if run_id:
+            _register_cancelled_run(run_id)
+            state["cancelled_run_id"] = run_id
         state["status"] = "cancelled"
         _set_optimization_state(state)
-        return jsonify({"status": "cancelled"})
+        payload: Dict[str, Any] = {"status": "cancelled"}
+        if run_id:
+            payload["run_id"] = run_id
+        return jsonify(payload)
+
+    def _resolve_request_run_id(form_data: Any) -> str:
+        raw_run_id = ""
+        if form_data is not None:
+            raw_run_id = (
+                form_data.get("runId")
+                or form_data.get("run_id")
+                or ""
+            )
+        if not raw_run_id:
+            raw_run_id = request.args.get("run_id") or ""
+
+        normalized = _normalize_run_id(raw_run_id)
+        if normalized:
+            return normalized
+        return f"run_{time.time_ns()}"
 
     def _apply_db_target_from_form(form_data) -> Optional[object]:
         db_target = (form_data.get("dbTarget") or "").strip()
@@ -163,6 +200,8 @@ def register_routes(app):
     def run_walkforward_optimization() -> object:
         """Run Walk-Forward Analysis"""
         data = request.form
+        run_id = _resolve_request_run_id(data)
+        _clear_cancelled_run(run_id)
         csv_path_raw = (data.get("csvPath") or "").strip()
         data_source = None
         data_path = ""
@@ -513,6 +552,7 @@ def register_routes(app):
             {
                 "status": "running",
                 "mode": "wfa",
+                "run_id": run_id,
                 "strategy_id": strategy_id,
                 "data_path": data_path,
                 "config": config_payload,
@@ -538,6 +578,7 @@ def register_routes(app):
                 {
                     "status": "error",
                     "mode": "wfa",
+                    "run_id": run_id,
                     "strategy_id": strategy_id,
                     "error": str(exc),
                 }
@@ -548,12 +589,42 @@ def register_routes(app):
                 {
                     "status": "error",
                     "mode": "wfa",
+                    "run_id": run_id,
                     "strategy_id": strategy_id,
                     "error": "Walk-forward optimization failed.",
                 }
             )
             app.logger.exception("Walk-forward optimization failed")
             return jsonify({"error": "Walk-forward optimization failed."}), HTTPStatus.INTERNAL_SERVER_ERROR
+
+        if _is_run_cancelled(run_id):
+            if study_id:
+                try:
+                    delete_study(study_id)
+                except Exception:  # pragma: no cover - defensive
+                    app.logger.exception("Failed to cleanup cancelled WFA study %s", study_id)
+            _clear_cancelled_run(run_id)
+            _set_optimization_state(
+                {
+                    "status": "cancelled",
+                    "mode": "wfa",
+                    "run_id": run_id,
+                    "strategy_id": strategy_id,
+                    "data_path": data_path,
+                    "study_id": None,
+                }
+            )
+            return jsonify(
+                {
+                    "status": "cancelled",
+                    "mode": "wfa",
+                    "run_id": run_id,
+                    "strategy_id": strategy_id,
+                    "data_path": data_path,
+                    "study_id": None,
+                    "active_db": get_active_db_name(),
+                }
+            )
 
         stitched_oos = result.stitched_oos
 
@@ -568,6 +639,7 @@ def register_routes(app):
                 "oos_win_rate": round(result.stitched_oos.oos_win_rate, 1),
             },
             "mode": "wfa",
+            "run_id": run_id,
             "strategy_id": strategy_id,
             "data_path": data_path,
             "study_id": study_id,
@@ -578,12 +650,14 @@ def register_routes(app):
             {
                 "status": "completed",
                 "mode": "wfa",
+                "run_id": run_id,
                 "strategy_id": strategy_id,
                 "data_path": data_path,
                 "summary": response_payload.get("summary", {}),
                 "study_id": study_id,
             }
         )
+        _clear_cancelled_run(run_id)
 
         return jsonify(response_payload)
 
@@ -707,6 +781,8 @@ def register_routes(app):
             warmup_bars = max(100, min(5000, warmup_bars))
         except (TypeError, ValueError):
             warmup_bars = 1000
+        run_id = _resolve_request_run_id(request.form)
+        _clear_cancelled_run(run_id)
 
         oos_payload = config_payload.get("oosTest")
         if not isinstance(oos_payload, dict):
@@ -828,6 +904,7 @@ def register_routes(app):
             _set_optimization_state({
                 "status": "error",
                 "mode": "optuna",
+                "run_id": run_id,
                 "error": str(exc),
             })
             return (str(exc), HTTPStatus.BAD_REQUEST)
@@ -835,6 +912,7 @@ def register_routes(app):
             _set_optimization_state({
                 "status": "error",
                 "mode": "optuna",
+                "run_id": run_id,
                 "error": "Failed to prepare optimization config.",
             })
             app.logger.exception("Failed to construct optimization config")
@@ -858,6 +936,7 @@ def register_routes(app):
         _set_optimization_state({
             "status": "running",
             "mode": "optuna",
+            "run_id": run_id,
             "strategy_id": optimization_config.strategy_id,
             "data_path": data_path,
             "source_name": source_name,
@@ -869,9 +948,44 @@ def register_routes(app):
         optimization_metadata: Optional[Dict[str, Any]] = None
         study_id: Optional[str] = None
         all_results: List[OptimizationResult] = []
+
+        def _finalize_cancelled_optuna_run(study_to_cleanup: Optional[str]) -> object:
+            if study_to_cleanup:
+                try:
+                    delete_study(study_to_cleanup)
+                except Exception:  # pragma: no cover - defensive
+                    app.logger.exception("Failed to cleanup cancelled study %s", study_to_cleanup)
+            _clear_cancelled_run(run_id)
+            _set_optimization_state(
+                {
+                    "status": "cancelled",
+                    "mode": "optuna",
+                    "run_id": run_id,
+                    "strategy_id": optimization_config.strategy_id,
+                    "data_path": data_path,
+                    "source_name": source_name,
+                    "warmup_bars": optimization_config.warmup_bars,
+                    "config": config_payload,
+                    "study_id": None,
+                }
+            )
+            return jsonify(
+                {
+                    "status": "cancelled",
+                    "mode": "optuna",
+                    "run_id": run_id,
+                    "study_id": None,
+                    "strategy_id": optimization_config.strategy_id,
+                    "data_path": data_path,
+                    "active_db": get_active_db_name(),
+                }
+            )
+
         try:
             start_time = time.time()
             results, study_id = run_optimization(optimization_config)
+            if _is_run_cancelled(run_id):
+                return _finalize_cancelled_optuna_run(study_id)
             all_results = list(getattr(optimization_config, "optuna_all_results", []))
             end_time = time.time()
 
@@ -942,6 +1056,7 @@ def register_routes(app):
             _set_optimization_state({
                 "status": "error",
                 "mode": "optuna",
+                "run_id": run_id,
                 "strategy_id": optimization_config.strategy_id,
                 "error": str(exc),
             })
@@ -950,11 +1065,15 @@ def register_routes(app):
             _set_optimization_state({
                 "status": "error",
                 "mode": "optuna",
+                "run_id": run_id,
                 "strategy_id": optimization_config.strategy_id,
                 "error": "Optimization execution failed.",
             })
             app.logger.exception("Optimization run failed")
             return ("Optimization execution failed.", HTTPStatus.INTERNAL_SERVER_ERROR)
+
+        if _is_run_cancelled(run_id):
+            return _finalize_cancelled_optuna_run(study_id)
 
         if study_id:
             study_data = load_study_from_db(study_id) or {}
@@ -967,6 +1086,8 @@ def register_routes(app):
                 update_study_config_json(study_id, config_json)
 
         dsr_results: List[Any] = []
+        if _is_run_cancelled(run_id):
+            return _finalize_cancelled_optuna_run(study_id)
         if dsr_enabled and study_id:
             dsr_config = DSRConfig(
                 enabled=True,
@@ -997,6 +1118,8 @@ def register_routes(app):
             )
 
         ft_results: List[Any] = []
+        if _is_run_cancelled(run_id):
+            return _finalize_cancelled_optuna_run(study_id)
         if ft_enabled and study_id:
             ft_candidates = results
             if dsr_results:
@@ -1035,6 +1158,8 @@ def register_routes(app):
             )
 
         st_results: List[Any] = []
+        if _is_run_cancelled(run_id):
+            return _finalize_cancelled_optuna_run(study_id)
         if st_enabled and study_id:
             try:
                 from strategies import get_strategy_config
@@ -1091,6 +1216,8 @@ def register_routes(app):
             )
 
         oos_results_payload: List[Dict[str, Any]] = []
+        if _is_run_cancelled(run_id):
+            return _finalize_cancelled_optuna_run(study_id)
         if oos_enabled and study_id:
             if not oos_start or not oos_end:
                 raise ValueError("OOS Test enabled but OOS period could not be determined.")
@@ -1098,6 +1225,7 @@ def register_routes(app):
             _set_optimization_state({
                 "status": "running",
                 "mode": "optuna",
+                "run_id": run_id,
                 "study_id": study_id,
                 "stage": "oos_test",
                 "message": "Running OOS Test...",
@@ -1195,10 +1323,15 @@ def register_routes(app):
                 oos_source_module=source_module,
             )
 
+        if _is_run_cancelled(run_id):
+            return _finalize_cancelled_optuna_run(study_id)
+
+        _clear_cancelled_run(run_id)
         _set_optimization_state(
             {
                 "status": "completed",
                 "mode": "optuna",
+                "run_id": run_id,
                 "strategy_id": optimization_config.strategy_id,
                 "data_path": data_path,
                 "source_name": source_name,
@@ -1213,6 +1346,7 @@ def register_routes(app):
             {
                 "status": "success",
                 "mode": "optuna",
+                "run_id": run_id,
                 "study_id": study_id,
                 "summary": optimization_metadata or {},
                 "strategy_id": optimization_config.strategy_id,

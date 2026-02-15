@@ -1404,15 +1404,20 @@ function bindEventHandlers() {
   const cancelBtn = document.querySelector('.control-btn.cancel');
   if (cancelBtn) {
     cancelBtn.addEventListener('click', async () => {
+      const runId = String(ResultsState.run_id || ResultsState.runId || '').trim();
       try {
-        await cancelOptimizationRequest();
+        await cancelOptimizationRequest(runId);
       } catch (error) {
         console.warn('Cancel request failed', error);
       }
       ResultsState.status = 'cancelled';
       updateStatusBadge('cancelled');
-      localStorage.setItem(OPT_CONTROL_KEY, JSON.stringify({ action: 'cancel', at: Date.now() }));
-      updateStoredState({ status: 'cancelled' });
+      const controlPayload = { action: 'cancel', at: Date.now() };
+      if (runId) {
+        controlPayload.run_id = runId;
+      }
+      localStorage.setItem(OPT_CONTROL_KEY, JSON.stringify(controlPayload));
+      updateStoredState({ status: 'cancelled', run_id: runId || '' });
     });
   }
 

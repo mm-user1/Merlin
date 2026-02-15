@@ -69,7 +69,13 @@ async function runOptimizationRequest(formData, signal = null) {
     throw new Error(message || 'Optimization request failed.');
   }
 
-  return response.json();
+  const data = await response.json();
+  if (data && data.status === 'cancelled') {
+    const error = new Error('Optimization cancelled.');
+    error.name = 'AbortError';
+    throw error;
+  }
+  return data;
 }
 
 async function runWalkForwardRequest(formData, signal = null) {
@@ -80,6 +86,11 @@ async function runWalkForwardRequest(formData, signal = null) {
   });
 
   const data = await response.json();
+  if (data && data.status === 'cancelled') {
+    const error = new Error('Walk-Forward request cancelled.');
+    error.name = 'AbortError';
+    throw error;
+  }
 
   if (!response.ok || data.status !== 'success') {
     const message = data && data.error ? data.error : 'Walk-Forward request failed.';
@@ -93,6 +104,39 @@ async function fetchOptimizationStatus() {
   const response = await fetch('/api/optimization/status');
   if (!response.ok) {
     throw new Error(`Status request failed: ${response.status}`);
+  }
+  return response.json();
+}
+
+async function fetchQueueStateRequest() {
+  const response = await fetch('/api/queue');
+  if (!response.ok) {
+    const payload = await response.json().catch(() => ({}));
+    throw new Error(payload.error || 'Failed to load queue state.');
+  }
+  return response.json();
+}
+
+async function saveQueueStateRequest(queueState) {
+  const response = await fetch('/api/queue', {
+    method: 'PUT',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(queueState || {})
+  });
+  if (!response.ok) {
+    const payload = await response.json().catch(() => ({}));
+    throw new Error(payload.error || 'Failed to save queue state.');
+  }
+  return response.json();
+}
+
+async function clearQueueStateRequest() {
+  const response = await fetch('/api/queue', {
+    method: 'DELETE'
+  });
+  if (!response.ok) {
+    const payload = await response.json().catch(() => ({}));
+    throw new Error(payload.error || 'Failed to clear queue state.');
   }
   return response.json();
 }
@@ -201,8 +245,12 @@ async function deleteManualTestRequest(studyId, testId) {
   }
 }
 
-async function cancelOptimizationRequest() {
-  const response = await fetch('/api/optimization/cancel', { method: 'POST' });
+async function cancelOptimizationRequest(runId = '') {
+  const normalizedRunId = String(runId || '').trim();
+  const endpoint = normalizedRunId
+    ? ('/api/optimization/cancel?run_id=' + encodeURIComponent(normalizedRunId))
+    : '/api/optimization/cancel';
+  const response = await fetch(endpoint, { method: 'POST' });
   if (!response.ok) {
     throw new Error(`Cancel request failed: ${response.status}`);
   }

@@ -1,6 +1,7 @@
 import io
 import sys
 import csv
+import json
 from pathlib import Path
 
 import pytest
@@ -206,6 +207,225 @@ def test_optuna_sanitize_defaults():
     )
     assert config.sanitize_enabled is True
     assert config.sanitize_trades_threshold == 0
+
+
+def _ensure_local_test_tmp_dir() -> Path:
+    path = Path(__file__).parent / ".tmp_server_cancel"
+    path.mkdir(parents=True, exist_ok=True)
+    return path
+
+
+def _ensure_local_queue_tmp_dir() -> Path:
+    path = Path(__file__).parent / ".tmp_server_queue"
+    path.mkdir(parents=True, exist_ok=True)
+    return path
+
+
+def _patch_queue_storage_path(monkeypatch, filename: str) -> Path:
+    from ui import server_services
+
+    queue_file = _ensure_local_queue_tmp_dir() / filename
+    if queue_file.exists():
+        queue_file.unlink()
+
+    monkeypatch.setattr(
+        server_services,
+        "_queue_storage_file_path",
+        lambda: queue_file,
+    )
+    return queue_file
+
+
+def test_queue_api_roundtrip_persists_in_file_storage(client, monkeypatch):
+    queue_file = _patch_queue_storage_path(monkeypatch, "queue_roundtrip.json")
+
+    payload = {
+        "items": [
+            {
+                "id": "q_test_1",
+                "index": 1,
+                "label": "#1 example",
+                "sources": [{"type": "path", "path": r"C:\data\file_1.csv"}],
+                "sourceCursor": 0,
+                "successCount": 0,
+                "failureCount": 0,
+            }
+        ],
+        "nextIndex": 2,
+        "runtime": {"active": False, "updatedAt": 0},
+    }
+
+    response_put = client.put("/api/queue", json=payload)
+    assert response_put.status_code == 200
+    put_data = response_put.get_json()
+    assert put_data["nextIndex"] == 2
+    assert len(put_data["items"]) == 1
+    assert queue_file.exists()
+
+    response_get = client.get("/api/queue")
+    assert response_get.status_code == 200
+    get_data = response_get.get_json()
+    assert len(get_data["items"]) == 1
+    assert get_data["items"][0]["id"] == "q_test_1"
+    assert get_data["items"][0]["sources"][0]["path"] == r"C:\data\file_1.csv"
+
+    response_delete = client.delete("/api/queue")
+    assert response_delete.status_code == 200
+    delete_data = response_delete.get_json()
+    assert delete_data["items"] == []
+    assert delete_data["nextIndex"] == 1
+    assert delete_data["runtime"]["active"] is False
+    assert not queue_file.exists()
+
+
+def test_queue_api_empty_items_removes_queue_file(client, monkeypatch):
+    queue_file = _patch_queue_storage_path(monkeypatch, "queue_empty_cleanup.json")
+
+    seed_payload = {
+        "items": [
+            {
+                "id": "q_test_2",
+                "index": 1,
+                "label": "#1 seed",
+                "sources": [{"type": "path", "path": r"C:\data\seed.csv"}],
+            }
+        ],
+        "nextIndex": 2,
+        "runtime": {"active": True, "updatedAt": 123},
+    }
+
+    response_seed = client.put("/api/queue", json=seed_payload)
+    assert response_seed.status_code == 200
+    assert queue_file.exists()
+
+    response_clear = client.put(
+        "/api/queue",
+        json={
+            "items": [],
+            "nextIndex": 999,
+            "runtime": {"active": True, "updatedAt": 999},
+        },
+    )
+    assert response_clear.status_code == 200
+    clear_data = response_clear.get_json()
+    assert clear_data["items"] == []
+    assert clear_data["nextIndex"] == 1
+    assert clear_data["runtime"]["active"] is False
+    assert clear_data["runtime"]["updatedAt"] == 0
+    assert not queue_file.exists()
+
+
+def test_queue_api_rejects_non_object_payload(client):
+    response = client.put("/api/queue", json=["not", "an", "object"])
+    assert response.status_code == 400
+    payload = response.get_json()
+    assert "json object" in payload["error"].lower()
+
+
+def test_optimize_cancelled_run_cleans_up_saved_study(client, monkeypatch):
+    from ui import server_routes_run
+
+    csv_path = _ensure_local_test_tmp_dir() / "opt_cancel.csv"
+    csv_path.write_text(
+        "timestamp,open,high,low,close,volume\n"
+        "2026-01-01 00:00:00,1,1,1,1,1\n",
+        encoding="utf-8",
+    )
+
+    deleted_studies = []
+
+    monkeypatch.setattr(server_routes_run, "_resolve_csv_path", lambda _raw: csv_path)
+    monkeypatch.setattr(server_routes_run, "run_optimization", lambda _cfg: ([], "study_cancel_opt"))
+    monkeypatch.setattr(server_routes_run, "_is_run_cancelled", lambda run_id: run_id == "run_cancel_opt")
+    monkeypatch.setattr(
+        server_routes_run,
+        "delete_study",
+        lambda study_id: deleted_studies.append(study_id) or True,
+    )
+
+    payload = _build_minimal_optuna_payload()
+    payload["primary_objective"] = "net_profit_pct"
+
+    response = client.post(
+        "/api/optimize",
+        data={
+            "strategy": "s01_trailing_ma",
+            "csvPath": str(csv_path),
+            "runId": "run_cancel_opt",
+            "config": json.dumps(payload),
+        },
+    )
+
+    assert response.status_code == 200
+    data = response.get_json()
+    assert data["status"] == "cancelled"
+    assert data["run_id"] == "run_cancel_opt"
+    assert data["study_id"] is None
+    assert deleted_studies == ["study_cancel_opt"]
+
+
+def test_walkforward_cancelled_run_cleans_up_saved_study(client, monkeypatch):
+    from ui import server_routes_run
+    import core.walkforward_engine as walkforward_engine
+
+    csv_path = _ensure_local_test_tmp_dir() / "wfa_cancel.csv"
+    csv_path.write_text(
+        "timestamp,open,high,low,close,volume\n"
+        "2026-01-01 00:00:00,1,1,1,1,1\n",
+        encoding="utf-8",
+    )
+
+    df = pd.DataFrame(
+        {
+            "open": [1.0, 1.1, 1.2],
+            "high": [1.0, 1.1, 1.2],
+            "low": [1.0, 1.1, 1.2],
+            "close": [1.0, 1.1, 1.2],
+            "volume": [1.0, 1.0, 1.0],
+        },
+        index=pd.to_datetime(
+            ["2026-01-01 00:00:00", "2026-01-01 01:00:00", "2026-01-01 02:00:00"],
+            utc=True,
+        ),
+    )
+
+    class DummyWalkForwardEngine:
+        def __init__(self, *_args, **_kwargs):
+            pass
+
+        def run_wf_optimization(self, _dataframe):
+            return None, "study_cancel_wfa"
+
+    deleted_studies = []
+    monkeypatch.setattr(server_routes_run, "_resolve_csv_path", lambda _raw: csv_path)
+    monkeypatch.setattr(server_routes_run, "load_data", lambda _path: df)
+    monkeypatch.setattr(server_routes_run, "_is_run_cancelled", lambda run_id: run_id == "run_cancel_wfa")
+    monkeypatch.setattr(
+        server_routes_run,
+        "delete_study",
+        lambda study_id: deleted_studies.append(study_id) or True,
+    )
+    monkeypatch.setattr(walkforward_engine, "WalkForwardEngine", DummyWalkForwardEngine)
+
+    payload = _build_minimal_optuna_payload()
+    payload["primary_objective"] = "net_profit_pct"
+
+    response = client.post(
+        "/api/walkforward",
+        data={
+            "strategy": "s01_trailing_ma",
+            "csvPath": str(csv_path),
+            "runId": "run_cancel_wfa",
+            "config": json.dumps(payload),
+        },
+    )
+
+    assert response.status_code == 200
+    data = response.get_json()
+    assert data["status"] == "cancelled"
+    assert data["run_id"] == "run_cancel_wfa"
+    assert data["study_id"] is None
+    assert deleted_studies == ["study_cancel_wfa"]
 
 
 def _build_params_from_config(strategy_id: str):

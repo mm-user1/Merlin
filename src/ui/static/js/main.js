@@ -176,15 +176,49 @@ document.addEventListener('DOMContentLoaded', async () => {
   }
 
   if (typeof initQueue === 'function') {
-    initQueue();
+    try {
+      await initQueue();
+    } catch (error) {
+      if (typeof showQueueError === 'function') {
+        showQueueError(error?.message || 'Failed to initialize queue.');
+      }
+    }
+  }
+
+  const loadQueueBtn = document.getElementById('loadQueueBtn');
+  if (loadQueueBtn) {
+    loadQueueBtn.addEventListener('click', async () => {
+      try {
+        if (typeof loadQueueUi === 'function') {
+          await loadQueueUi();
+        } else if (typeof attachQueueUiIfNeeded === 'function') {
+          await attachQueueUiIfNeeded();
+        }
+      } catch (error) {
+        if (typeof showQueueError === 'function') {
+          showQueueError(error?.message || 'Failed to load queue.');
+        }
+      }
+    });
   }
 
   const addToQueueBtn = document.getElementById('addToQueueBtn');
   if (addToQueueBtn && typeof collectQueueItem === 'function' && typeof addToQueue === 'function') {
     addToQueueBtn.addEventListener('click', async () => {
-      const item = collectQueueItem();
-      if (item) {
-        await addToQueue(item);
+      try {
+        if (typeof loadQueueUi === 'function') {
+          await loadQueueUi();
+        } else if (typeof attachQueueUiIfNeeded === 'function') {
+          await attachQueueUiIfNeeded();
+        }
+        const item = collectQueueItem();
+        if (item) {
+          await addToQueue(item);
+        }
+      } catch (error) {
+        if (typeof showQueueError === 'function') {
+          showQueueError(error?.message || 'Failed to add item to queue.');
+        }
       }
     });
   }
@@ -193,7 +227,13 @@ document.addEventListener('DOMContentLoaded', async () => {
   if (clearQueueBtn && typeof clearQueue === 'function') {
     clearQueueBtn.addEventListener('click', async () => {
       if (window.confirm('Clear all items from the queue?')) {
-        await clearQueue();
+        try {
+          await clearQueue();
+        } catch (error) {
+          if (typeof showQueueError === 'function') {
+            showQueueError(error?.message || 'Failed to clear queue.');
+          }
+        }
       }
     });
   }

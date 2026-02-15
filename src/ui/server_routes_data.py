@@ -67,16 +67,19 @@ try:
         DEFAULT_CSV_ROOT,
         _build_optimization_config,
         _build_trial_metrics,
+        _clear_queue_state,
         _find_wfa_window,
         _get_optimization_state,
         _get_parameter_types,
         _json_safe,
+        _load_queue_state,
         _list_csv_directory,
         _list_presets,
         _load_preset,
         _normalize_preset_payload,
         _parse_csv_parameter_block,
         _preset_path,
+        _save_queue_state,
         _resolve_csv_path,
         _resolve_strategy_id_from_request,
         _resolve_wfa_period,
@@ -98,16 +101,19 @@ except ImportError:
         DEFAULT_CSV_ROOT,
         _build_optimization_config,
         _build_trial_metrics,
+        _clear_queue_state,
         _find_wfa_window,
         _get_optimization_state,
         _get_parameter_types,
         _json_safe,
+        _load_queue_state,
         _list_csv_directory,
         _list_presets,
         _load_preset,
         _normalize_preset_payload,
         _parse_csv_parameter_block,
         _preset_path,
+        _save_queue_state,
         _resolve_csv_path,
         _resolve_strategy_id_from_request,
         _resolve_wfa_period,
@@ -280,6 +286,37 @@ def register_routes(app):
             return jsonify({"error": str(exc)}), HTTPStatus.BAD_REQUEST
 
         return jsonify({"filename": filename, "active": filename})
+
+
+    @app.get("/api/queue")
+    def get_queue_state_endpoint() -> object:
+        try:
+            payload = _load_queue_state()
+        except OSError:
+            return jsonify({"error": "Failed to load queue state."}), HTTPStatus.INTERNAL_SERVER_ERROR
+        return jsonify(payload)
+
+
+    @app.put("/api/queue")
+    def save_queue_state_endpoint() -> object:
+        payload = request.get_json(silent=True)
+        if not isinstance(payload, dict):
+            return jsonify({"error": "Queue payload must be a JSON object."}), HTTPStatus.BAD_REQUEST
+
+        try:
+            normalized = _save_queue_state(payload)
+        except OSError:
+            return jsonify({"error": "Failed to save queue state."}), HTTPStatus.INTERNAL_SERVER_ERROR
+        return jsonify(normalized)
+
+
+    @app.delete("/api/queue")
+    def clear_queue_state_endpoint() -> object:
+        try:
+            normalized = _clear_queue_state()
+        except OSError:
+            return jsonify({"error": "Failed to clear queue state."}), HTTPStatus.INTERNAL_SERVER_ERROR
+        return jsonify(normalized)
 
 
 

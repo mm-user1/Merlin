@@ -5,6 +5,7 @@ import os
 import re
 import sys
 import threading
+import time
 from datetime import datetime, timezone
 from http import HTTPStatus
 from pathlib import Path
@@ -66,6 +67,10 @@ LAST_OPTIMIZATION_STATE: Dict[str, Any] = {
     "status": "idle",
     "updated_at": None,
 }
+CANCELLED_RUNS_TTL_SECONDS = 24 * 60 * 60
+CANCELLED_RUNS_MAX_SIZE = 2048
+RUN_ID_PATTERN = re.compile(r"^[A-Za-z0-9._:-]{1,128}$")
+CANCELLED_RUNS: Dict[str, float] = {}
 
 
 def _is_path_within_root(path: Path, root: Path) -> bool:
@@ -108,6 +113,8 @@ DEFAULT_CSV_ROOT = (
 CSV_ALLOWED_ROOTS = _collect_allowed_csv_roots(DEFAULT_CSV_ROOT)
 # Kept as a public flag for API metadata, but absolute csvPath is now mandatory.
 STRICT_CSV_PATH_MODE = True
+QUEUE_STATE_PATTERN = re.compile(r"^[A-Za-z]:[\\/]|^\\\\[^\\]|^/")
+QUEUE_STORAGE_FILE = Path(__file__).resolve().parent.parent / "storage" / "queue.json"
 
 
 def _is_csv_path_allowed(path: Path) -> bool:
@@ -189,6 +196,210 @@ def _list_csv_directory(raw_path: Optional[str]) -> Dict[str, Any]:
     }
 
 
+def _default_queue_state() -> Dict[str, Any]:
+    return {
+        "items": [],
+        "nextIndex": 1,
+        "runtime": {
+            "active": False,
+            "updatedAt": 0,
+        },
+    }
+
+
+def _queue_storage_file_path() -> Path:
+    return QUEUE_STORAGE_FILE
+
+
+def _is_absolute_filesystem_path(raw_path: Any) -> bool:
+    value = str(raw_path or "").strip()
+    if not value:
+        return False
+    return bool(QUEUE_STATE_PATTERN.match(value))
+
+
+def _normalize_queue_source(raw_source: Any) -> Optional[Dict[str, str]]:
+    if isinstance(raw_source, str):
+        path = raw_source
+    elif isinstance(raw_source, dict):
+        path = raw_source.get("path") or raw_source.get("csvPath") or ""
+    else:
+        return None
+
+    normalized_path = str(path or "").strip()
+    if not _is_absolute_filesystem_path(normalized_path):
+        return None
+
+    return {
+        "type": "path",
+        "path": normalized_path,
+    }
+
+
+def _normalize_queue_sources(raw_sources: Any) -> List[Dict[str, str]]:
+    sources: List[Dict[str, str]] = []
+    if not isinstance(raw_sources, list):
+        return sources
+
+    for raw_source in raw_sources:
+        normalized = _normalize_queue_source(raw_source)
+        if normalized:
+            sources.append(normalized)
+    return sources
+
+
+def _normalize_queue_runtime(raw_runtime: Any) -> Dict[str, Any]:
+    if not isinstance(raw_runtime, dict):
+        return {"active": False, "updatedAt": 0}
+
+    try:
+        updated_at = int(raw_runtime.get("updatedAt") or 0)
+    except (TypeError, ValueError):
+        updated_at = 0
+
+    return {
+        "active": bool(raw_runtime.get("active")),
+        "updatedAt": max(0, updated_at),
+    }
+
+
+def _compute_queue_next_index(items: List[Dict[str, Any]], candidate_next_index: Any) -> int:
+    if not items:
+        return 1
+
+    max_index = max(int(item.get("index") or 0) for item in items)
+    try:
+        candidate = int(candidate_next_index)
+    except (TypeError, ValueError):
+        candidate = 0
+    if candidate > max_index:
+        return candidate
+    return max(1, max_index + 1)
+
+
+def _normalize_queue_item(raw_item: Any, fallback_index: int) -> Optional[Dict[str, Any]]:
+    if not isinstance(raw_item, dict):
+        return None
+
+    sources = _normalize_queue_sources(raw_item.get("sources"))
+    if not sources:
+        return None
+
+    try:
+        index = int(raw_item.get("index"))
+    except (TypeError, ValueError):
+        index = fallback_index
+    index = max(1, index)
+
+    item = json.loads(json.dumps(raw_item))
+    item["index"] = index
+    item["sources"] = sources
+
+    try:
+        source_cursor = int(item.get("sourceCursor") or 0)
+    except (TypeError, ValueError):
+        source_cursor = 0
+    item["sourceCursor"] = max(0, min(len(sources), source_cursor))
+
+    try:
+        success_count = int(item.get("successCount") or 0)
+    except (TypeError, ValueError):
+        success_count = 0
+    item["successCount"] = max(0, success_count)
+
+    try:
+        failure_count = int(item.get("failureCount") or 0)
+    except (TypeError, ValueError):
+        failure_count = 0
+    item["failureCount"] = max(0, failure_count)
+
+    label = str(item.get("label") or "").strip()
+    if not label:
+        item["label"] = f"#{index}"
+
+    return item
+
+
+def _normalize_queue_payload(raw_payload: Any) -> Dict[str, Any]:
+    if not isinstance(raw_payload, dict):
+        return _default_queue_state()
+
+    raw_items = raw_payload.get("items")
+    items: List[Dict[str, Any]] = []
+    if isinstance(raw_items, list):
+        for idx, raw_item in enumerate(raw_items):
+            normalized_item = _normalize_queue_item(raw_item, idx + 1)
+            if normalized_item:
+                items.append(normalized_item)
+
+    next_index = _compute_queue_next_index(
+        items,
+        raw_payload.get("nextIndex"),
+    )
+
+    runtime = _normalize_queue_runtime(raw_payload.get("runtime"))
+    if not items:
+        runtime = {"active": False, "updatedAt": 0}
+
+    return {
+        "items": items,
+        "nextIndex": next_index,
+        "runtime": runtime,
+    }
+
+
+def _load_queue_state() -> Dict[str, Any]:
+    path = _queue_storage_file_path()
+    try:
+        raw = path.read_text(encoding="utf-8")
+    except FileNotFoundError:
+        return _default_queue_state()
+
+    try:
+        parsed = json.loads(raw)
+    except json.JSONDecodeError:
+        try:
+            path.unlink()
+        except OSError:
+            pass
+        return _default_queue_state()
+
+    normalized = _normalize_queue_payload(parsed)
+    if not normalized.get("items"):
+        try:
+            path.unlink()
+        except FileNotFoundError:
+            pass
+    return normalized
+
+
+def _save_queue_state(raw_payload: Any) -> Dict[str, Any]:
+    normalized = _normalize_queue_payload(raw_payload)
+    path = _queue_storage_file_path()
+
+    if not normalized.get("items"):
+        try:
+            path.unlink()
+        except FileNotFoundError:
+            pass
+        return _default_queue_state()
+
+    path.parent.mkdir(parents=True, exist_ok=True)
+    tmp_path = path.with_name(path.name + ".tmp")
+    tmp_path.write_text(json.dumps(normalized, ensure_ascii=False), encoding="utf-8")
+    os.replace(tmp_path, path)
+    return normalized
+
+
+def _clear_queue_state() -> Dict[str, Any]:
+    path = _queue_storage_file_path()
+    try:
+        path.unlink()
+    except FileNotFoundError:
+        pass
+    return _default_queue_state()
+
+
 
 
 def _get_logger():
@@ -209,6 +420,60 @@ def _set_optimization_state(payload: Dict[str, Any]) -> None:
 def _get_optimization_state() -> Dict[str, Any]:
     with OPTIMIZATION_STATE_LOCK:
         return json.loads(json.dumps(LAST_OPTIMIZATION_STATE))
+
+
+def _normalize_run_id(raw_value: Any) -> str:
+    value = str(raw_value or "").strip()
+    if not value:
+        return ""
+    if RUN_ID_PATTERN.fullmatch(value):
+        return value
+    return ""
+
+
+def _cleanup_cancelled_runs_locked(now_ts: Optional[float] = None) -> None:
+    if not CANCELLED_RUNS:
+        return
+
+    current = float(time.time() if now_ts is None else now_ts)
+    ttl_cutoff = current - CANCELLED_RUNS_TTL_SECONDS
+    stale_keys = [run_id for run_id, timestamp in CANCELLED_RUNS.items() if timestamp < ttl_cutoff]
+    for run_id in stale_keys:
+        CANCELLED_RUNS.pop(run_id, None)
+
+    overflow = len(CANCELLED_RUNS) - CANCELLED_RUNS_MAX_SIZE
+    if overflow <= 0:
+        return
+
+    for run_id, _ in sorted(CANCELLED_RUNS.items(), key=lambda item: item[1])[:overflow]:
+        CANCELLED_RUNS.pop(run_id, None)
+
+
+def _register_cancelled_run(run_id: str) -> None:
+    normalized_run_id = _normalize_run_id(run_id)
+    if not normalized_run_id:
+        return
+    with OPTIMIZATION_STATE_LOCK:
+        _cleanup_cancelled_runs_locked()
+        CANCELLED_RUNS[normalized_run_id] = time.time()
+
+
+def _clear_cancelled_run(run_id: str) -> None:
+    normalized_run_id = _normalize_run_id(run_id)
+    if not normalized_run_id:
+        return
+    with OPTIMIZATION_STATE_LOCK:
+        _cleanup_cancelled_runs_locked()
+        CANCELLED_RUNS.pop(normalized_run_id, None)
+
+
+def _is_run_cancelled(run_id: str) -> bool:
+    normalized_run_id = _normalize_run_id(run_id)
+    if not normalized_run_id:
+        return False
+    with OPTIMIZATION_STATE_LOCK:
+        _cleanup_cancelled_runs_locked()
+        return normalized_run_id in CANCELLED_RUNS
 
 
 def _parse_warmup_bars(raw_value: Any, default: int = 1000) -> int:
