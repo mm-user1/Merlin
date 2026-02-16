@@ -12,6 +12,7 @@ let queueStopRequested = false;
 let queueUiLoaded = false;
 let queueStateLoaded = false;
 let queueStateLoadPromise = null;
+let queueItemLoadRequestId = 0;
 let queueState = {
   items: [],
   nextIndex: 1,
@@ -436,6 +437,507 @@ function collectQueueSources() {
   return sources;
 }
 
+function collectQueueUiSnapshot() {
+  const snapshot = {};
+  const controls = document.querySelectorAll(
+    '#optimizerForm input[id], #optimizerForm select[id], #optimizerForm textarea[id]'
+  );
+  controls.forEach((control) => {
+    const controlId = String(control.id || '').trim();
+    if (!controlId) return;
+    const controlType = String(control.type || '').toLowerCase();
+    if (controlType === 'file') return;
+    if (controlType === 'checkbox' || controlType === 'radio') {
+      snapshot[controlId] = { checked: Boolean(control.checked) };
+      return;
+    }
+    snapshot[controlId] = { value: control.value == null ? '' : String(control.value) };
+  });
+
+  const dbTarget = document.getElementById('dbTarget');
+  if (dbTarget) {
+    snapshot.dbTarget = { value: String(dbTarget.value || '') };
+  }
+
+  return {
+    version: 1,
+    controls: snapshot
+  };
+}
+
+function applyQueueUiSnapshot(snapshot) {
+  if (!snapshot || typeof snapshot !== 'object') return false;
+  const controls = snapshot.controls && typeof snapshot.controls === 'object'
+    ? snapshot.controls
+    : null;
+  if (!controls) return false;
+
+  let appliedAny = false;
+  Object.entries(controls).forEach(([controlId, state]) => {
+    if (!state || typeof state !== 'object') return;
+    const control = document.getElementById(controlId);
+    if (!control) return;
+
+    const controlType = String(control.type || '').toLowerCase();
+    if (Object.prototype.hasOwnProperty.call(state, 'checked')
+      && (controlType === 'checkbox' || controlType === 'radio')) {
+      control.checked = Boolean(state.checked);
+      appliedAny = true;
+      return;
+    }
+    if (Object.prototype.hasOwnProperty.call(state, 'value') && controlType !== 'file') {
+      control.value = state.value == null ? '' : String(state.value);
+      appliedAny = true;
+    }
+  });
+
+  return appliedAny;
+}
+
+function triggerControlEvent(controlId, eventName = 'change') {
+  const control = document.getElementById(controlId);
+  if (!control) return;
+  control.dispatchEvent(new Event(eventName, { bubbles: true }));
+}
+
+function setQueueBudgetMode(mode) {
+  const targetMode = typeof mode === 'string' && mode.trim() ? mode.trim() : 'trials';
+  const radio = document.querySelector(`input[name="budgetMode"][value="${targetMode}"]`);
+  if (radio) {
+    radio.checked = true;
+  }
+}
+
+function applyQueueObjectives(config) {
+  const selectedObjectives = Array.isArray(config?.objectives) ? config.objectives : [];
+  const objectiveCheckboxes = document.querySelectorAll('.objective-checkbox');
+  if (!objectiveCheckboxes.length) return;
+
+  const selectedSet = new Set(selectedObjectives.map((value) => String(value)));
+  objectiveCheckboxes.forEach((checkbox) => {
+    const objective = String(checkbox.dataset.objective || '');
+    checkbox.checked = selectedSet.has(objective);
+  });
+  if (!selectedObjectives.length) {
+    objectiveCheckboxes[0].checked = true;
+  }
+
+  if (window.OptunaUI && typeof window.OptunaUI.updateObjectiveSelection === 'function') {
+    window.OptunaUI.updateObjectiveSelection();
+  }
+
+  const primaryObjective = String(config.primary_objective || '').trim();
+  const primarySelect = document.getElementById('primaryObjective');
+  if (primarySelect && primaryObjective) {
+    const hasOption = Array.from(primarySelect.options).some((option) => option.value === primaryObjective);
+    if (hasOption) {
+      primarySelect.value = primaryObjective;
+    }
+  }
+}
+
+function applyQueueConstraints(config) {
+  const constraints = Array.isArray(config?.constraints) ? config.constraints : [];
+  const constraintsByMetric = new Map();
+  constraints.forEach((constraint) => {
+    const metric = String(constraint?.metric || '').trim();
+    if (!metric) return;
+    constraintsByMetric.set(metric, constraint);
+  });
+
+  const rows = document.querySelectorAll('.constraint-row');
+  rows.forEach((row) => {
+    const checkbox = row.querySelector('.constraint-checkbox');
+    const input = row.querySelector('.constraint-input');
+    const metric = String(checkbox?.dataset?.constraintMetric || '').trim();
+    if (!metric) return;
+
+    const constraint = constraintsByMetric.get(metric);
+    checkbox.checked = Boolean(constraint && constraint.enabled);
+    if (constraint && constraint.threshold != null && Number.isFinite(Number(constraint.threshold))) {
+      input.value = Number(constraint.threshold);
+    }
+  });
+}
+
+function applyQueueParamSelection(config) {
+  const enabledParams = config && typeof config.enabled_params === 'object'
+    ? config.enabled_params
+    : {};
+  const paramRanges = config && typeof config.param_ranges === 'object'
+    ? config.param_ranges
+    : {};
+
+  const optimizerParams = typeof getOptimizerParamElements === 'function'
+    ? getOptimizerParamElements()
+    : [];
+
+  optimizerParams.forEach(({ name, checkbox, fromInput, toInput, stepInput, def }) => {
+    if (!checkbox) return;
+    const enabled = Boolean(enabledParams[name]);
+    checkbox.checked = enabled;
+
+    const paramType = String(def?.type || '').toLowerCase();
+    const range = paramRanges[name];
+    if (!enabled || range == null) return;
+
+    if ((paramType === 'select' || paramType === 'options') && range && typeof range === 'object') {
+      const selectedValues = new Set(
+        Array.isArray(range.values)
+          ? range.values.map((value) => String(value))
+          : []
+      );
+      const optionCheckboxes = document.querySelectorAll(
+        `input.select-option-checkbox[data-param-name="${name}"]`
+      );
+      optionCheckboxes.forEach((optionCheckbox) => {
+        const optionValue = String(optionCheckbox.dataset.optionValue || '');
+        if (optionValue === '__ALL__') return;
+        optionCheckbox.checked = selectedValues.has(optionValue);
+      });
+      const allCheckbox = document.querySelector(
+        `input.select-option-checkbox[data-param-name="${name}"][data-option-value="__ALL__"]`
+      );
+      if (allCheckbox) {
+        const individual = document.querySelectorAll(
+          `input.select-option-checkbox[data-param-name="${name}"]:not([data-option-value="__ALL__"])`
+        );
+        allCheckbox.checked = individual.length > 0 && Array.from(individual).every((entry) => entry.checked);
+      }
+      return;
+    }
+
+    if (Array.isArray(range) && range.length >= 3) {
+      if (fromInput) fromInput.value = range[0];
+      if (toInput) toInput.value = range[1];
+      if (stepInput) stepInput.value = range[2];
+    }
+  });
+
+  if (typeof bindOptimizerInputs === 'function') {
+    bindOptimizerInputs();
+  }
+}
+
+function applyQueueConfigFallback(item) {
+  const config = item && typeof item.config === 'object' ? item.config : {};
+  const fixedParams = config && typeof config.fixed_params === 'object'
+    ? clonePreset(config.fixed_params)
+    : {};
+
+  setCheckboxValue('dateFilter', Boolean(fixedParams.dateFilter));
+
+  const { date: startDate, time: startTime } = parseISOTimestamp(fixedParams.start || '');
+  const { date: endDate, time: endTime } = parseISOTimestamp(fixedParams.end || '');
+  setInputValue('startDate', startDate);
+  setInputValue('startTime', startTime || '00:00');
+  setInputValue('endDate', endDate);
+  setInputValue('endTime', endTime || '00:00');
+
+  delete fixedParams.dateFilter;
+  delete fixedParams.start;
+  delete fixedParams.end;
+  if (typeof applyDynamicBacktestParams === 'function') {
+    applyDynamicBacktestParams(fixedParams);
+  }
+
+  if (Object.prototype.hasOwnProperty.call(config, 'worker_processes')) {
+    setInputValue('workerProcesses', config.worker_processes);
+  }
+  if (Object.prototype.hasOwnProperty.call(config, 'detailed_log')) {
+    setCheckboxValue('detailedLog', Boolean(config.detailed_log));
+  }
+
+  if (Object.prototype.hasOwnProperty.call(config, 'filter_min_profit')) {
+    setCheckboxValue('minProfitFilter', Boolean(config.filter_min_profit));
+  }
+  if (Object.prototype.hasOwnProperty.call(config, 'min_profit_threshold')) {
+    setInputValue('minProfitThreshold', config.min_profit_threshold);
+  }
+  if (typeof syncMinProfitFilterUI === 'function') {
+    syncMinProfitFilterUI();
+  }
+
+  if (config.score_config && typeof applyScoreSettings === 'function') {
+    applyScoreSettings({
+      scoreFilterEnabled: Boolean(config.score_config.filter_enabled),
+      scoreThreshold: config.score_config.min_score_threshold,
+      scoreWeights: clonePreset(config.score_config.weights || {}),
+      scoreEnabledMetrics: clonePreset(config.score_config.enabled_metrics || {}),
+      scoreInvertMetrics: clonePreset(config.score_config.invert_metrics || {}),
+      scoreMetricBounds: clonePreset(config.score_config.metric_bounds || {})
+    });
+  }
+
+  setQueueBudgetMode(config.optuna_budget_mode);
+  if (Object.prototype.hasOwnProperty.call(config, 'optuna_n_trials')) {
+    setInputValue('optunaTrials', config.optuna_n_trials);
+  }
+  if (Object.prototype.hasOwnProperty.call(config, 'optuna_time_limit')) {
+    const minutes = Math.max(1, Math.round(Number(config.optuna_time_limit) / 60));
+    setInputValue('optunaTimeLimit', Number.isFinite(minutes) ? minutes : 60);
+  }
+  if (Object.prototype.hasOwnProperty.call(config, 'optuna_convergence')) {
+    setInputValue('optunaConvergence', config.optuna_convergence);
+  }
+  if (Object.prototype.hasOwnProperty.call(config, 'optuna_enable_pruning')) {
+    setCheckboxValue('optunaPruning', Boolean(config.optuna_enable_pruning));
+  }
+  if (Object.prototype.hasOwnProperty.call(config, 'sampler')) {
+    setInputValue('optunaSampler', config.sampler);
+  }
+  if (Object.prototype.hasOwnProperty.call(config, 'optuna_pruner')) {
+    setInputValue('optunaPruner', config.optuna_pruner);
+  }
+  if (Object.prototype.hasOwnProperty.call(config, 'n_startup_trials')) {
+    setInputValue('optunaWarmupTrials', config.n_startup_trials);
+  }
+  if (Object.prototype.hasOwnProperty.call(config, 'optuna_save_study')) {
+    setCheckboxValue('optunaSaveStudy', Boolean(config.optuna_save_study));
+  }
+  if (Object.prototype.hasOwnProperty.call(config, 'population_size')) {
+    setInputValue('nsgaPopulationSize', config.population_size);
+  }
+  if (Object.prototype.hasOwnProperty.call(config, 'crossover_prob')) {
+    setInputValue('nsgaCrossoverProb', config.crossover_prob);
+  }
+  if (Object.prototype.hasOwnProperty.call(config, 'mutation_prob')) {
+    setInputValue('nsgaMutationProb', config.mutation_prob);
+  }
+  if (Object.prototype.hasOwnProperty.call(config, 'swapping_prob')) {
+    setInputValue('nsgaSwappingProb', config.swapping_prob);
+  }
+  if (Object.prototype.hasOwnProperty.call(config, 'sanitize_enabled')) {
+    setCheckboxValue('optuna_sanitize_enabled', Boolean(config.sanitize_enabled));
+  }
+  if (Object.prototype.hasOwnProperty.call(config, 'sanitize_trades_threshold')) {
+    setInputValue('optuna_sanitize_trades_threshold', config.sanitize_trades_threshold);
+  }
+
+  applyQueueObjectives(config);
+  applyQueueConstraints(config);
+  applyQueueParamSelection(config);
+
+  const isWfaMode = item.mode === 'wfa';
+  setCheckboxValue('enableWF', isWfaMode);
+  if (isWfaMode && item.wfa && typeof item.wfa === 'object') {
+    setInputValue('wfIsPeriodDays', item.wfa.isPeriodDays);
+    setInputValue('wfOosPeriodDays', item.wfa.oosPeriodDays);
+    setInputValue('wfStoreTopNTrials', item.wfa.storeTopNTrials);
+    setCheckboxValue('enableAdaptiveWF', Boolean(item.wfa.adaptiveMode));
+    setInputValue('wfMaxOosPeriodDays', item.wfa.maxOosPeriodDays);
+    setInputValue('wfMinOosTrades', item.wfa.minOosTrades);
+    setInputValue('wfCheckIntervalTrades', item.wfa.checkIntervalTrades);
+    setInputValue('wfCusumThreshold', item.wfa.cusumThreshold);
+    setInputValue('wfDdThresholdMultiplier', item.wfa.ddThresholdMultiplier);
+    setInputValue('wfInactivityMultiplier', item.wfa.inactivityMultiplier);
+  } else {
+    setCheckboxValue('enableAdaptiveWF', false);
+  }
+
+  const postProcess = config && typeof config.postProcess === 'object' ? config.postProcess : {};
+  setCheckboxValue('enablePostProcess', Boolean(postProcess.enabled));
+  if (Object.prototype.hasOwnProperty.call(postProcess, 'ftPeriodDays')) {
+    setInputValue('ftPeriodDays', postProcess.ftPeriodDays);
+  }
+  if (Object.prototype.hasOwnProperty.call(postProcess, 'topK')) {
+    setInputValue('ftTopK', postProcess.topK);
+  }
+  if (Object.prototype.hasOwnProperty.call(postProcess, 'sortMetric')) {
+    setInputValue('ftSortMetric', postProcess.sortMetric);
+  }
+  setCheckboxValue('enableDSR', Boolean(postProcess.dsrEnabled));
+  if (Object.prototype.hasOwnProperty.call(postProcess, 'dsrTopK')) {
+    setInputValue('dsrTopK', postProcess.dsrTopK);
+  }
+  const stress = postProcess && typeof postProcess.stressTest === 'object' ? postProcess.stressTest : {};
+  setCheckboxValue('enableStressTest', Boolean(stress.enabled));
+  if (Object.prototype.hasOwnProperty.call(stress, 'topK')) {
+    setInputValue('stTopK', stress.topK);
+  }
+  if (Object.prototype.hasOwnProperty.call(stress, 'failureThreshold')) {
+    const failurePct = Number(stress.failureThreshold);
+    const normalized = Number.isFinite(failurePct)
+      ? (failurePct <= 1 ? failurePct * 100 : failurePct)
+      : 70;
+    setInputValue('stFailureThreshold', normalized);
+  }
+  if (Object.prototype.hasOwnProperty.call(stress, 'sortMetric')) {
+    setInputValue('stSortMetric', stress.sortMetric);
+  }
+
+  const oosTest = config && typeof config.oosTest === 'object' ? config.oosTest : {};
+  const oosEnabled = !isWfaMode && Boolean(oosTest.enabled);
+  setCheckboxValue('enableOosTest', oosEnabled);
+  if (Object.prototype.hasOwnProperty.call(oosTest, 'periodDays')) {
+    setInputValue('oosPeriodDays', oosTest.periodDays);
+  }
+  if (Object.prototype.hasOwnProperty.call(oosTest, 'topK')) {
+    setInputValue('oosTopK', oosTest.topK);
+  }
+
+  if (Object.prototype.hasOwnProperty.call(item, 'warmupBars')) {
+    setInputValue('warmupBars', item.warmupBars);
+  }
+}
+
+function refreshQueueFormUiAfterApply() {
+  if (typeof syncBudgetInputs === 'function') {
+    syncBudgetInputs();
+  }
+  if (typeof toggleWFSettings === 'function') {
+    toggleWFSettings();
+  }
+  if (typeof toggleAdaptiveWFSettings === 'function') {
+    toggleAdaptiveWFSettings();
+  }
+  triggerControlEvent('enableWF');
+  triggerControlEvent('enableAdaptiveWF');
+  triggerControlEvent('enableOosTest');
+  triggerControlEvent('enablePostProcess');
+  triggerControlEvent('enableDSR');
+  triggerControlEvent('enableStressTest');
+  triggerControlEvent('optuna_sanitize_enabled');
+
+  if (window.OptunaUI && typeof window.OptunaUI.updateObjectiveSelection === 'function') {
+    window.OptunaUI.updateObjectiveSelection();
+  }
+  if (window.OptunaUI && typeof window.OptunaUI.toggleNsgaSettings === 'function') {
+    window.OptunaUI.toggleNsgaSettings();
+  }
+  if (typeof syncMinProfitFilterUI === 'function') {
+    syncMinProfitFilterUI();
+  }
+  if (typeof syncScoreFilterUI === 'function') {
+    syncScoreFilterUI();
+  }
+  if (typeof updateScoreFormulaPreview === 'function') {
+    updateScoreFormulaPreview();
+  }
+  if (typeof window.updateDatasetPreview === 'function') {
+    window.updateDatasetPreview();
+  }
+}
+
+function getPathParentDirectory(path) {
+  const value = String(path || '').trim();
+  if (!value) return '';
+  const slash = Math.max(value.lastIndexOf('/'), value.lastIndexOf('\\'));
+  if (slash < 0) return '';
+  const parent = value.slice(0, slash);
+  if (/^[A-Za-z]:$/.test(parent)) {
+    return parent + '\\';
+  }
+  return parent;
+}
+
+async function applyQueueDatabaseTarget(dbTargetRaw) {
+  const select = document.getElementById('dbTarget');
+  if (!select) return;
+
+  const target = String(dbTargetRaw || '').trim();
+  if (!target) return;
+
+  const tryApply = () => {
+    const hasOption = Array.from(select.options).some((option) => option.value === target);
+    if (!hasOption) return false;
+    select.value = target;
+    if (typeof toggleDbLabelVisibility === 'function') {
+      toggleDbLabelVisibility();
+    }
+    return true;
+  };
+
+  if (tryApply()) return;
+  if (typeof loadDatabasesList === 'function') {
+    try {
+      await loadDatabasesList({ preserveSelection: true });
+      tryApply();
+    } catch (_error) {
+      return;
+    }
+  }
+}
+
+async function ensureQueueItemStrategyLoaded(item) {
+  const strategyId = String(item?.strategyId || '').trim();
+  if (!strategyId) {
+    throw new Error('Queue item has no strategy id.');
+  }
+  if (typeof loadStrategyConfig !== 'function') {
+    throw new Error('Strategy loader is unavailable.');
+  }
+
+  const select = document.getElementById('strategySelect');
+  if (select) {
+    const hasOption = Array.from(select.options).some((option) => option.value === strategyId);
+    if (!hasOption) {
+      throw new Error('Strategy from queue item is not available in current UI.');
+    }
+    select.value = strategyId;
+  }
+  window.currentStrategyId = strategyId;
+  await loadStrategyConfig(strategyId);
+}
+
+async function loadQueueItemIntoForm(itemId, options = {}) {
+  const requestId = Number(options.requestId) || 0;
+  const itemSnapshot = options.itemSnapshot && typeof options.itemSnapshot === 'object'
+    ? clonePreset(options.itemSnapshot)
+    : null;
+  const suppressProgressOutput = options.suppressProgressOutput !== false;
+  const isCurrentRequest = () => requestId === 0 || requestId === queueItemLoadRequestId;
+
+  await ensureQueueStateLoaded();
+  if (!isCurrentRequest()) return false;
+  const queue = loadQueue();
+  const item = queue.items.find((entry) => entry.id === itemId) || itemSnapshot;
+  if (!item) {
+    throw new Error('Queue item not found.');
+  }
+
+  await ensureQueueItemStrategyLoaded(item);
+  if (!isCurrentRequest()) return false;
+
+  if (Object.prototype.hasOwnProperty.call(item, 'warmupBars')) {
+    setInputValue('warmupBars', item.warmupBars);
+  }
+
+  const sourcePaths = getQueueSources(item).map((source) => String(source.path || '').trim()).filter(Boolean);
+  if (typeof setSelectedCsvPaths === 'function') {
+    setSelectedCsvPaths(sourcePaths);
+  } else {
+    window.selectedCsvPaths = sourcePaths;
+    window.selectedCsvPath = sourcePaths[0] || '';
+    renderSelectedFiles([]);
+  }
+
+  const firstSourcePath = sourcePaths[0] || '';
+  const csvDirectory = document.getElementById('csvDirectory');
+  if (csvDirectory && firstSourcePath) {
+    const parent = getPathParentDirectory(firstSourcePath);
+    if (parent) {
+      csvDirectory.value = parent;
+    }
+  }
+
+  applyQueueConfigFallback(item);
+  applyQueueUiSnapshot(item.uiSnapshot);
+
+  await applyQueueDatabaseTarget(item.dbTarget);
+  if (!isCurrentRequest()) return false;
+  refreshQueueFormUiAfterApply();
+
+  const optimizerResultsEl = document.getElementById('optimizerResults');
+  if (optimizerResultsEl && !(suppressProgressOutput && queueRunning)) {
+    optimizerResultsEl.textContent = 'Loaded run settings from queue item #' + (item.index || '?') + '.';
+    optimizerResultsEl.classList.remove('ready', 'loading');
+    optimizerResultsEl.style.display = 'block';
+  }
+
+  return true;
+}
+
 function collectQueueItem() {
   const itemId = 'q_' + Date.now() + '_' + Math.random().toString(36).slice(2, 6);
   const sources = collectQueueSources();
@@ -499,6 +1001,7 @@ function collectQueueItem() {
     warmupBars: Number(document.getElementById('warmupBars')?.value) || 1000,
     config,
     dbTarget: document.getElementById('dbTarget')?.value || '',
+    uiSnapshot: collectQueueUiSnapshot(),
     sourceCursor: 0,
     successCount: 0,
     failureCount: 0
@@ -738,8 +1241,35 @@ function renderQueue() {
   queue.items.forEach((item) => {
     const row = document.createElement('div');
     row.className = 'queue-item';
+    row.classList.add('queue-item-clickable');
+    row.tabIndex = 0;
+    row.setAttribute('role', 'button');
+    row.setAttribute('aria-label', 'Load settings from queue item #' + (item.index || '?'));
     row.dataset.queueId = item.id;
     row.title = buildQueueTooltip(item);
+
+    const handleLoadQueueItem = () => {
+      const runningNow = queueRunning;
+      const requestId = ++queueItemLoadRequestId;
+      void loadQueueItemIntoForm(item.id, {
+        requestId,
+        itemSnapshot: item,
+        suppressProgressOutput: true
+      }).catch((error) => {
+        if (requestId !== queueItemLoadRequestId) return;
+        if (runningNow) {
+          console.warn('Failed to load queue item settings during queue execution', error);
+          return;
+        }
+        showQueueError(error?.message || 'Failed to load queue item settings.');
+      });
+    };
+    row.addEventListener('click', handleLoadQueueItem);
+    row.addEventListener('keydown', (event) => {
+      if (event.key !== 'Enter' && event.key !== ' ') return;
+      event.preventDefault();
+      handleLoadQueueItem();
+    });
 
     const label = document.createElement('span');
     label.className = 'queue-item-label';
