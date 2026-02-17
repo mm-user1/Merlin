@@ -1546,7 +1546,10 @@ async function submitOptimization(event) {
 
   const queueLoaded = typeof isQueueLoaded === 'function' ? isQueueLoaded() : true;
   const queue = queueLoaded && typeof loadQueue === 'function' ? loadQueue() : { items: [] };
-  if (queueLoaded && queue.items.length > 0 && typeof runQueue === 'function') {
+  const queuePendingCount = queueLoaded && typeof getQueuePendingCount === 'function'
+    ? getQueuePendingCount()
+    : queue.items.length;
+  if (queueLoaded && queuePendingCount > 0 && typeof runQueue === 'function') {
     await runQueue();
     return;
   }

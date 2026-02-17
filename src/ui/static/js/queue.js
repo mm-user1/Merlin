@@ -98,6 +98,34 @@ function cloneSourcesForStorage(sources) {
     });
 }
 
+function normalizeQueueFinalState(rawFinalState) {
+  const normalized = String(rawFinalState || '').trim().toLowerCase();
+  if (normalized === 'completed' || normalized === 'failed') {
+    return normalized;
+  }
+  return '';
+}
+
+function isQueueItemFinalized(item) {
+  return normalizeQueueFinalState(item?.finalState) !== '';
+}
+
+function countQueuePendingItems(queueLike) {
+  const queue = queueLike && typeof queueLike === 'object' ? queueLike : { items: [] };
+  const items = Array.isArray(queue.items) ? queue.items : [];
+  return items.filter((item) => !isQueueItemFinalized(item)).length;
+}
+
+function findNextPendingQueueItem(queueLike) {
+  const queue = queueLike && typeof queueLike === 'object' ? queueLike : { items: [] };
+  const items = Array.isArray(queue.items) ? queue.items : [];
+  return items.find((item) => !isQueueItemFinalized(item)) || null;
+}
+
+function getQueuePendingCount() {
+  return countQueuePendingItems(loadQueue());
+}
+
 function normalizeQueueItem(raw, fallbackIndex) {
   if (!raw || typeof raw !== 'object') return null;
 
@@ -125,6 +153,15 @@ function normalizeQueueItem(raw, fallbackIndex) {
 
   const failureRaw = Number(raw.failureCount);
   item.failureCount = Number.isFinite(failureRaw) ? Math.max(0, Math.floor(failureRaw)) : 0;
+
+  item.finalState = normalizeQueueFinalState(raw.finalState);
+  if (!item.finalState && item.sourceCursor >= item.sources.length) {
+    if (item.successCount > 0) {
+      item.finalState = 'completed';
+    } else if (item.failureCount > 0) {
+      item.finalState = 'failed';
+    }
+  }
 
   if (typeof item.label !== 'string' || !item.label.trim()) {
     item.label = generateQueueLabel(item);
@@ -177,7 +214,7 @@ function normalizeQueueState(rawQueue) {
 
   const nextIndex = computeQueueNextIndex(items, parsed.nextIndex);
   const runtime = normalizeQueueRuntimeState(parsed.runtime);
-  if (!items.length) {
+  if (!items.length || countQueuePendingItems({ items }) === 0) {
     runtime.active = false;
     runtime.updatedAt = 0;
   }
@@ -1120,6 +1157,14 @@ async function clearQueue() {
 
 function buildQueueTooltip(item) {
   const lines = [];
+  const finalState = normalizeQueueFinalState(item?.finalState);
+  if (finalState === 'completed') {
+    lines.push('Status: Completed');
+  } else if (finalState === 'failed') {
+    lines.push('Status: Failed');
+  } else {
+    lines.push('Status: Pending');
+  }
 
   const strategyName = item.strategyConfig?.name || item.strategyId || '(unknown)';
   const strategyVersion = item.strategyConfig?.version || '';
@@ -1242,6 +1287,10 @@ function renderQueue() {
     const row = document.createElement('div');
     row.className = 'queue-item';
     row.classList.add('queue-item-clickable');
+    const finalState = normalizeQueueFinalState(item.finalState);
+    if (finalState) {
+      row.classList.add(finalState);
+    }
     row.tabIndex = 0;
     row.setAttribute('role', 'button');
     row.setAttribute('aria-label', 'Load settings from queue item #' + (item.index || '?'));
@@ -1280,6 +1329,11 @@ function renderQueue() {
     removeBtn.className = 'queue-item-remove';
     removeBtn.setAttribute('aria-label', 'Remove from queue');
     removeBtn.innerHTML = '&times;';
+    if (finalState) {
+      removeBtn.disabled = true;
+      removeBtn.dataset.locked = '1';
+      removeBtn.style.visibility = 'hidden';
+    }
     removeBtn.addEventListener('click', (event) => {
       event.stopPropagation();
       void removeFromQueue(item.id).catch((error) => {
@@ -1309,7 +1363,7 @@ function updateRunButtonState() {
   }
 
   const queue = getQueueForUi();
-  const count = queue.items.length;
+  const count = countQueuePendingItems(queue);
   btn.classList.remove('queue-cancel');
   btn.disabled = false;
 
@@ -1409,12 +1463,28 @@ async function persistItemProgress(itemId, patch) {
   await saveQueue(queue);
 }
 
+async function finalizeQueueItem(itemId, finalState, patch = {}) {
+  const normalizedFinalState = normalizeQueueFinalState(finalState);
+  if (!normalizedFinalState) return;
+  await persistItemProgress(itemId, {
+    ...patch,
+    finalState: normalizedFinalState
+  });
+}
+
 async function runQueue() {
   if (queueRunning) return;
   await ensureQueueStateLoaded();
 
   const initialQueue = getQueueForUi();
-  if (!initialQueue.items.length) {
+  const totalItems = countQueuePendingItems(initialQueue);
+  if (totalItems === 0) {
+    const optimizerResultsEl = document.getElementById('optimizerResults');
+    if (optimizerResultsEl) {
+      optimizerResultsEl.textContent = 'Queue has no pending items. Completed items are kept until you click Clear.';
+      optimizerResultsEl.classList.remove('ready', 'loading');
+      optimizerResultsEl.style.display = 'block';
+    }
     updateRunButtonState();
     return;
   }
@@ -1437,7 +1507,7 @@ async function runQueue() {
   window.optimizationAbortController = controller;
   const signal = controller.signal;
 
-  const firstItem = initialQueue.items[0];
+  const firstItem = findNextPendingQueueItem(initialQueue) || initialQueue.items[0];
   saveOptimizationState(buildStateForItem(firstItem, 'running'));
   setActiveOptimizationRunId('');
   openResultsPage();
@@ -1451,7 +1521,6 @@ async function runQueue() {
   if (progressContainer) progressContainer.style.display = 'block';
   if (optunaProgress) optunaProgress.style.display = 'block';
 
-  const totalItems = initialQueue.items.length;
   let fullySucceededItems = 0;
   let partiallySucceededItems = 0;
   let failedItems = 0;
@@ -1468,7 +1537,7 @@ async function runQueue() {
   try {
     while (true) {
       const currentQueue = loadQueue();
-      const item = currentQueue.items[0];
+      const item = findNextPendingQueueItem(currentQueue);
       if (!item) break;
 
       if (signal.aborted) {
@@ -1483,12 +1552,18 @@ async function runQueue() {
 
       const sources = getQueueSources(item);
       const totalSources = sources.length;
+      let itemSuccess = Number.isFinite(Number(item.successCount)) ? Math.max(0, Math.floor(Number(item.successCount))) : 0;
+      let itemFailure = Number.isFinite(Number(item.failureCount)) ? Math.max(0, Math.floor(Number(item.failureCount))) : 0;
+
       if (totalSources === 0) {
         setQueueItemState(item.id, 'failed');
         failedItems += 1;
-        const updatedQueue = loadQueue();
-        updatedQueue.items = updatedQueue.items.filter((entry) => entry.id !== item.id);
-        await saveQueue(updatedQueue);
+        itemFailure += 1;
+        await finalizeQueueItem(item.id, 'failed', {
+          sourceCursor: 0,
+          successCount: itemSuccess,
+          failureCount: itemFailure
+        });
         continue;
       }
 
@@ -1496,8 +1571,6 @@ async function runQueue() {
       const startCursor = Number.isFinite(startCursorRaw)
         ? Math.max(0, Math.min(totalSources, Math.floor(startCursorRaw)))
         : 0;
-      let itemSuccess = Number.isFinite(Number(item.successCount)) ? Math.max(0, Math.floor(Number(item.successCount))) : 0;
-      let itemFailure = Number.isFinite(Number(item.failureCount)) ? Math.max(0, Math.floor(Number(item.failureCount))) : 0;
       let processedCursor = startCursor;
 
       for (let sourceIndex = startCursor; sourceIndex < totalSources; sourceIndex += 1) {
@@ -1623,38 +1696,38 @@ async function runQueue() {
       if (stopAfterCurrent) {
         const itemFinished = processedCursor >= totalSources;
         if (itemFinished) {
+          let finalState = 'failed';
           if (itemSuccess === totalSources) {
             setQueueItemState(item.id, 'completed');
             fullySucceededItems += 1;
+            finalState = 'completed';
           } else if (itemSuccess > 0) {
             setQueueItemState(item.id, 'completed');
             partiallySucceededItems += 1;
+            finalState = 'completed';
           } else {
             setQueueItemState(item.id, 'failed');
             failedItems += 1;
           }
 
-          const updatedQueue = loadQueue();
-          let removed = false;
-          updatedQueue.items = updatedQueue.items.filter((entry) => {
-            if (removed) return true;
-            if (entry.id === item.id) {
-              removed = true;
-              return false;
-            }
-            return true;
+          await finalizeQueueItem(item.id, finalState, {
+            sourceCursor: processedCursor,
+            successCount: itemSuccess,
+            failureCount: itemFailure
           });
-          await saveQueue(updatedQueue);
         }
         break;
       }
 
+      let finalState = 'failed';
       if (itemSuccess === totalSources) {
         setQueueItemState(item.id, 'completed');
         fullySucceededItems += 1;
+        finalState = 'completed';
       } else if (itemSuccess > 0) {
         setQueueItemState(item.id, 'completed');
         partiallySucceededItems += 1;
+        finalState = 'completed';
       } else {
         setQueueItemState(item.id, 'failed');
         failedItems += 1;
@@ -1671,17 +1744,11 @@ async function runQueue() {
         });
       }
 
-      const updatedQueue = loadQueue();
-      let removed = false;
-      updatedQueue.items = updatedQueue.items.filter((entry) => {
-        if (removed) return true;
-        if (entry.id === item.id) {
-          removed = true;
-          return false;
-        }
-        return true;
+      await finalizeQueueItem(item.id, finalState, {
+        sourceCursor: processedCursor,
+        successCount: itemSuccess,
+        failureCount: itemFailure
       });
-      await saveQueue(updatedQueue);
     }
 
     if (optimizerResultsEl) {
