@@ -652,6 +652,88 @@ function buildStitchedFromWindows(windows) {
   return { equity_curve: stitched, window_ids: windowIds, timestamps };
 }
 
+function toFiniteNumber(value) {
+  const parsed = Number(value);
+  return Number.isFinite(parsed) ? parsed : null;
+}
+
+function calculateMedian(values) {
+  if (!Array.isArray(values) || !values.length) return null;
+  const sorted = values
+    .map((value) => Number(value))
+    .filter((value) => Number.isFinite(value))
+    .sort((a, b) => a - b);
+  if (!sorted.length) return null;
+  const mid = Math.floor(sorted.length / 2);
+  if (sorted.length % 2 === 1) return sorted[mid];
+  return (sorted[mid - 1] + sorted[mid]) / 2;
+}
+
+function deriveWindowWinningTrades(windowData) {
+  const totalRaw = toFiniteNumber(windowData?.oos_total_trades);
+  if (totalRaw === null) return null;
+  const total = Math.max(0, Math.round(totalRaw));
+  const directWins = toFiniteNumber(windowData?.oos_winning_trades);
+  if (directWins !== null) {
+    return Math.min(Math.max(0, Math.round(directWins)), total);
+  }
+  const winRate = toFiniteNumber(windowData?.oos_win_rate);
+  if (winRate === null) return null;
+  const derived = Math.round((total * winRate) / 100);
+  return Math.min(Math.max(derived, 0), total);
+}
+
+function buildWindowAggregates(windows) {
+  const rows = Array.isArray(windows) ? windows : [];
+  let totalTrades = 0;
+  let totalTradesKnown = true;
+  let winningTrades = 0;
+  let winningTradesKnown = true;
+  let profitableWindows = 0;
+  const profitValues = [];
+  const tradeWinRateValues = [];
+
+  rows.forEach((windowData) => {
+    const netProfit = toFiniteNumber(windowData?.oos_net_profit_pct);
+    if (netProfit !== null) {
+      profitValues.push(netProfit);
+      if (netProfit > 0) profitableWindows += 1;
+    }
+
+    const tradeWinRate = toFiniteNumber(windowData?.oos_win_rate);
+    if (tradeWinRate !== null) tradeWinRateValues.push(tradeWinRate);
+
+    const trades = toFiniteNumber(windowData?.oos_total_trades);
+    if (trades === null) {
+      totalTradesKnown = false;
+    } else {
+      totalTrades += Math.max(0, Math.round(trades));
+    }
+
+    const wins = deriveWindowWinningTrades(windowData);
+    if (wins === null) {
+      winningTradesKnown = false;
+    } else {
+      winningTrades += wins;
+    }
+  });
+
+  const totalWindows = rows.length;
+  const profitableWindowsPct = totalWindows > 0
+    ? (profitableWindows / totalWindows) * 100
+    : 0;
+
+  return {
+    totalTrades: totalTradesKnown ? totalTrades : null,
+    winningTrades: winningTradesKnown ? winningTrades : null,
+    profitableWindows,
+    totalWindows,
+    profitableWindowsPct,
+    medianWindowProfit: calculateMedian(profitValues),
+    medianWindowWr: calculateMedian(tradeWinRateValues)
+  };
+}
+
 function calculateSummaryFromEquity(equityCurve) {
   if (!equityCurve || !equityCurve.length) {
     return { final_net_profit_pct: 0, max_drawdown_pct: 0 };
@@ -803,20 +885,30 @@ async function applyStudyPayload(data) {
 
   if (ResultsState.mode === 'wfa') {
     const storedStitched = data.stitched_oos || null;
-    const profitable = (ResultsState.results || []).filter((w) => (w.oos_net_profit_pct || 0) > 0).length;
-    const winRate = ResultsState.results && ResultsState.results.length
-      ? (profitable / ResultsState.results.length) * 100
-      : 0;
-    const totalTrades = ResultsState.results.reduce((sum, w) => sum + (w.oos_total_trades || 0), 0);
+    const aggregates = buildWindowAggregates(ResultsState.results || []);
+    const totalTrades = aggregates.totalTrades;
+    const winningTrades = aggregates.winningTrades;
+    const profitableWindows = aggregates.profitableWindows;
+    const totalWindows = aggregates.totalWindows;
+    const winRate = aggregates.profitableWindowsPct;
+    const medianWindowProfit = aggregates.medianWindowProfit;
+    const medianWindowWr = aggregates.medianWindowWr;
 
     if (storedStitched && Array.isArray(storedStitched.equity_curve) && storedStitched.equity_curve.length) {
       const fallbackSummary = calculateSummaryFromEquity(storedStitched.equity_curve);
       ResultsState.stitched_oos = {
         final_net_profit_pct: storedStitched.final_net_profit_pct ?? fallbackSummary.final_net_profit_pct,
         max_drawdown_pct: storedStitched.max_drawdown_pct ?? fallbackSummary.max_drawdown_pct,
-        total_trades: storedStitched.total_trades ?? totalTrades,
+        total_trades: storedStitched.total_trades ?? study.stitched_oos_total_trades ?? totalTrades,
+        winning_trades: storedStitched.winning_trades ?? study.stitched_oos_winning_trades ?? winningTrades,
         wfe: storedStitched.wfe ?? study.best_value ?? 0,
-        oos_win_rate: storedStitched.oos_win_rate ?? winRate,
+        oos_win_rate: storedStitched.oos_win_rate ?? study.stitched_oos_win_rate ?? winRate,
+        profitable_windows: storedStitched.profitable_windows ?? study.profitable_windows ?? profitableWindows,
+        total_windows: storedStitched.total_windows ?? study.total_windows ?? totalWindows,
+        median_window_profit: storedStitched.median_window_profit ?? study.median_window_profit ?? medianWindowProfit,
+        median_window_wr: storedStitched.median_window_wr ?? study.median_window_wr ?? medianWindowWr,
+        worst_window_profit: storedStitched.worst_window_profit ?? study.worst_window_profit ?? null,
+        worst_window_dd: storedStitched.worst_window_dd ?? study.worst_window_dd ?? null,
         equity_curve: storedStitched.equity_curve,
         timestamps: storedStitched.timestamps || [],
         window_ids: storedStitched.window_ids || []
@@ -827,9 +919,16 @@ async function applyStudyPayload(data) {
       ResultsState.stitched_oos = {
         final_net_profit_pct: summary.final_net_profit_pct,
         max_drawdown_pct: summary.max_drawdown_pct,
-        total_trades: totalTrades,
+        total_trades: study.stitched_oos_total_trades ?? totalTrades,
+        winning_trades: study.stitched_oos_winning_trades ?? winningTrades,
         wfe: study.best_value ?? 0,
-        oos_win_rate: winRate,
+        oos_win_rate: study.stitched_oos_win_rate ?? winRate,
+        profitable_windows: study.profitable_windows ?? profitableWindows,
+        total_windows: study.total_windows ?? totalWindows,
+        median_window_profit: study.median_window_profit ?? medianWindowProfit,
+        median_window_wr: study.median_window_wr ?? medianWindowWr,
+        worst_window_profit: study.worst_window_profit ?? null,
+        worst_window_dd: study.worst_window_dd ?? null,
         equity_curve: stitched.equity_curve,
         timestamps: stitched.timestamps || [],
         window_ids: stitched.window_ids

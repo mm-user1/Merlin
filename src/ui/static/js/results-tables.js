@@ -1069,32 +1069,102 @@ function calculateWindowBoundariesByDate(windows, timestamps) {
   return boundaries;
 }
 
+function getFiniteNumber(value) {
+  const parsed = Number(value);
+  return Number.isFinite(parsed) ? parsed : null;
+}
+
+function formatSignedPercent(value, digits = 2) {
+  const number = getFiniteNumber(value);
+  if (number === null) return 'N/A';
+  const sign = number > 0 ? '+' : (number < 0 ? '-' : '');
+  return `${sign}${Math.abs(number).toFixed(digits)}%`;
+}
+
+function formatNegativePercent(value, digits = 2) {
+  const number = getFiniteNumber(value);
+  if (number === null) return 'N/A';
+  return `-${Math.abs(number).toFixed(digits)}%`;
+}
+
+function formatUnsignedPercent(value, digits = 1) {
+  const number = getFiniteNumber(value);
+  if (number === null) return 'N/A';
+  return `${number.toFixed(digits)}%`;
+}
+
 function displaySummaryCards(stitchedOOS) {
   const container = document.querySelector('.summary-row');
   if (!container) return;
 
+  const netProfit = getFiniteNumber(stitchedOOS.final_net_profit_pct);
+  const maxDrawdown = getFiniteNumber(stitchedOOS.max_drawdown_pct);
+  const wfe = getFiniteNumber(stitchedOOS.wfe);
+  const netClass = netProfit === null ? '' : (netProfit >= 0 ? 'positive' : 'negative');
+
+  const totalTradesRaw = getFiniteNumber(stitchedOOS.total_trades);
+  const totalTrades = totalTradesRaw === null ? null : Math.max(0, Math.round(totalTradesRaw));
+  const winningTradesRaw = getFiniteNumber(stitchedOOS.winning_trades);
+  let winningTrades = winningTradesRaw === null ? null : Math.max(0, Math.round(winningTradesRaw));
+  if (winningTrades !== null && totalTrades !== null) {
+    winningTrades = Math.min(winningTrades, totalTrades);
+  } else if (winningTrades === null && totalTrades === 0) {
+    winningTrades = 0;
+  }
+  const totalTradesText = totalTrades !== null
+    ? `${winningTrades !== null ? winningTrades : 'N/A'}/${totalTrades}`
+    : (winningTrades !== null ? `${winningTrades}/N/A` : 'N/A');
+
+  const profitableWindowsRaw = getFiniteNumber(stitchedOOS.profitable_windows);
+  const totalWindowsRaw = getFiniteNumber(stitchedOOS.total_windows);
+  const profitableWindows = profitableWindowsRaw === null ? null : Math.max(0, Math.round(profitableWindowsRaw));
+  const totalWindows = totalWindowsRaw === null ? null : Math.max(0, Math.round(totalWindowsRaw));
+  const oosWinsPctRaw = getFiniteNumber(stitchedOOS.oos_win_rate);
+  const oosWinsPct = oosWinsPctRaw !== null
+    ? oosWinsPctRaw
+    : (profitableWindows !== null && totalWindows !== null && totalWindows > 0
+      ? (profitableWindows / totalWindows) * 100
+      : 0);
+  const oosWinsText = (profitableWindows !== null && totalWindows !== null)
+    ? `${Math.min(profitableWindows, totalWindows)}/${totalWindows} (${Math.round(totalWindows > 0 ? oosWinsPct : 0)}%)`
+    : (oosWinsPctRaw !== null ? `${Math.round(oosWinsPctRaw)}%` : 'N/A');
+
+  const medianWindowProfit = getFiniteNumber(stitchedOOS.median_window_profit);
+  const medianWindowWr = getFiniteNumber(stitchedOOS.median_window_wr);
+  const medianProfitClass = medianWindowProfit === null ? '' : (medianWindowProfit >= 0 ? 'positive' : 'negative');
+
   container.innerHTML = `
     <div class="summary-card highlight">
-      <div class="value ${stitchedOOS.final_net_profit_pct >= 0 ? 'positive' : 'negative'}">
-        ${stitchedOOS.final_net_profit_pct >= 0 ? '+' : ''}${Number(stitchedOOS.final_net_profit_pct || 0).toFixed(2)}%
+      <div class="value ${netClass}">
+        ${formatSignedPercent(netProfit, 2)}
       </div>
-      <div class="label">Net Profit</div>
+      <div class="label">NET PROFIT</div>
     </div>
     <div class="summary-card">
-      <div class="value negative">-${Math.abs(Number(stitchedOOS.max_drawdown_pct || 0)).toFixed(2)}%</div>
-      <div class="label">Max Drawdown</div>
+      <div class="value negative">${formatNegativePercent(maxDrawdown, 2)}</div>
+      <div class="label">MAX DRAWDOWN</div>
     </div>
     <div class="summary-card">
-      <div class="value">${stitchedOOS.total_trades ?? 0}</div>
-      <div class="label">Total Trades</div>
+      <div class="value">${totalTradesText}</div>
+      <div class="label">TOTAL TRADES</div>
     </div>
     <div class="summary-card">
-      <div class="value">${Number(stitchedOOS.wfe || 0).toFixed(1)}%</div>
+      <div class="value">${wfe === null ? 'N/A' : `${wfe.toFixed(1)}%`}</div>
       <div class="label">WFE</div>
     </div>
     <div class="summary-card">
-      <div class="value">${Number(stitchedOOS.oos_win_rate || 0).toFixed(1)}%</div>
-      <div class="label">Win Rate</div>
+      <div class="value">${oosWinsText}</div>
+      <div class="label">OOS WINS</div>
+    </div>
+    <div class="summary-card">
+      <div class="value ${medianProfitClass}">
+        ${formatSignedPercent(medianWindowProfit, 1)}
+      </div>
+      <div class="label">OOS PROFIT (MED)</div>
+    </div>
+    <div class="summary-card">
+      <div class="value">${formatUnsignedPercent(medianWindowWr, 1)}</div>
+      <div class="label">OOS WIN RATE (MED)</div>
     </div>
   `;
 

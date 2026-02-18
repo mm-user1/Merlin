@@ -2,9 +2,11 @@
 from __future__ import annotations
 
 import json
+import math
 import os
 import re
 import sqlite3
+import statistics
 import threading
 import time
 import uuid
@@ -221,7 +223,14 @@ def _create_schema(conn: sqlite3.Connection) -> None:
             stitched_oos_net_profit_pct REAL,
             stitched_oos_max_drawdown_pct REAL,
             stitched_oos_total_trades INTEGER,
-            stitched_oos_win_rate REAL
+            stitched_oos_winning_trades INTEGER,
+            stitched_oos_win_rate REAL,
+            profitable_windows INTEGER,
+            total_windows INTEGER,
+            median_window_profit REAL,
+            median_window_wr REAL,
+            worst_window_profit REAL,
+            worst_window_dd REAL
         );
 
         CREATE INDEX IF NOT EXISTS idx_studies_strategy ON studies(strategy_id);
@@ -383,6 +392,7 @@ def _create_schema(conn: sqlite3.Connection) -> None:
             oos_net_profit_pct REAL,
             oos_max_drawdown_pct REAL,
             oos_total_trades INTEGER,
+            oos_winning_trades INTEGER,
             oos_equity_curve TEXT,
 
             wfe REAL,
@@ -435,7 +445,14 @@ def _ensure_columns(conn: sqlite3.Connection) -> None:
     ensure("studies", "stitched_oos_net_profit_pct", "REAL")
     ensure("studies", "stitched_oos_max_drawdown_pct", "REAL")
     ensure("studies", "stitched_oos_total_trades", "INTEGER")
+    ensure("studies", "stitched_oos_winning_trades", "INTEGER")
     ensure("studies", "stitched_oos_win_rate", "REAL")
+    ensure("studies", "profitable_windows", "INTEGER")
+    ensure("studies", "total_windows", "INTEGER")
+    ensure("studies", "median_window_profit", "REAL")
+    ensure("studies", "median_window_wr", "REAL")
+    ensure("studies", "worst_window_profit", "REAL")
+    ensure("studies", "worst_window_dd", "REAL")
     ensure("studies", "adaptive_mode", "INTEGER DEFAULT 0")
     ensure("studies", "max_oos_period_days", "INTEGER")
     ensure("studies", "min_oos_trades", "INTEGER")
@@ -584,6 +601,7 @@ def _ensure_wfa_schema_updated(conn: sqlite3.Connection) -> None:
     add_col("ALTER TABLE wfa_windows ADD COLUMN is_composite_score REAL;", "is_composite_score")
 
     add_col("ALTER TABLE wfa_windows ADD COLUMN oos_win_rate REAL;", "oos_win_rate")
+    add_col("ALTER TABLE wfa_windows ADD COLUMN oos_winning_trades INTEGER;", "oos_winning_trades")
     add_col("ALTER TABLE wfa_windows ADD COLUMN oos_max_consecutive_losses INTEGER;", "oos_max_consecutive_losses")
     add_col("ALTER TABLE wfa_windows ADD COLUMN oos_romad REAL;", "oos_romad")
     add_col("ALTER TABLE wfa_windows ADD COLUMN oos_sharpe_ratio REAL;", "oos_sharpe_ratio")
@@ -1127,7 +1145,43 @@ def save_wfa_study_to_db(
             stitched_net_profit_pct = None
             stitched_max_drawdown_pct = None
             stitched_total_trades = None
+            stitched_winning_trades = None
             stitched_win_rate = None
+            profitable_windows = 0
+            total_windows = 0
+            median_window_profit = None
+            median_window_wr = None
+            worst_window_profit = None
+            worst_window_dd = None
+
+            def _finite_float(value: Any) -> Optional[float]:
+                if value is None:
+                    return None
+                try:
+                    parsed = float(value)
+                except (TypeError, ValueError):
+                    return None
+                if not math.isfinite(parsed):
+                    return None
+                return parsed
+
+            def _derive_winning_trades(window_obj: Any) -> Optional[int]:
+                total_raw = _finite_float(getattr(window_obj, "oos_total_trades", None))
+                if total_raw is None:
+                    return None
+                total_int = max(0, int(round(total_raw)))
+
+                wins_raw = _finite_float(getattr(window_obj, "oos_winning_trades", None))
+                if wins_raw is not None:
+                    wins_int = max(0, int(round(wins_raw)))
+                    return min(wins_int, total_int)
+
+                win_rate_raw = _finite_float(getattr(window_obj, "oos_win_rate", None))
+                if win_rate_raw is None:
+                    return None
+
+                derived = int(round(total_int * win_rate_raw / 100.0))
+                return min(max(derived, 0), total_int)
 
             stitched = getattr(wf_result, "stitched_oos", None)
             if stitched:
@@ -1146,6 +1200,71 @@ def save_wfa_study_to_db(
                 stitched_max_drawdown_pct = getattr(stitched, "max_drawdown_pct", None)
                 stitched_total_trades = getattr(stitched, "total_trades", None)
                 stitched_win_rate = getattr(stitched, "oos_win_rate", None)
+
+            windows = list(getattr(wf_result, "windows", []) or [])
+            total_windows = len(windows)
+
+            window_profits: List[float] = []
+            window_trade_win_rates: List[float] = []
+            window_drawdowns: List[float] = []
+            trade_totals: List[int] = []
+            all_window_totals_known = True
+            all_window_wins_known = True
+            wins_sum = 0
+
+            for window in windows:
+                profit = _finite_float(getattr(window, "oos_net_profit_pct", None))
+                if profit is not None:
+                    window_profits.append(profit)
+                    if profit > 0:
+                        profitable_windows += 1
+
+                trade_win_rate = _finite_float(getattr(window, "oos_win_rate", None))
+                if trade_win_rate is not None:
+                    window_trade_win_rates.append(trade_win_rate)
+
+                drawdown = _finite_float(getattr(window, "oos_max_drawdown_pct", None))
+                if drawdown is not None:
+                    window_drawdowns.append(drawdown)
+
+                total_raw = _finite_float(getattr(window, "oos_total_trades", None))
+                if total_raw is None:
+                    all_window_totals_known = False
+                else:
+                    trade_totals.append(max(0, int(round(total_raw))))
+
+                wins = _derive_winning_trades(window)
+                if wins is None:
+                    all_window_wins_known = False
+                else:
+                    wins_sum += wins
+
+            if stitched_total_trades is None and all_window_totals_known:
+                stitched_total_trades = sum(trade_totals)
+
+            if all_window_wins_known:
+                stitched_winning_trades = wins_sum
+            elif stitched_total_trades == 0:
+                stitched_winning_trades = 0
+
+            if stitched_total_trades is not None and stitched_winning_trades is not None:
+                stitched_total_trades_int = max(0, int(round(float(stitched_total_trades))))
+                stitched_total_trades = stitched_total_trades_int
+                stitched_winning_trades = min(
+                    max(0, int(round(float(stitched_winning_trades)))),
+                    stitched_total_trades_int,
+                )
+
+            if stitched_win_rate is None and total_windows > 0:
+                stitched_win_rate = (profitable_windows / total_windows) * 100.0
+
+            if window_profits:
+                median_window_profit = float(statistics.median(window_profits))
+                worst_window_profit = min(window_profits)
+            if window_trade_win_rates:
+                median_window_wr = float(statistics.median(window_trade_win_rates))
+            if window_drawdowns:
+                worst_window_dd = max(window_drawdowns)
 
             wf_cfg = getattr(wf_result, "config", None)
             is_period_days = getattr(wf_cfg, "is_period_days", None)
@@ -1180,86 +1299,97 @@ def save_wfa_study_to_db(
             time_limit = optuna_config.get("time_limit")
             convergence_patience = optuna_config.get("convergence_patience")
 
+            study_columns = (
+                "study_id", "study_name", "strategy_id", "strategy_version",
+                "optimization_mode",
+                "objectives_json", "n_objectives", "directions_json", "primary_objective",
+                "constraints_json",
+                "sampler_type", "population_size", "crossover_prob", "mutation_prob", "swapping_prob",
+                "budget_mode", "n_trials", "time_limit", "convergence_patience",
+                "total_trials", "completed_trials", "pruned_trials", "pareto_front_size",
+                "best_value", "best_values_json",
+                "score_config_json", "config_json",
+                "csv_file_path", "csv_file_name",
+                "dataset_start_date", "dataset_end_date", "warmup_bars",
+                "is_period_days",
+                "adaptive_mode", "max_oos_period_days", "min_oos_trades",
+                "check_interval_trades", "cusum_threshold",
+                "dd_threshold_multiplier", "inactivity_multiplier",
+                "optimization_time_seconds",
+                "completed_at",
+                "filter_min_profit", "min_profit_threshold",
+                "stitched_oos_equity_curve", "stitched_oos_timestamps_json",
+                "stitched_oos_window_ids_json", "stitched_oos_net_profit_pct",
+                "stitched_oos_max_drawdown_pct", "stitched_oos_total_trades",
+                "stitched_oos_winning_trades", "stitched_oos_win_rate",
+                "profitable_windows", "total_windows",
+                "median_window_profit", "median_window_wr",
+                "worst_window_profit", "worst_window_dd",
+            )
+            study_values = (
+                study_id,
+                study_name,
+                wf_result.strategy_id,
+                strategy_version,
+                "wfa",
+                json.dumps(objectives) if objectives else None,
+                len(objectives) if objectives else 1,
+                None,
+                primary_objective,
+                json.dumps(constraints_payload) if constraints_payload else None,
+                sampler_type,
+                population_size,
+                crossover_prob,
+                mutation_prob,
+                swapping_prob,
+                budget_mode,
+                n_trials,
+                time_limit,
+                convergence_patience,
+                wf_result.total_windows,
+                wf_result.total_windows,
+                0,
+                None,
+                getattr(wf_result.stitched_oos, "wfe", None),
+                None,
+                json.dumps(score_config) if score_config else None,
+                json.dumps(_safe_dict(config)),
+                str(Path(csv_file_path).resolve()) if csv_file_path else "",
+                csv_display_name,
+                _format_date(wf_result.trading_start_date),
+                _format_date(wf_result.trading_end_date),
+                wf_result.warmup_bars,
+                is_period_days,
+                adaptive_mode,
+                max_oos_period_days,
+                min_oos_trades,
+                check_interval_trades,
+                cusum_threshold,
+                dd_threshold_multiplier,
+                inactivity_multiplier,
+                optimization_time_seconds,
+                _utc_now_iso(),
+                1 if isinstance(config, dict) and config.get("filter_min_profit") else 0,
+                config.get("min_profit_threshold") if isinstance(config, dict) else None,
+                stitched_equity,
+                stitched_timestamps,
+                stitched_window_ids,
+                stitched_net_profit_pct,
+                stitched_max_drawdown_pct,
+                stitched_total_trades,
+                stitched_winning_trades,
+                stitched_win_rate,
+                profitable_windows,
+                total_windows,
+                median_window_profit,
+                median_window_wr,
+                worst_window_profit,
+                worst_window_dd,
+            )
+            study_placeholders = ", ".join(["?"] * len(study_columns))
             conn.execute(
-                """
-                INSERT INTO studies (
-                    study_id, study_name, strategy_id, strategy_version,
-                    optimization_mode,
-                    objectives_json, n_objectives, directions_json, primary_objective,
-                    constraints_json,
-                    sampler_type, population_size, crossover_prob, mutation_prob, swapping_prob,
-                    budget_mode, n_trials, time_limit, convergence_patience,
-                    total_trials, completed_trials, pruned_trials, pareto_front_size,
-                    best_value, best_values_json,
-                    score_config_json, config_json,
-                    csv_file_path, csv_file_name,
-                    dataset_start_date, dataset_end_date, warmup_bars,
-                    is_period_days,
-                    adaptive_mode, max_oos_period_days, min_oos_trades,
-                    check_interval_trades, cusum_threshold,
-                    dd_threshold_multiplier, inactivity_multiplier,
-                    optimization_time_seconds,
-                    completed_at,
-                    filter_min_profit, min_profit_threshold,
-                    stitched_oos_equity_curve, stitched_oos_timestamps_json,
-                    stitched_oos_window_ids_json, stitched_oos_net_profit_pct,
-                    stitched_oos_max_drawdown_pct, stitched_oos_total_trades,
-                    stitched_oos_win_rate
-                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-                """,
-                (
-                    study_id,
-                    study_name,
-                    wf_result.strategy_id,
-                    strategy_version,
-                    "wfa",
-                    json.dumps(objectives) if objectives else None,
-                    len(objectives) if objectives else 1,
-                    None,
-                    primary_objective,
-                    json.dumps(constraints_payload) if constraints_payload else None,
-                    sampler_type,
-                    population_size,
-                    crossover_prob,
-                    mutation_prob,
-                    swapping_prob,
-                    budget_mode,
-                    n_trials,
-                    time_limit,
-                    convergence_patience,
-                    wf_result.total_windows,
-                    wf_result.total_windows,
-                    0,
-                    None,
-                    getattr(wf_result.stitched_oos, "wfe", None),
-                    None,
-                    json.dumps(score_config) if score_config else None,
-                    json.dumps(_safe_dict(config)),
-                    str(Path(csv_file_path).resolve()) if csv_file_path else "",
-                    csv_display_name,
-                    _format_date(wf_result.trading_start_date),
-                    _format_date(wf_result.trading_end_date),
-                    wf_result.warmup_bars,
-                    is_period_days,
-                    adaptive_mode,
-                    max_oos_period_days,
-                    min_oos_trades,
-                    check_interval_trades,
-                    cusum_threshold,
-                    dd_threshold_multiplier,
-                    inactivity_multiplier,
-                    optimization_time_seconds,
-                    _utc_now_iso(),
-                    1 if isinstance(config, dict) and config.get("filter_min_profit") else 0,
-                    config.get("min_profit_threshold") if isinstance(config, dict) else None,
-                    stitched_equity,
-                    stitched_timestamps,
-                    stitched_window_ids,
-                    stitched_net_profit_pct,
-                    stitched_max_drawdown_pct,
-                    stitched_total_trades,
-                    stitched_win_rate,
-                ),
+                f"INSERT INTO studies ({', '.join(study_columns)}) VALUES ({study_placeholders})",
+                study_values,
             )
 
             window_rows = []
@@ -1321,6 +1451,7 @@ def save_wfa_study_to_db(
                         window.oos_net_profit_pct,
                         window.oos_max_drawdown_pct,
                         window.oos_total_trades,
+                        getattr(window, "oos_winning_trades", None),
                         oos_equity,
                         oos_timestamps,
                         getattr(window, "oos_win_rate", None),
@@ -1361,6 +1492,7 @@ def save_wfa_study_to_db(
                     "oos_start_date", "oos_end_date",
                     "oos_start_ts", "oos_end_ts",
                     "oos_net_profit_pct", "oos_max_drawdown_pct", "oos_total_trades",
+                    "oos_winning_trades",
                     "oos_equity_curve", "oos_timestamps_json",
                     "oos_win_rate", "oos_max_consecutive_losses", "oos_romad", "oos_sharpe_ratio",
                     "oos_profit_factor", "oos_sqn", "oos_ulcer_index", "oos_consistency_score",
@@ -1607,8 +1739,15 @@ def load_study_from_db(study_id: str) -> Optional[Dict]:
                 "final_net_profit_pct": study.get("stitched_oos_net_profit_pct"),
                 "max_drawdown_pct": study.get("stitched_oos_max_drawdown_pct"),
                 "total_trades": study.get("stitched_oos_total_trades"),
+                "winning_trades": study.get("stitched_oos_winning_trades"),
                 "wfe": study.get("best_value"),
                 "oos_win_rate": study.get("stitched_oos_win_rate"),
+                "profitable_windows": study.get("profitable_windows"),
+                "total_windows": study.get("total_windows"),
+                "median_window_profit": study.get("median_window_profit"),
+                "median_window_wr": study.get("median_window_wr"),
+                "worst_window_profit": study.get("worst_window_profit"),
+                "worst_window_dd": study.get("worst_window_dd"),
             }
 
         trials: List[Dict] = []

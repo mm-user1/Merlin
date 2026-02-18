@@ -95,6 +95,9 @@ class WindowResult:
     oos_equity_curve: List[float]
     oos_timestamps: List[pd.Timestamp]
 
+    # Optional OOS trade decomposition
+    oos_winning_trades: Optional[int] = None
+
     # Optional IS details
     is_best_trial_number: Optional[int] = None
     is_equity_curve: Optional[List[float]] = None
@@ -769,6 +772,7 @@ class WalkForwardEngine:
                     oos_total_trades=oos_basic.total_trades,
                     oos_equity_curve=[],
                     oos_timestamps=[],
+                    oos_winning_trades=oos_basic.winning_trades,
                     is_pareto_optimal=is_pareto_optimal,
                     constraints_satisfied=constraints_satisfied,
                     best_params_source=best_params_source,
@@ -1646,6 +1650,7 @@ class WalkForwardEngine:
                     oos_total_trades=oos_basic.total_trades,
                     oos_equity_curve=[],
                     oos_timestamps=[],
+                    oos_winning_trades=oos_basic.winning_trades,
                     is_pareto_optimal=is_pipeline.is_pareto_optimal,
                     constraints_satisfied=is_pipeline.constraints_satisfied,
                     best_params_source=is_pipeline.best_params_source,
