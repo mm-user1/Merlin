@@ -66,55 +66,79 @@ def _insert_analytics_study(
     median_window_wr: float | None = 58.0,
     stitched_oos_equity_curve: list | None = None,
     stitched_oos_timestamps_json: list | None = None,
+    created_at: str | None = None,
+    completed_at: str | None = None,
 ):
     config_payload = config_json
     if config_payload is None:
         config_payload = {"wfa": {"oos_period_days": 30}}
 
+    columns = [
+        "study_id",
+        "study_name",
+        "strategy_id",
+        "strategy_version",
+        "optimization_mode",
+        "csv_file_name",
+        "adaptive_mode",
+        "is_period_days",
+        "config_json",
+        "dataset_start_date",
+        "dataset_end_date",
+        "stitched_oos_net_profit_pct",
+        "stitched_oos_max_drawdown_pct",
+        "stitched_oos_total_trades",
+        "stitched_oos_winning_trades",
+        "best_value",
+        "profitable_windows",
+        "total_windows",
+        "stitched_oos_win_rate",
+        "median_window_profit",
+        "median_window_wr",
+        "stitched_oos_equity_curve",
+        "stitched_oos_timestamps_json",
+    ]
+    values = [
+        study_id,
+        study_name,
+        strategy_id,
+        strategy_version,
+        optimization_mode,
+        csv_file_name,
+        adaptive_mode,
+        is_period_days,
+        json.dumps(config_payload) if isinstance(config_payload, dict) else config_payload,
+        dataset_start_date,
+        dataset_end_date,
+        stitched_oos_net_profit_pct,
+        stitched_oos_max_drawdown_pct,
+        stitched_oos_total_trades,
+        stitched_oos_winning_trades,
+        best_value,
+        profitable_windows,
+        total_windows,
+        stitched_oos_win_rate,
+        median_window_profit,
+        median_window_wr,
+        json.dumps(stitched_oos_equity_curve)
+        if isinstance(stitched_oos_equity_curve, list)
+        else stitched_oos_equity_curve,
+        json.dumps(stitched_oos_timestamps_json)
+        if isinstance(stitched_oos_timestamps_json, list)
+        else stitched_oos_timestamps_json,
+    ]
+
+    if created_at is not None:
+        columns.append("created_at")
+        values.append(created_at)
+    if completed_at is not None:
+        columns.append("completed_at")
+        values.append(completed_at)
+
     with get_db_connection() as conn:
         conn.execute(
-            """
-            INSERT INTO studies (
-                study_id, study_name, strategy_id, strategy_version,
-                optimization_mode,
-                csv_file_name, adaptive_mode, is_period_days, config_json,
-                dataset_start_date, dataset_end_date,
-                stitched_oos_net_profit_pct, stitched_oos_max_drawdown_pct,
-                stitched_oos_total_trades, stitched_oos_winning_trades, best_value,
-                profitable_windows, total_windows, stitched_oos_win_rate,
-                median_window_profit, median_window_wr,
-                stitched_oos_equity_curve, stitched_oos_timestamps_json
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-            """,
-            (
-                study_id,
-                study_name,
-                strategy_id,
-                strategy_version,
-                optimization_mode,
-                csv_file_name,
-                adaptive_mode,
-                is_period_days,
-                json.dumps(config_payload) if isinstance(config_payload, dict) else config_payload,
-                dataset_start_date,
-                dataset_end_date,
-                stitched_oos_net_profit_pct,
-                stitched_oos_max_drawdown_pct,
-                stitched_oos_total_trades,
-                stitched_oos_winning_trades,
-                best_value,
-                profitable_windows,
-                total_windows,
-                stitched_oos_win_rate,
-                median_window_profit,
-                median_window_wr,
-                json.dumps(stitched_oos_equity_curve)
-                if isinstance(stitched_oos_equity_curve, list)
-                else stitched_oos_equity_curve,
-                json.dumps(stitched_oos_timestamps_json)
-                if isinstance(stitched_oos_timestamps_json, list)
-                else stitched_oos_timestamps_json,
-            ),
+            f"INSERT INTO studies ({', '.join(columns)}) VALUES ({', '.join(['?'] * len(values))})",
+            tuple(values),
         )
         conn.commit()
 
@@ -1015,6 +1039,52 @@ def test_analytics_summary_wfa_phase1_contract(client):
             {"start": "2025-01-01", "end": "2025-01-31", "days": 30, "count": 2},
             {"start": "2025-02-01", "end": "2025-02-28", "days": 27, "count": 1},
         ]
+
+
+def test_analytics_summary_includes_study_name_and_timestamps(client):
+    with _temporary_active_db(f"analytics_timestamps_{uuid.uuid4().hex[:8]}"):
+        _insert_analytics_study(
+            study_id="wfa_ts_1",
+            study_name="S01_OKX_SOLUSDT.P, 1h 2025.01.01-2025.01.31_WFA (3)",
+            dataset_start_date="2025-01-01",
+            dataset_end_date="2025-01-31",
+            created_at="2026-02-20 12:00:00",
+            completed_at="2026-02-20 12:05:00",
+        )
+        _insert_analytics_study(
+            study_id="wfa_ts_2",
+            study_name="S03_OKX_ETHUSDT.P, 240 2025.01.01-2025.01.31_WFA",
+            dataset_start_date="2025-01-01",
+            dataset_end_date="2025-01-31",
+            created_at=None,
+            completed_at="2026-02-21 09:30:00",
+        )
+        with get_db_connection() as conn:
+            conn.execute("UPDATE studies SET created_at = NULL WHERE study_id = ?", ("wfa_ts_2",))
+            conn.commit()
+
+        response = client.get("/api/analytics/summary")
+        assert response.status_code == 200
+        payload = response.get_json()
+        studies = payload["studies"]
+        by_id = {row["study_id"]: row for row in studies}
+
+        first = by_id["wfa_ts_1"]
+        assert first["study_name"] == "S01_OKX_SOLUSDT.P, 1h 2025.01.01-2025.01.31_WFA (3)"
+        assert first["created_at"] == "2026-02-20 12:00:00"
+        assert first["completed_at"] == "2026-02-20 12:05:00"
+        assert isinstance(first["created_at_epoch"], int)
+        assert isinstance(first["completed_at_epoch"], int)
+        assert first["created_at_epoch"] > 0
+        assert first["completed_at_epoch"] > 0
+
+        second = by_id["wfa_ts_2"]
+        assert second["study_name"] == "S03_OKX_ETHUSDT.P, 240 2025.01.01-2025.01.31_WFA"
+        assert second["created_at"] is None
+        assert second["created_at_epoch"] is None
+        assert second["completed_at"] == "2026-02-21 09:30:00"
+        assert isinstance(second["completed_at_epoch"], int)
+        assert second["completed_at_epoch"] > 0
 
 
 @pytest.mark.parametrize("threshold", [-1, "bad"])

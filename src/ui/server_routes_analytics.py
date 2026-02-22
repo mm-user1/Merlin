@@ -195,8 +195,13 @@ def register_routes(app):
                 """
                 SELECT
                     study_id,
+                    study_name,
                     strategy_id,
                     strategy_version,
+                    created_at,
+                    completed_at,
+                    CAST(strftime('%s', created_at) AS INTEGER) AS created_at_epoch,
+                    CAST(strftime('%s', completed_at) AS INTEGER) AS completed_at_epoch,
                     csv_file_name,
                     adaptive_mode,
                     is_period_days,
@@ -298,9 +303,14 @@ def register_routes(app):
             studies.append(
                 {
                     "study_id": row_dict.get("study_id"),
+                    "study_name": row_dict.get("study_name"),
                     "strategy": strategy_label,
                     "strategy_id": row_dict.get("strategy_id"),
                     "strategy_version": row_dict.get("strategy_version"),
+                    "created_at": row_dict.get("created_at"),
+                    "completed_at": row_dict.get("completed_at"),
+                    "created_at_epoch": _safe_int(row_dict.get("created_at_epoch")),
+                    "completed_at_epoch": _safe_int(row_dict.get("completed_at_epoch")),
                     "symbol": symbol,
                     "tf": tf,
                     "wfa_mode": wfa_mode,

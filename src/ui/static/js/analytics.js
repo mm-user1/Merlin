@@ -1,4 +1,21 @@
 (function () {
+  const DEFAULT_SORT_STATE = {
+    sortColumn: null,
+    sortDirection: null,
+    sortClickCount: 0,
+  };
+
+  const SORT_LABELS = {
+    study_name: 'Study Name',
+    profit_pct: 'Profit%',
+    max_dd_pct: 'MaxDD%',
+    total_trades: 'Trades',
+    wfe_pct: 'WFE%',
+    profitable_windows_pct: 'OOS Wins',
+    median_window_profit: 'OOS P(med)',
+    median_window_wr: 'OOS WR(med)',
+  };
+
   const AnalyticsState = {
     dbName: '',
     studies: [],
@@ -6,6 +23,16 @@
     checkedStudyIds: new Set(),
     orderedStudyIds: [],
     dbSwitchInProgress: false,
+    filters: {
+      strategy: null,
+      symbol: null,
+      tf: null,
+      wfa: null,
+      isOos: null,
+    },
+    autoSelect: false,
+    sortState: { ...DEFAULT_SORT_STATE },
+    filtersInitialized: false,
   };
 
   const MISSING_TEXT = '-';
@@ -24,7 +51,7 @@
     return sum / finite.length;
   }
 
-  function formatSignedPercent(value, digits = 1) {
+  function formatSignedPercent(value, digits) {
     const parsed = toFiniteNumber(value);
     if (parsed === null) return MISSING_TEXT;
     if (parsed === 0) return `0.${'0'.repeat(digits)}%`;
@@ -32,13 +59,13 @@
     return `${sign}${Math.abs(parsed).toFixed(digits)}%`;
   }
 
-  function formatNegativePercent(value, digits = 1) {
+  function formatNegativePercent(value, digits) {
     const parsed = toFiniteNumber(value);
     if (parsed === null) return MISSING_TEXT;
     return `-${Math.abs(parsed).toFixed(digits)}%`;
   }
 
-  function formatUnsignedPercent(value, digits = 1) {
+  function formatUnsignedPercent(value, digits) {
     const parsed = toFiniteNumber(value);
     if (parsed === null) return MISSING_TEXT;
     return `${parsed.toFixed(digits)}%`;
@@ -96,20 +123,10 @@
       return;
     }
 
-    const portfolioProfit = selected.reduce((acc, study) => {
-      return acc + (toFiniteNumber(study.profit_pct) || 0);
-    }, 0);
-    const portfolioMaxDd = selected.reduce((acc, study) => {
-      const current = toFiniteNumber(study.max_dd_pct) || 0;
-      return Math.max(acc, current);
-    }, 0);
-    const totalTrades = selected.reduce((acc, study) => {
-      return acc + Math.max(0, Math.round(toFiniteNumber(study.total_trades) || 0));
-    }, 0);
-    const profitableCount = selected.reduce((acc, study) => {
-      const value = toFiniteNumber(study.profit_pct) || 0;
-      return acc + (value > 0 ? 1 : 0);
-    }, 0);
+    const portfolioProfit = selected.reduce((acc, study) => acc + (toFiniteNumber(study.profit_pct) || 0), 0);
+    const portfolioMaxDd = selected.reduce((acc, study) => Math.max(acc, toFiniteNumber(study.max_dd_pct) || 0), 0);
+    const totalTrades = selected.reduce((acc, study) => acc + Math.max(0, Math.round(toFiniteNumber(study.total_trades) || 0)), 0);
+    const profitableCount = selected.reduce((acc, study) => acc + ((toFiniteNumber(study.profit_pct) || 0) > 0 ? 1 : 0), 0);
     const profitablePct = selected.length > 0 ? Math.round((profitableCount / selected.length) * 100) : 0;
 
     const avgOosWins = average(selected.map((study) => study.profitable_windows_pct));
@@ -244,10 +261,17 @@
   function renderTableSubtitle() {
     const subtitle = document.getElementById('analyticsTableSubtitle');
     if (!subtitle) return;
-    const info = AnalyticsState.researchInfo || {};
-    const wfaCount = Number(info.wfa_studies || 0);
-    const periods = Array.isArray(info.data_periods) ? info.data_periods.length : 0;
-    subtitle.textContent = `${wfaCount} WFA studies | ${periods} data periods | Sorted by Profit% desc`;
+
+    const sortColumn = AnalyticsState.sortState.sortColumn;
+    const sortDirection = AnalyticsState.sortState.sortDirection;
+    if (!sortColumn || !sortDirection) {
+      subtitle.textContent = 'Sorted by date added (newest first)';
+      return;
+    }
+
+    const label = SORT_LABELS[sortColumn] || sortColumn;
+    const arrow = sortDirection === 'asc' ? '▲' : '▼';
+    subtitle.textContent = `Sorted by ${label} ${arrow}`;
   }
 
   function renderDbName() {
@@ -277,6 +301,7 @@
         try {
           await switchDatabaseRequest(db.name);
           AnalyticsState.checkedStudyIds = new Set();
+          AnalyticsState.sortState = { ...DEFAULT_SORT_STATE };
           await Promise.all([loadDatabases(), loadSummary()]);
         } catch (error) {
           alert(error.message || 'Failed to switch database.');
@@ -288,9 +313,77 @@
     });
   }
 
+  function onTableSelectionChange(checkedSet) {
+    AnalyticsState.checkedStudyIds = new Set(checkedSet || []);
+    updateVisualsForSelection();
+  }
+
+  function onTableSortChange(sortState) {
+    AnalyticsState.sortState = {
+      sortColumn: sortState?.sortColumn || null,
+      sortDirection: sortState?.sortDirection || null,
+      sortClickCount: Number(sortState?.sortClickCount || 0),
+    };
+    renderTableSubtitle();
+    AnalyticsState.orderedStudyIds = window.AnalyticsTable.getOrderedStudyIds();
+    updateVisualsForSelection();
+  }
+
+  function renderTableWithCurrentState() {
+    window.AnalyticsTable.renderTable(
+      AnalyticsState.studies,
+      AnalyticsState.checkedStudyIds,
+      onTableSelectionChange,
+      {
+        filters: AnalyticsState.filters,
+        autoSelect: AnalyticsState.autoSelect,
+        sortState: AnalyticsState.sortState,
+        onSortChange: onTableSortChange,
+      }
+    );
+
+    AnalyticsState.checkedStudyIds = new Set(window.AnalyticsTable.getCheckedStudyIds());
+    AnalyticsState.orderedStudyIds = window.AnalyticsTable.getOrderedStudyIds();
+    updateVisualsForSelection();
+  }
+
+  function handleFiltersChanged(nextFilters) {
+    AnalyticsState.filters = nextFilters || {
+      strategy: null,
+      symbol: null,
+      tf: null,
+      wfa: null,
+      isOos: null,
+    };
+    renderTableWithCurrentState();
+  }
+
+  function bindAutoSelect() {
+    const autoSelectInput = document.getElementById('analyticsAutoSelect');
+    if (!autoSelectInput) return;
+    autoSelectInput.checked = AnalyticsState.autoSelect;
+    autoSelectInput.addEventListener('change', () => {
+      AnalyticsState.autoSelect = Boolean(autoSelectInput.checked);
+      renderTableWithCurrentState();
+    });
+  }
+
   async function loadDatabases() {
     const payload = await fetchDatabasesList();
     renderDatabasesList(payload.databases || []);
+  }
+
+  function ensureFiltersInitialized() {
+    if (!window.AnalyticsFilters) return;
+    if (!AnalyticsState.filtersInitialized) {
+      window.AnalyticsFilters.init({
+        studies: AnalyticsState.studies,
+        onChange: handleFiltersChanged,
+      });
+      AnalyticsState.filtersInitialized = true;
+      return;
+    }
+    window.AnalyticsFilters.updateStudies(AnalyticsState.studies);
   }
 
   async function loadSummary() {
@@ -308,20 +401,21 @@
 
     renderDbName();
     renderResearchInfo();
-    renderTableSubtitle();
     showMessage(AnalyticsState.researchInfo.message || '');
 
-    window.AnalyticsTable.renderTable(
-      AnalyticsState.studies,
-      AnalyticsState.checkedStudyIds,
-      (checkedSet) => {
-        AnalyticsState.checkedStudyIds = new Set(checkedSet || []);
-        updateVisualsForSelection();
-      }
-    );
-    AnalyticsState.orderedStudyIds = window.AnalyticsTable.getOrderedStudyIds();
+    ensureFiltersInitialized();
+    AnalyticsState.filters = window.AnalyticsFilters
+      ? window.AnalyticsFilters.getFilters()
+      : {
+          strategy: null,
+          symbol: null,
+          tf: null,
+          wfa: null,
+          isOos: null,
+        };
 
-    updateVisualsForSelection();
+    renderTableSubtitle();
+    renderTableWithCurrentState();
   }
 
   function bindCollapsibleHeaders() {
@@ -354,6 +448,7 @@
   async function initAnalyticsPage() {
     bindCollapsibleHeaders();
     bindSelectionButtons();
+    bindAutoSelect();
     try {
       await Promise.all([loadDatabases(), loadSummary()]);
     } catch (error) {

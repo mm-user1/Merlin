@@ -65,15 +65,26 @@
       <div class="summary-row" id="analyticsSummaryRow"></div>
 
       <div class="selection-buttons">
-        <button class="sel-btn" id="analyticsSelectAllBtn" type="button">Select All</button>
-        <button class="sel-btn" id="analyticsDeselectAllBtn" type="button">Deselect All</button>
+        <div class="selection-buttons-left">
+          <button class="sel-btn" id="analyticsSelectAllBtn" type="button">Select All</button>
+          <button class="sel-btn" id="analyticsDeselectAllBtn" type="button">Deselect All</button>
+        </div>
+        <label class="analytics-auto-select">
+          <input type="checkbox" id="analyticsAutoSelect" />
+          <span>Auto-select</span>
+        </label>
+      </div>
+
+      <div class="analytics-filters-section">
+        <div class="analytics-filter-bar" id="analyticsFiltersBar"></div>
+        <div class="analytics-active-filters" id="analyticsActiveFilters" hidden></div>
       </div>
 
       <div class="table-card">
         <div class="table-card-header">
           <div class="table-header-left">
             <h3>Summary Table</h3>
-            <span class="subtitle" id="analyticsTableSubtitle">Sorted by Profit% desc</span>
+            <span class="subtitle" id="analyticsTableSubtitle">Sorted by date added (newest first)</span>
           </div>
         </div>
         <div class="table-scroll analytics-table-scroll">
@@ -85,17 +96,32 @@
                 </th>
                 <th>#</th>
                 <th>Strategy</th>
-                <th>Symbol</th>
-                <th>TF</th>
+                <th class="analytics-sortable" data-sort-key="study_name">
+                  <span class="sort-label">Study Name</span><span class="sort-arrow"></span>
+                </th>
                 <th>WFA</th>
                 <th>IS/OOS</th>
-                <th>Profit%</th>
-                <th>MaxDD%</th>
-                <th>Trades</th>
-                <th>WFE%</th>
-                <th>OOS Wins</th>
-                <th>OOS P(med)</th>
-                <th>OOS WR(med)</th>
+                <th class="analytics-sortable" data-sort-key="profit_pct">
+                  <span class="sort-label">Profit%</span><span class="sort-arrow"></span>
+                </th>
+                <th class="analytics-sortable" data-sort-key="max_dd_pct">
+                  <span class="sort-label">MaxDD%</span><span class="sort-arrow"></span>
+                </th>
+                <th class="analytics-sortable" data-sort-key="total_trades">
+                  <span class="sort-label">Trades</span><span class="sort-arrow"></span>
+                </th>
+                <th class="analytics-sortable" data-sort-key="wfe_pct">
+                  <span class="sort-label">WFE%</span><span class="sort-arrow"></span>
+                </th>
+                <th class="analytics-sortable" data-sort-key="profitable_windows_pct">
+                  <span class="sort-label">OOS Wins</span><span class="sort-arrow"></span>
+                </th>
+                <th class="analytics-sortable" data-sort-key="median_window_profit">
+                  <span class="sort-label">OOS P(med)</span><span class="sort-arrow"></span>
+                </th>
+                <th class="analytics-sortable" data-sort-key="median_window_wr">
+                  <span class="sort-label">OOS WR(med)</span><span class="sort-arrow"></span>
+                </th>
               </tr>
             </thead>
             <tbody id="analyticsSummaryTableBody"></tbody>
@@ -107,6 +133,7 @@
 
   <script src="/static/js/api.js"></script>
   <script src="/static/js/analytics-equity.js"></script>
+  <script src="/static/js/analytics-filters.js"></script>
   <script src="/static/js/analytics-table.js"></script>
   <script src="/static/js/analytics.js"></script>
 </body>
