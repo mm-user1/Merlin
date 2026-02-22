@@ -1,11 +1,9 @@
 import io
-import json
-import math
 import re
 import tempfile
 import threading
 import time
-from datetime import datetime, timezone
+from datetime import timezone
 from http import HTTPStatus
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
@@ -44,6 +42,7 @@ from core.storage import (
     delete_manual_test,
     delete_study,
     get_active_db_name,
+    get_db_connection,
     get_study_trial,
     list_db_files,
     list_manual_tests,
@@ -215,7 +214,6 @@ def register_routes(app):
     @app.route("/results")
     def results_page() -> object:
         return render_template("results.html")
-
 
     @app.get("/api/csv/browse")
     def browse_csv_directory() -> object:

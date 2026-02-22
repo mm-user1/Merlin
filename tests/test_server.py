@@ -2,6 +2,8 @@ import io
 import sys
 import csv
 import json
+import uuid
+from contextlib import contextmanager
 from pathlib import Path
 
 import pytest
@@ -12,7 +14,13 @@ sys.path.insert(0, str(Path(__file__).parent.parent / "src"))
 from ui.server import app
 from core.backtest_engine import TradeRecord
 from core.walkforward_engine import OOSStitchedResult, WFConfig, WFResult, WindowResult
-from core.storage import save_wfa_study_to_db
+from core.storage import (
+    create_new_db,
+    get_active_db_name,
+    get_db_connection,
+    save_wfa_study_to_db,
+    set_active_db,
+)
 from strategies import get_strategy_config
 
 
@@ -21,6 +29,94 @@ def client():
     app.config["TESTING"] = True
     with app.test_client() as test_client:
         yield test_client
+
+
+@contextmanager
+def _temporary_active_db(label: str):
+    previous_db = get_active_db_name()
+    create_new_db(label)
+    try:
+        yield
+    finally:
+        set_active_db(previous_db)
+
+
+def _insert_analytics_study(
+    *,
+    study_id: str,
+    study_name: str,
+    strategy_id: str = "s01_trailing_ma",
+    strategy_version: str | None = "2.0",
+    optimization_mode: str = "wfa",
+    csv_file_name: str | None = "OKX_LINKUSDT.P, 15 2025.05.01-2025.11.20.csv",
+    adaptive_mode: int | None = 1,
+    is_period_days: int | None = 60,
+    config_json: dict | None = None,
+    dataset_start_date: str | None = "2025-01-01",
+    dataset_end_date: str | None = "2025-01-31",
+    stitched_oos_net_profit_pct: float | None = 5.0,
+    stitched_oos_max_drawdown_pct: float | None = 2.0,
+    stitched_oos_total_trades: int | None = 100,
+    stitched_oos_winning_trades: int | None = 55,
+    best_value: float | None = 1.2,
+    profitable_windows: int | None = 3,
+    total_windows: int | None = 5,
+    stitched_oos_win_rate: float | None = 60.0,
+    median_window_profit: float | None = 1.0,
+    median_window_wr: float | None = 58.0,
+    stitched_oos_equity_curve: list | None = None,
+    stitched_oos_timestamps_json: list | None = None,
+):
+    config_payload = config_json
+    if config_payload is None:
+        config_payload = {"wfa": {"oos_period_days": 30}}
+
+    with get_db_connection() as conn:
+        conn.execute(
+            """
+            INSERT INTO studies (
+                study_id, study_name, strategy_id, strategy_version,
+                optimization_mode,
+                csv_file_name, adaptive_mode, is_period_days, config_json,
+                dataset_start_date, dataset_end_date,
+                stitched_oos_net_profit_pct, stitched_oos_max_drawdown_pct,
+                stitched_oos_total_trades, stitched_oos_winning_trades, best_value,
+                profitable_windows, total_windows, stitched_oos_win_rate,
+                median_window_profit, median_window_wr,
+                stitched_oos_equity_curve, stitched_oos_timestamps_json
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            """,
+            (
+                study_id,
+                study_name,
+                strategy_id,
+                strategy_version,
+                optimization_mode,
+                csv_file_name,
+                adaptive_mode,
+                is_period_days,
+                json.dumps(config_payload) if isinstance(config_payload, dict) else config_payload,
+                dataset_start_date,
+                dataset_end_date,
+                stitched_oos_net_profit_pct,
+                stitched_oos_max_drawdown_pct,
+                stitched_oos_total_trades,
+                stitched_oos_winning_trades,
+                best_value,
+                profitable_windows,
+                total_windows,
+                stitched_oos_win_rate,
+                median_window_profit,
+                median_window_wr,
+                json.dumps(stitched_oos_equity_curve)
+                if isinstance(stitched_oos_equity_curve, list)
+                else stitched_oos_equity_curve,
+                json.dumps(stitched_oos_timestamps_json)
+                if isinstance(stitched_oos_timestamps_json, list)
+                else stitched_oos_timestamps_json,
+            ),
+        )
+        conn.commit()
 
 
 def test_csv_import_s01_parameters(client):
@@ -742,6 +838,183 @@ def test_download_wfa_trades_uses_precise_oos_bounds(client, monkeypatch):
     finally:
         if csv_path.exists():
             csv_path.unlink()
+
+
+def test_analytics_page_renders(client):
+    response = client.get("/analytics")
+    assert response.status_code == 200
+    assert "Analytics" in response.get_data(as_text=True)
+
+
+def test_analytics_summary_empty_db_returns_expected_message(client):
+    with _temporary_active_db(f"analytics_empty_{uuid.uuid4().hex[:8]}"):
+        response = client.get("/api/analytics/summary")
+        assert response.status_code == 200
+        payload = response.get_json()
+
+        assert payload["studies"] == []
+        assert payload["db_name"] == get_active_db_name()
+        assert payload["research_info"]["total_studies"] == 0
+        assert payload["research_info"]["wfa_studies"] == 0
+        assert payload["research_info"]["message"] == "No WFA studies found in this database."
+
+
+def test_analytics_summary_optuna_only_returns_expected_message(client):
+    with _temporary_active_db(f"analytics_optuna_only_{uuid.uuid4().hex[:8]}"):
+        _insert_analytics_study(
+            study_id="optuna_only_1",
+            study_name="OPTUNA_ONLY_1",
+            optimization_mode="optuna",
+            config_json={},
+        )
+
+        response = client.get("/api/analytics/summary")
+        assert response.status_code == 200
+        payload = response.get_json()
+
+        assert payload["studies"] == []
+        assert payload["research_info"]["total_studies"] == 1
+        assert payload["research_info"]["wfa_studies"] == 0
+        assert payload["research_info"]["message"] == (
+            "Analytics requires WFA studies. This database contains only Optuna studies."
+        )
+
+
+def test_analytics_summary_wfa_phase1_contract(client):
+    with _temporary_active_db(f"analytics_wfa_{uuid.uuid4().hex[:8]}"):
+        _insert_analytics_study(
+            study_id="wfa_a1",
+            study_name="WFA_A1",
+            strategy_id="s01_trailing_ma",
+            strategy_version="2.1",
+            optimization_mode="wfa",
+            csv_file_name="OKX_LINKUSDT.P, 15 2025.05.01-2025.11.20.csv",
+            adaptive_mode=1,
+            is_period_days=60,
+            config_json={"wfa": {"oos_period_days": 30}},
+            dataset_start_date="2025-01-01",
+            dataset_end_date="2025-01-31",
+            stitched_oos_net_profit_pct=10.0,
+            stitched_oos_max_drawdown_pct=4.0,
+            stitched_oos_total_trades=120,
+            stitched_oos_winning_trades=67,
+            best_value=45.0,
+            profitable_windows=4,
+            total_windows=5,
+            stitched_oos_win_rate=80.0,
+            median_window_profit=2.0,
+            median_window_wr=55.0,
+            stitched_oos_equity_curve=[100.0, 101.5, 110.0],
+            stitched_oos_timestamps_json=[
+                "2025-01-01T00:00:00+00:00",
+                "2025-01-10T00:00:00+00:00",
+                "2025-01-31T00:00:00+00:00",
+            ],
+        )
+        _insert_analytics_study(
+            study_id="wfa_a2",
+            study_name="WFA_A2",
+            strategy_id="s02_breakout",
+            strategy_version="v3.0",
+            optimization_mode="wfa",
+            csv_file_name="OKX_LINKUSDT.P, 15 2025.05.01-2025.11.20.csv",
+            adaptive_mode=0,
+            is_period_days=None,
+            config_json={"wfa": {"oos_period_days": 30}},
+            dataset_start_date="2025-01-01",
+            dataset_end_date="2025-01-31",
+            stitched_oos_net_profit_pct=-3.0,
+            stitched_oos_max_drawdown_pct=2.5,
+            stitched_oos_total_trades=80,
+            stitched_oos_winning_trades=35,
+            best_value=20.0,
+            profitable_windows=1,
+            total_windows=5,
+            stitched_oos_win_rate=20.0,
+            median_window_profit=-0.5,
+            median_window_wr=48.0,
+            stitched_oos_equity_curve=[100.0, 99.2],
+            stitched_oos_timestamps_json=["2025-01-01T00:00:00+00:00"],
+        )
+        _insert_analytics_study(
+            study_id="wfa_b1",
+            study_name="WFA_B1",
+            strategy_id="custom_strategy",
+            strategy_version=None,
+            optimization_mode="WFA",
+            csv_file_name="OKX_BTCUSDT.P, 1h 2025.05.01-2025.11.20.csv",
+            adaptive_mode=None,
+            is_period_days=None,
+            config_json={},
+            dataset_start_date="2025-02-01",
+            dataset_end_date="2025-02-28",
+            stitched_oos_net_profit_pct=4.5,
+            stitched_oos_max_drawdown_pct=1.1,
+            stitched_oos_total_trades=40,
+            stitched_oos_winning_trades=20,
+            best_value=None,
+            profitable_windows=0,
+            total_windows=0,
+            stitched_oos_win_rate=None,
+            median_window_profit=0.0,
+            median_window_wr=None,
+            stitched_oos_equity_curve=None,
+            stitched_oos_timestamps_json=None,
+        )
+        _insert_analytics_study(
+            study_id="optuna_aux",
+            study_name="OPTUNA_AUX",
+            optimization_mode="optuna",
+            config_json={},
+        )
+
+        response = client.get("/api/analytics/summary")
+        assert response.status_code == 200
+        payload = response.get_json()
+
+        assert payload["db_name"] == get_active_db_name()
+        assert payload["research_info"]["total_studies"] == 4
+        assert payload["research_info"]["wfa_studies"] == 3
+        assert "message" not in payload["research_info"]
+
+        studies = payload["studies"]
+        assert [row["study_id"] for row in studies] == ["wfa_a1", "wfa_a2", "wfa_b1"]
+
+        first = studies[0]
+        assert first["strategy"] == "S01 v2.1"
+        assert first["symbol"] == "LINKUSDT.P"
+        assert first["tf"] == "15m"
+        assert first["wfa_mode"] == "Adaptive"
+        assert first["is_oos"] == "60/30"
+        assert first["has_equity_curve"] is True
+        assert len(first["equity_curve"]) == 3
+        assert len(first["equity_timestamps"]) == 3
+
+        second = studies[1]
+        assert second["strategy"] == "S02 v3.0"
+        assert second["wfa_mode"] == "Fixed"
+        assert second["is_oos"] == "?/30"
+        assert second["has_equity_curve"] is False
+        assert second["equity_curve"] == []
+        assert second["equity_timestamps"] == []
+
+        third = studies[2]
+        assert third["strategy"] == "custom_strategy"
+        assert third["symbol"] == "BTCUSDT.P"
+        assert third["tf"] == "1h"
+        assert third["wfa_mode"] == "Unknown"
+        assert third["is_oos"] == "N/A"
+
+        info = payload["research_info"]
+        assert info["strategies"] == ["S01 v2.1", "S02 v3.0", "custom_strategy"]
+        assert info["symbols"] == ["BTCUSDT.P", "LINKUSDT.P"]
+        assert info["timeframes"] == ["15m", "1h"]
+        assert info["wfa_modes"] == ["Fixed", "Adaptive", "Unknown"]
+        assert info["is_oos_periods"] == ["60/30", "?/30", "N/A"]
+        assert info["data_periods"] == [
+            {"start": "2025-01-01", "end": "2025-01-31", "days": 30, "count": 2},
+            {"start": "2025-02-01", "end": "2025-02-28", "days": 27, "count": 1},
+        ]
 
 
 @pytest.mark.parametrize("threshold", [-1, "bad"])

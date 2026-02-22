@@ -1,0 +1,113 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Strategy Backtester &amp; Optimizer - Analytics</title>
+  <link rel="stylesheet" href="/static/css/style.css" />
+</head>
+<body class="analytics-page">
+  <nav class="top-nav">
+    <div class="nav-tabs">
+      <a href="/" class="nav-tab" data-nav="start">Start</a>
+      <a href="/results" class="nav-tab" data-nav="results">Results</a>
+      <a href="/analytics" class="nav-tab active" data-nav="analytics">Analytics</a>
+    </div>
+    <div class="nav-spacer"></div>
+  </nav>
+
+  <div class="main-container analytics-layout">
+    <div class="sidebar">
+      <div class="collapsible open" id="analytics-db-section">
+        <div class="collapsible-header">
+          <span class="collapsible-icon">&#9660;</span>
+          <span class="collapsible-title">Database</span>
+        </div>
+        <div class="collapsible-content">
+          <div class="database-list" id="analyticsDbList"></div>
+        </div>
+      </div>
+
+      <div class="collapsible open" id="analytics-research-section">
+        <div class="collapsible-header">
+          <span class="collapsible-icon">&#9660;</span>
+          <span class="collapsible-title">Research Info</span>
+        </div>
+        <div class="collapsible-content">
+          <div class="settings-list" id="analyticsResearchInfo"></div>
+        </div>
+      </div>
+    </div>
+
+    <div class="main-area">
+      <div class="results-header">
+        <h2>Analytics <span class="db-name" id="analyticsDbName">-</span></h2>
+      </div>
+
+      <div class="analytics-message" id="analyticsMessage" hidden></div>
+
+      <div class="chart-card">
+        <div class="chart-card-header">
+          <h3 id="analyticsChartTitle">Stitched OOS Equity</h3>
+        </div>
+        <div class="chart-body">
+          <div class="chart-canvas">
+            <svg class="chart-svg" id="analyticsChartSvg" viewBox="0 0 800 260" preserveAspectRatio="none">
+              <text x="400" y="130" text-anchor="middle" fill="#999" font-size="14">
+                No data to display
+              </text>
+            </svg>
+          </div>
+          <div class="chart-axis" id="analyticsEquityAxis"></div>
+        </div>
+      </div>
+
+      <div class="summary-row" id="analyticsSummaryRow"></div>
+
+      <div class="selection-buttons">
+        <button class="sel-btn" id="analyticsSelectAllBtn" type="button">Select All</button>
+        <button class="sel-btn" id="analyticsDeselectAllBtn" type="button">Deselect All</button>
+      </div>
+
+      <div class="table-card">
+        <div class="table-card-header">
+          <div class="table-header-left">
+            <h3>Summary Table</h3>
+            <span class="subtitle" id="analyticsTableSubtitle">Sorted by Profit% desc</span>
+          </div>
+        </div>
+        <div class="table-scroll analytics-table-scroll">
+          <table class="data-table" id="analyticsSummaryTable">
+            <thead>
+              <tr>
+                <th class="col-check">
+                  <input type="checkbox" id="analyticsHeaderCheck" title="Toggle all" />
+                </th>
+                <th>#</th>
+                <th>Strategy</th>
+                <th>Symbol</th>
+                <th>TF</th>
+                <th>WFA</th>
+                <th>IS/OOS</th>
+                <th>Profit%</th>
+                <th>MaxDD%</th>
+                <th>Trades</th>
+                <th>WFE%</th>
+                <th>OOS Wins</th>
+                <th>OOS P(med)</th>
+                <th>OOS WR(med)</th>
+              </tr>
+            </thead>
+            <tbody id="analyticsSummaryTableBody"></tbody>
+          </table>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <script src="/static/js/api.js"></script>
+  <script src="/static/js/analytics-equity.js"></script>
+  <script src="/static/js/analytics-table.js"></script>
+  <script src="/static/js/analytics.js"></script>
+</body>
+</html>
