@@ -2296,8 +2296,12 @@
       font-size: 12px;
     }
 
-    .analytics-study-row:hover {
+    #analyticsSummaryTable tbody tr.analytics-study-row:hover {
       background: #e8f4ff;
+    }
+
+    #analyticsSummaryTable tbody tr.analytics-group-row:hover {
+      background: #e8f4ff !important;
     }
 
     .analytics-empty-cell {
@@ -2311,7 +2315,7 @@
       max-height: 760px;
     }
 
-    #analyticsSummaryTable tbody tr:nth-child(even):not(.analytics-group-row) {
+    #analyticsSummaryTable tbody tr:nth-child(even):not(.analytics-group-row):not(:hover) {
       background: #fafafa;
     }
 

@@ -38,6 +38,8 @@
     autoSelect: false,
     onSelectionChange: null,
     onSortChange: null,
+    rangeAnchorStudyId: null,
+    rangeAnchorChecked: null,
     bound: false,
   };
 
@@ -106,6 +108,73 @@
     return token;
   }
 
+  function parseTimeframeToMinutes(value) {
+    const token = String(value || '').trim().toLowerCase();
+    if (!token) return Number.POSITIVE_INFINITY;
+    const compact = token.replace(/\s+/g, '');
+    let match = compact.match(/^(\d+)(m|min|mins|minute|minutes)?$/);
+    if (match) return Number(match[1]);
+    match = compact.match(/^(\d+)(h|hr|hrs|hour|hours)$/);
+    if (match) return Number(match[1]) * 60;
+    match = compact.match(/^(\d+)(d|day|days)$/);
+    if (match) return Number(match[1]) * 1440;
+    match = compact.match(/^(\d+)(w|week|weeks)$/);
+    if (match) return Number(match[1]) * 10080;
+    return Number.POSITIVE_INFINITY;
+  }
+
+  function extractCounterSuffix(value) {
+    const text = String(value || '').trim();
+    const match = text.match(/\s\((\d+)\)\s*$/);
+    if (!match || match.index === undefined) {
+      return { base: text, counter: null };
+    }
+    return {
+      base: text.slice(0, match.index).trim(),
+      counter: Number(match[1]),
+    };
+  }
+
+  function parseStudyNameDisplayIdentity(value) {
+    const text = String(value || '').trim();
+    if (!text) return { symbol: '', tf: '' };
+
+    const commaIndex = text.lastIndexOf(',');
+    if (commaIndex >= 0) {
+      const symbol = text.slice(0, commaIndex).trim();
+      const tfToken = text.slice(commaIndex + 1).trim().split(/\s+/)[0] || '';
+      return { symbol, tf: normalizeTfToken(tfToken) };
+    }
+
+    const parts = text.split(/\s+/).filter(Boolean);
+    if (parts.length > 1) {
+      const tfToken = parts[parts.length - 1];
+      const symbol = parts.slice(0, -1).join(' ');
+      return { symbol, tf: normalizeTfToken(tfToken) };
+    }
+
+    return { symbol: text, tf: '' };
+  }
+
+  function buildStudyNameSortIdentity(study, studyNameDisplay) {
+    const displayName = String(studyNameDisplay || '').trim();
+    const counterInfo = extractCounterSuffix(displayName);
+    const parsedDisplay = parseStudyNameDisplayIdentity(counterInfo.base);
+    const symbol = String(study?.symbol || '').trim() || parsedDisplay.symbol;
+    const tfToken = normalizeTfToken(study?.tf || '') || parsedDisplay.tf;
+    const timeframeRaw = String(tfToken || '').trim().toLowerCase();
+    const counter = Number.isFinite(counterInfo.counter) ? counterInfo.counter : null;
+
+    return {
+      ticker: symbol.toLowerCase(),
+      timeframeRaw,
+      timeframeMinutes: parseTimeframeToMinutes(timeframeRaw),
+      counterRank: counter === null ? 0 : 1,
+      counter,
+      displayName,
+    };
+  }
+
   function fallbackStudyName(study) {
     const symbol = String(study?.symbol || '').trim();
     const tf = normalizeTfToken(study?.tf || '');
@@ -155,9 +224,11 @@
     const completedEpoch = toFiniteNumber(study?.completed_at_epoch);
     const createdMs = createdEpoch === null ? parseTimestampMs(study?.created_at) : createdEpoch * 1000;
     const completedMs = completedEpoch === null ? parseTimestampMs(study?.completed_at) : completedEpoch * 1000;
+    const studyNameDisplay = buildDisplayStudyName(study);
     return {
       ...study,
-      _study_name_display: buildDisplayStudyName(study),
+      _study_name_display: studyNameDisplay,
+      _study_name_sort: buildStudyNameSortIdentity(study, studyNameDisplay),
       _created_ms: createdMs,
       _completed_ms: completedMs,
       _default_order_ms: createdMs === null ? completedMs : createdMs,
@@ -187,15 +258,48 @@
     return direction === 'asc' ? left - right : right - left;
   }
 
+  function compareStudyNameRows(leftStudy, rightStudy) {
+    const left = leftStudy?._study_name_sort || buildStudyNameSortIdentity(leftStudy, leftStudy?._study_name_display);
+    const right = rightStudy?._study_name_sort || buildStudyNameSortIdentity(rightStudy, rightStudy?._study_name_display);
+
+    const tickerCmp = String(left.ticker || '').localeCompare(String(right.ticker || ''), undefined, {
+      sensitivity: 'base',
+    });
+    if (tickerCmp !== 0) return tickerCmp;
+
+    const leftFinite = Number.isFinite(left.timeframeMinutes);
+    const rightFinite = Number.isFinite(right.timeframeMinutes);
+    if (leftFinite && rightFinite && left.timeframeMinutes !== right.timeframeMinutes) {
+      return left.timeframeMinutes - right.timeframeMinutes;
+    }
+    if (leftFinite !== rightFinite) return leftFinite ? -1 : 1;
+
+    const timeframeCmp = String(left.timeframeRaw || '').localeCompare(String(right.timeframeRaw || ''), undefined, {
+      numeric: true,
+      sensitivity: 'base',
+    });
+    if (timeframeCmp !== 0) return timeframeCmp;
+
+    if (left.counterRank !== right.counterRank) {
+      return left.counterRank - right.counterRank;
+    }
+    if (left.counterRank === 1 && right.counterRank === 1 && left.counter !== right.counter) {
+      return Number(left.counter) - Number(right.counter);
+    }
+
+    return String(left.displayName || '').localeCompare(String(right.displayName || ''), undefined, {
+      numeric: true,
+      sensitivity: 'base',
+    });
+  }
+
   function compareBySortColumn(leftStudy, rightStudy, sortColumn, sortDirection) {
     if (!sortColumn || !sortDirection) {
       return compareDefaultRows(leftStudy, rightStudy);
     }
 
     if (sortColumn === 'study_name') {
-      const leftText = String(leftStudy?._study_name_display || '');
-      const rightText = String(rightStudy?._study_name_display || '');
-      const cmp = leftText.localeCompare(rightText, undefined, { numeric: true, sensitivity: 'base' });
+      const cmp = compareStudyNameRows(leftStudy, rightStudy);
       if (cmp !== 0) return sortDirection === 'asc' ? cmp : -cmp;
       return compareDefaultRows(leftStudy, rightStudy);
     }
@@ -292,25 +396,112 @@
     return Array.from(table.querySelectorAll('tbody .analytics-group-check'));
   }
 
+  function decodeStudyId(encodedId) {
+    const value = String(encodedId || '');
+    if (!value) return '';
+    try {
+      return decodeURIComponent(value);
+    } catch (_error) {
+      return value;
+    }
+  }
+
   function getCheckedStudyIds() {
     return getRowCheckboxes()
       .filter((checkbox) => checkbox.checked)
-      .map((checkbox) => {
-        const encodedId = checkbox.dataset.studyId || '';
-        try {
-          return decodeURIComponent(encodedId);
-        } catch (_error) {
-          return encodedId;
-        }
-      })
+      .map((checkbox) => decodeStudyId(checkbox.dataset.studyId || ''))
       .filter(Boolean);
+  }
+
+  function rememberRangeAnchor(studyId, checked) {
+    if (!studyId || typeof checked !== 'boolean') return;
+    tableState.rangeAnchorStudyId = studyId;
+    tableState.rangeAnchorChecked = checked;
+  }
+
+  function commitSelectionState() {
+    syncHierarchyCheckboxes();
+    tableState.checkedSet = new Set(getCheckedStudyIds());
+    notifySelectionChanged();
+  }
+
+  function setVisibleChecked(checked) {
+    const next = Boolean(checked);
+    getVisibleRowCheckboxes().forEach((checkbox) => {
+      checkbox.checked = next;
+    });
+  }
+
+  function applyRangeSelection(anchorStudyId, targetStudyId, checked) {
+    if (!anchorStudyId || !targetStudyId || typeof checked !== 'boolean') return false;
+
+    const visibleCheckboxes = getVisibleRowCheckboxes();
+    const visibleIds = visibleCheckboxes.map((checkbox) => decodeStudyId(checkbox.dataset.studyId || ''));
+    const anchorIndex = visibleIds.indexOf(anchorStudyId);
+    const targetIndex = visibleIds.indexOf(targetStudyId);
+
+    if (anchorIndex < 0 || targetIndex < 0) return false;
+
+    const [start, end] = anchorIndex <= targetIndex
+      ? [anchorIndex, targetIndex]
+      : [targetIndex, anchorIndex];
+
+    for (let index = start; index <= end; index += 1) {
+      visibleCheckboxes[index].checked = checked;
+    }
+    return true;
+  }
+
+  function handleStudyRowToggle(row, shiftKey) {
+    if (!(row instanceof HTMLTableRowElement)) return;
+    const checkbox = row.querySelector('.analytics-row-check');
+    if (!(checkbox instanceof HTMLInputElement) || checkbox.type !== 'checkbox') return;
+
+    const studyId = decodeStudyId(checkbox.dataset.studyId || '');
+    if (!studyId) return;
+    const wasChecked = tableState.checkedSet.has(studyId);
+
+    const hasAnchor = Boolean(tableState.rangeAnchorStudyId) && typeof tableState.rangeAnchorChecked === 'boolean';
+    if (shiftKey && hasAnchor) {
+      const applied = applyRangeSelection(
+        tableState.rangeAnchorStudyId,
+        studyId,
+        tableState.rangeAnchorChecked
+      );
+      if (!applied) {
+        const nextChecked = !wasChecked;
+        checkbox.checked = nextChecked;
+        rememberRangeAnchor(studyId, nextChecked);
+      }
+    } else {
+      const nextChecked = !wasChecked;
+      checkbox.checked = nextChecked;
+      rememberRangeAnchor(studyId, nextChecked);
+    }
+
+    commitSelectionState();
+  }
+
+  function handleRowCheckboxChange(checkbox) {
+    if (!(checkbox instanceof HTMLInputElement) || checkbox.type !== 'checkbox') return;
+    const studyId = decodeStudyId(checkbox.dataset.studyId || '');
+    if (studyId) {
+      rememberRangeAnchor(studyId, Boolean(checkbox.checked));
+    }
+    commitSelectionState();
+  }
+
+  function clearTextSelection() {
+    const selection = window.getSelection ? window.getSelection() : null;
+    if (!selection) return;
+    if (selection.type === 'Range') {
+      selection.removeAllRanges();
+    }
   }
 
   function updateRowSelectionClasses() {
     getStudyRows().forEach((row) => {
-      const checkbox = row.querySelector('.analytics-row-check');
-      const checked = Boolean(checkbox && checkbox.checked);
-      row.classList.toggle('selected', checked);
+      row.classList.remove('selected');
     });
   }
 
@@ -527,15 +718,17 @@
         }
         tableState.orderedStudyIds.push(studyId);
 
-        const profitText = escapeHtml(formatSignedValue(study.profit_pct, 1));
-        const maxDdText = escapeHtml(formatUnsignedValue(study.max_dd_pct, 1));
+        const profitText = escapeHtml(formatSignedPercentValue(study.profit_pct, 1));
+        const maxDdText = escapeHtml(formatNegativePercentValue(study.max_dd_pct, 1));
         const wfeRaw = toFiniteNumber(study.wfe_pct);
-        const wfeText = escapeHtml(wfeRaw === null ? 'N/A' : wfeRaw.toFixed(1));
-        const oosProfitText = escapeHtml(formatSignedValue(study.median_window_profit, 1));
+        const wfeText = escapeHtml(wfeRaw === null ? 'N/A' : `${wfeRaw.toFixed(1)}%`);
+        const oosProfitText = escapeHtml(formatSignedPercentValue(study.median_window_profit, 1));
         const oosWrRaw = toFiniteNumber(study.median_window_wr);
-        const oosWrText = escapeHtml(oosWrRaw === null ? 'N/A' : oosWrRaw.toFixed(1));
+        const oosWrText = escapeHtml(oosWrRaw === null ? 'N/A' : `${oosWrRaw.toFixed(1)}%`);
 
         const profitClass = (toFiniteNumber(study.profit_pct) || 0) >= 0 ? 'val-positive' : 'val-negative';
+        const maxDdValue = toFiniteNumber(study.max_dd_pct);
+        const maxDdClass = maxDdValue !== null && Math.abs(maxDdValue) > 40 ? 'val-negative' : '';
         const oosProfitClass = (toFiniteNumber(study.median_window_profit) || 0) >= 0 ? 'val-positive' : 'val-negative';
 
         const strategyText = escapeHtml(study.strategy || 'Unknown');
@@ -557,7 +750,7 @@
             <td>${wfaModeText}</td>
             <td>${isOosText}</td>
             <td class="${profitClass}">${profitText}</td>
-            <td>${maxDdText}</td>
+            <td class="${maxDdClass}">${maxDdText}</td>
             <td>${totalTradesText}</td>
             <td>${wfeText}</td>
             <td>${oosWinsText}</td>
@@ -598,18 +791,18 @@
     }
   }
 
-  function formatSignedValue(value, digits) {
+  function formatSignedPercentValue(value, digits) {
     const parsed = toFiniteNumber(value);
     if (parsed === null) return 'N/A';
-    if (parsed === 0) return `0.${'0'.repeat(digits)}`;
+    if (parsed === 0) return `0.${'0'.repeat(digits)}%`;
     const sign = parsed > 0 ? '+' : '-';
-    return `${sign}${Math.abs(parsed).toFixed(digits)}`;
+    return `${sign}${Math.abs(parsed).toFixed(digits)}%`;
   }
 
-  function formatUnsignedValue(value, digits) {
+  function formatNegativePercentValue(value, digits) {
     const parsed = toFiniteNumber(value);
     if (parsed === null) return 'N/A';
-    return Math.abs(parsed).toFixed(digits);
+    return `-${Math.abs(parsed).toFixed(digits)}%`;
   }
 
   function formatInteger(value, fallback) {
@@ -636,6 +829,15 @@
     const { table } = getTableElements();
     if (!table) return;
 
+    table.addEventListener('mousedown', (event) => {
+      const target = event.target instanceof Element ? event.target : null;
+      if (!target) return;
+      const row = target.closest('tr.analytics-study-row');
+      if (!row || !event.shiftKey) return;
+      event.preventDefault();
+      clearTextSelection();
+    });
+
     table.addEventListener('change', (event) => {
       const target = event.target;
       if (!(target instanceof HTMLInputElement) || target.type !== 'checkbox') return;
@@ -651,25 +853,65 @@
           .forEach((checkbox) => {
             checkbox.checked = target.checked;
           });
+      } else if (target.classList.contains('analytics-row-check')) {
+        handleRowCheckboxChange(target);
+        return;
       }
 
-      syncHierarchyCheckboxes();
-      tableState.checkedSet = new Set(getCheckedStudyIds());
-      notifySelectionChanged();
+      commitSelectionState();
     });
 
     table.addEventListener('click', (event) => {
-      const header = event.target instanceof Element
-        ? event.target.closest('th.analytics-sortable')
-        : null;
-      if (!header) return;
-      const sortKey = header.dataset.sortKey || '';
-      if (!SORT_META[sortKey]) return;
+      const target = event.target instanceof Element ? event.target : null;
+      if (!target) return;
 
-      tableState.checkedSet = new Set(getCheckedStudyIds());
-      cycleSortForColumn(sortKey);
-      notifySortChanged();
-      renderTableBody();
+      const header = target.closest('th.analytics-sortable');
+      if (header) {
+        const sortKey = header.dataset.sortKey || '';
+        if (!SORT_META[sortKey]) return;
+
+        tableState.checkedSet = new Set(getCheckedStudyIds());
+        cycleSortForColumn(sortKey);
+        notifySortChanged();
+        renderTableBody();
+        return;
+      }
+
+      const row = target.closest('tr.analytics-study-row');
+      if (!row) return;
+
+      const rowCheckbox = row.querySelector('.analytics-row-check');
+      if (!(rowCheckbox instanceof HTMLInputElement) || rowCheckbox.type !== 'checkbox') return;
+      const studyId = decodeStudyId(rowCheckbox.dataset.studyId || '');
+      const clickedRowCheckbox = Boolean(target.closest('input.analytics-row-check'));
+
+      if (clickedRowCheckbox && !event.ctrlKey && !event.shiftKey) {
+        // Allow native checkbox toggle; change handler will sync state.
+        return;
+      }
+
+      if (event.ctrlKey) {
+        if (clickedRowCheckbox) {
+          event.preventDefault();
+        }
+
+        const nextChecked = !tableState.checkedSet.has(studyId);
+        setVisibleChecked(nextChecked);
+        if (studyId) {
+          rememberRangeAnchor(studyId, nextChecked);
+        }
+        commitSelectionState();
+        return;
+      }
+
+      if (clickedRowCheckbox) {
+        // Keep checkbox clicks and row clicks on the same deterministic toggle path.
+        event.preventDefault();
+      }
+      handleStudyRowToggle(row, Boolean(event.shiftKey));
+      if (event.shiftKey) {
+        clearTextSelection();
+      }
     });
 
     tableState.bound = true;
