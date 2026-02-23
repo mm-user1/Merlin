@@ -22,6 +22,7 @@ project-root/
 |   |-- benchmark_metrics.py     # Metrics performance tests
 |   `-- test_all_ma_types.py     # Test all 11 MA types
 |-- tests/                    # Pytest test suite
+|   |-- conftest.py            # Shared fixtures (isolated storage, Flask client)
 |   |-- test_sanity.py         # Infrastructure sanity checks
 |   |-- test_regression_s01.py # S01 baseline regression
 |   |-- test_s01_migration.py  # S01 migration validation
@@ -32,8 +33,10 @@ project-root/
 |   |-- test_indicators.py     # Indicator tests
 |   |-- test_naming_consistency.py # camelCase naming guardrails
 |   |-- test_walkforward.py    # Walk-forward analysis tests
+|   |-- test_adaptive_wfa.py   # Adaptive WFA trigger detection tests
 |   |-- test_server.py         # HTTP API tests
 |   |-- test_storage.py        # Database storage tests
+|   |-- test_db_management.py  # Multi-database management tests
 |   |-- test_post_process.py   # Post-process module tests
 |   |-- test_dsr.py            # Deflated Sharpe Ratio tests
 |   |-- test_oos_selection.py  # OOS selection tests
@@ -70,34 +73,43 @@ project-root/
     |       `-- strategy.py
     |-- storage/              # Database storage (gitignored)
     |   |-- .gitkeep           # Directory marker
-    |   |-- studies.db         # SQLite database (WAL mode)
-    |   `-- journals/          # SQLite journal files
+    |   |-- *.db               # SQLite database files (WAL mode, multiple supported)
+    |   |-- journals/          # SQLite journal files
+    |   `-- queue.json         # Scheduled run queue state
     |-- ui/                   # Web interface
-    |   |-- server.py             # Flask entrypoint + app creation + route registration
-    |   |-- server_services.py    # Helpers/shared logic (no route decorators)
-    |   |-- server_routes_data.py # Pages + studies/tests/trades + presets + strategies endpoints
-    |   |-- server_routes_run.py  # Optimization status/cancel + optimize/walkforward/backtest
+    |   |-- server.py                 # Flask entrypoint + app creation + route registration
+    |   |-- server_services.py        # Helpers/shared logic (no route decorators)
+    |   |-- server_routes_data.py     # Pages + studies/tests/trades + presets + strategies + DB/CSV/queue endpoints
+    |   |-- server_routes_run.py      # Optimization status/cancel + optimize/walkforward/backtest
+    |   |-- server_routes_analytics.py # Analytics page + WFA summary API
     |   |-- templates/
     |   |   |-- index.html    # Start page (configuration)
-    |   |   `-- results.html  # Results page (studies browser)
+    |   |   |-- results.html  # Results page (studies browser)
+    |   |   `-- analytics.html # Analytics page (WFA research)
     |   `-- static/
     |       |-- js/           # Frontend JavaScript
-    |       |   |-- main.js       # Start page logic
+    |       |   |-- main.js               # Start page logic
     |       |   |-- results-state.js      # Results state + localStorage/sessionStorage
     |       |   |-- results-format.js     # Results formatters + labels + MD5
     |       |   |-- results-tables.js     # Results table/chart renderers
     |       |   |-- results-controller.js # Results orchestration + API + events
-    |       |   |-- api.js    # API client functions
-    |       |   |-- strategy-config.js
-    |       |   |-- ui-handlers.js
-    |       |   |-- optuna-ui.js         # Optuna Start-page UI helpers
-    |       |   |-- optuna-results-ui.js # Optuna Results-page render helpers
-    |       |   |-- post-process-ui.js   # Post process UI helpers
-    |       |   |-- oos-test-ui.js       # OOS test UI helpers
-    |       |   |-- wfa-results-ui.js    # WFA Results-page UI helpers
-    |       |   |-- presets.js           # Preset management
-    |       |   |-- results.js           # Results page initialization
-    |       |   `-- utils.js             # Shared utility functions
+    |       |   |-- api.js                # API client functions
+    |       |   |-- strategy-config.js    # Dynamic form generation
+    |       |   |-- ui-handlers.js        # Shared UI event handlers
+    |       |   |-- optuna-ui.js          # Optuna Start-page UI helpers
+    |       |   |-- optuna-results-ui.js  # Optuna Results-page render helpers
+    |       |   |-- post-process-ui.js    # Post process UI helpers
+    |       |   |-- oos-test-ui.js        # OOS test UI helpers
+    |       |   |-- wfa-results-ui.js     # WFA Results-page UI helpers
+    |       |   |-- presets.js            # Preset management
+    |       |   |-- results.js            # Results page initialization
+    |       |   |-- queue.js              # Scheduled run queue management
+    |       |   |-- dataset-preview.js    # WFA window layout preview
+    |       |   |-- analytics.js          # Analytics page logic + state
+    |       |   |-- analytics-equity.js   # Analytics equity curve rendering
+    |       |   |-- analytics-filters.js  # Analytics filter panel management
+    |       |   |-- analytics-table.js    # Analytics study table rendering
+    |       |   `-- utils.js              # Shared utility functions
     |       `-- css/
     |           `-- style.css # Light theme styles
     `-- presets/              # Saved parameter presets
@@ -123,6 +135,7 @@ project-root/
      - `TradeRecord`, `StrategyResult` -> `backtest_engine.py`
      - `BasicMetrics`, `AdvancedMetrics` -> `metrics.py`
      - `OptimizationResult`, `OptunaConfig` -> `optuna_engine.py`
+     - `WFConfig`, `WFResult`, `WindowResult` -> `walkforward_engine.py`
      - Strategy params dataclass -> each strategy's `strategy.py`
 
 4. **Optuna-Only Optimization**
@@ -136,6 +149,7 @@ project-root/
 
 5. **Database Persistence**
    - All optimization results automatically saved to SQLite database
+   - Multiple `.db` files supported with active DB switching
    - Studies browsable through web UI Results page
    - Trade exports generated on-demand from stored parameters
    - Original CSV files referenced, not duplicated
@@ -148,9 +162,9 @@ project-root/
 |--------|---------|
 | `backtest_engine.py` | Bar-by-bar trade simulation, position management, data preparation |
 | `optuna_engine.py` | Optuna optimization engine: single/multi-objective, constraints, samplers (TPE/Random/NSGA), pruning (single-objective only), and database persistence |
-| `walkforward_engine.py` | Rolling walk-forward analysis with calendar-based IS/OOS windows, stitched OOS equity, annualized WFE, database persistence |
+| `walkforward_engine.py` | Rolling walk-forward analysis with calendar-based IS/OOS windows, stitched OOS equity, annualized WFE, adaptive re-optimization triggers (CUSUM, drawdown, inactivity), database persistence |
 | `metrics.py` | Calculate BasicMetrics and AdvancedMetrics (Sharpe, RoMaD, Profit Factor, SQN, Ulcer Index, Consistency) |
-| `storage.py` | SQLite database operations: save/load studies, manage trials/windows, handle CSV file references |
+| `storage.py` | SQLite database operations: save/load studies, manage trials/windows, handle CSV file references, multi-database management, queue state persistence |
 | `export.py` | Export trade history to CSV (TradingView format) |
 | `post_process.py` | Forward Test validation, DSR (Deflated Sharpe Ratio) analysis, profit degradation metrics |
 | `testing.py` | OOS selection utilities, stress test candidate filtering, comparison metrics |
@@ -179,44 +193,62 @@ Strategies auto-discovered by `strategies/__init__.py` if both files exist.
 **Backend (Flask):**
 - `server.py` - Thin entrypoint: Flask app creation, route registration, test re-exports
 - `server_services.py` - Helpers/shared logic (no route decorators), safe logging via `_get_logger()`
-- `server_routes_data.py` - Pages + studies/tests/trades + presets + strategies + WFA detail endpoints
+- `server_routes_data.py` - Pages + studies/tests/trades + presets + strategies + DB management + CSV browse + queue endpoints
 - `server_routes_run.py` - Optimization status/cancel + optimize/walkforward/backtest (run endpoints)
+- `server_routes_analytics.py` - Analytics page + WFA summary API endpoint
 
 **Frontend (JavaScript):**
-- `templates/index.html` - Start page: strategy configuration and optimization launch
+- `templates/index.html` - Start page: strategy configuration, optimization launch, run queue
 - `templates/results.html` - Results page: studies browser, trials/windows display, trade downloads
+- `templates/analytics.html` - Analytics page: WFA research, multi-study comparison, filtering
 - `static/js/main.js` - Start page logic and form handling
 - `static/js/results-state.js` - Results page state management, localStorage/sessionStorage, URL helpers
 - `static/js/results-format.js` - Results page formatters, labels, stableStringify, MD5 hashing
 - `static/js/results-tables.js` - Results page table/chart renderers, row selection, parameter details
 - `static/js/results-controller.js` - Results page orchestration, API calls, event binding, modals
-- `static/js/api.js` - API client functions for both pages
-- `static/css/style.css` - Light theme styling for both pages
+- `static/js/queue.js` - Scheduled run queue management (add/remove/execute items)
+- `static/js/dataset-preview.js` - WFA window layout preview and validation
+- `static/js/analytics.js` - Analytics page logic, state management, study selection
+- `static/js/analytics-equity.js` - Analytics equity curve SVG rendering
+- `static/js/analytics-filters.js` - Analytics filter panel (strategy/symbol/TF/WFA/IS-OOS)
+- `static/js/analytics-table.js` - Analytics sortable study table with checkbox selection
+- `static/js/api.js` - API client functions for all pages
+- `static/css/style.css` - Light theme styling for all pages
 
 ### Data Flow
 
 #### Optimization Flow (Optuna/WFA)
 ```
 Start Page (index.html)
-  -> User submits optimization
+  -> User submits optimization (direct or via queue)
   -> server.py builds OptimizationConfig
-  -> optuna_engine / walkforward_engine
+  -> optuna_engine / walkforward_engine (fixed or adaptive)
   -> strategy (s01/s03/s04/...) + indicators
   -> backtest_engine (per trial/window)
   -> metrics.py
   -> storage.py
-  -> studies.db (SQLite)
+  -> active .db file (SQLite)
 ```
 
 #### Results Viewing Flow
 ```
 Results Page (results.html)
-  -> GET /api/studies
+  -> GET /api/studies (from active database)
   -> storage.py loads study + trials/windows
   -> Display in UI
      - Click trial -> Generate trades on-demand
      - Delete study -> Remove from database
      - Update CSV path -> Update file reference
+     - Switch database -> GET /api/databases + POST /api/databases/active
+```
+
+#### Analytics Flow
+```
+Analytics Page (analytics.html)
+  -> GET /api/analytics/summary (filtered by strategy/symbol/TF/etc.)
+  -> storage.py loads WFA studies with aggregated metrics
+  -> Display summary table + equity curves
+  -> Filter/sort/compare studies
 ```
 
 #### Trade Export (On-Demand)
@@ -237,7 +269,7 @@ User clicks "Download Trades"
 
 ### Database Schema
 
-SQLite database stored at `src/storage/studies.db` with WAL (Write-Ahead Logging) mode enabled.
+SQLite database stored in `src/storage/` directory. Multiple `.db` files supported with active DB switching. WAL (Write-Ahead Logging) mode enabled.
 
 #### Tables
 
@@ -245,6 +277,9 @@ SQLite database stored at `src/storage/studies.db` with WAL (Write-Ahead Logging
 - Primary key: `study_id` (UUID)
 - Unique constraint: `study_name`
 - Fields: strategy_id, strategy_version, optimization_mode ('optuna'/'wfa'), status, trial counts, best value, filters applied, configuration JSON, CSV file path, timestamps
+- **Adaptive WFA fields:** adaptive_mode, max_oos_period_days, min_oos_trades, check_interval_trades, cusum_threshold, dd_threshold_multiplier, inactivity_multiplier
+- **Stitched OOS fields:** stitched_oos_equity_curve, stitched_oos_timestamps_json, stitched_oos_window_ids_json, stitched_oos_net_profit_pct, stitched_oos_max_drawdown_pct, stitched_oos_total_trades, stitched_oos_winning_trades, stitched_oos_win_rate
+- **Window aggregate fields:** profitable_windows, total_windows, median_window_profit, median_window_wr, worst_window_profit, worst_window_dd
 
 **trials** - Individual Optuna trial results (for Optuna mode studies)
 - Foreign key: `study_id` -> studies
@@ -256,7 +291,7 @@ SQLite database stored at `src/storage/studies.db` with WAL (Write-Ahead Logging
 **wfa_windows** - Walk-Forward Analysis window results (for WFA mode studies)
 - Foreign key: `study_id` -> studies
 - Unique constraint: (study_id, window_number)
-- Fields: best parameters (JSON), IS/OOS metrics, IS/OOS equity curves (JSON arrays), WFE
+- Fields: best parameters (JSON), IS/OOS metrics, IS/OOS equity curves (JSON arrays), WFE, oos_winning_trades
 
 ### API Endpoints
 
@@ -265,6 +300,7 @@ SQLite database stored at `src/storage/studies.db` with WAL (Write-Ahead Logging
 |----------|--------|---------|
 | `/` | GET | Serve Start page (optimization configuration) |
 | `/results` | GET | Serve Results page (studies browser) |
+| `/analytics` | GET | Serve Analytics page (WFA research) |
 
 #### Optimization
 | Endpoint | Method | Purpose |
@@ -272,7 +308,7 @@ SQLite database stored at `src/storage/studies.db` with WAL (Write-Ahead Logging
 | `/api/backtest` | POST | Run single backtest (no storage) |
 | `/api/backtest/trades` | POST | Download trades CSV for single backtest |
 | `/api/optimize` | POST | Run Optuna optimization, save to database |
-| `/api/walkforward` | POST | Run WFA, save to database |
+| `/api/walkforward` | POST | Run WFA (fixed or adaptive mode), save to database |
 | `/api/optimization/status` | GET | Get current optimization state |
 | `/api/optimization/cancel` | POST | Cancel running optimization |
 
@@ -295,6 +331,30 @@ SQLite database stored at `src/storage/studies.db` with WAL (Write-Ahead Logging
 | `/api/studies/<study_id>/wfa/windows/<window_number>/equity` | POST | Generate WFA window equity curve on-demand |
 | `/api/studies/<study_id>/wfa/windows/<window_number>/trades` | POST | Download WFA window trades CSV |
 | `/api/studies/<study_id>/wfa/trades` | POST | Generate and download stitched WFA OOS trades CSV |
+
+#### Database Management
+| Endpoint | Method | Purpose |
+|----------|--------|---------|
+| `/api/databases` | GET | List all `.db` files with active marker |
+| `/api/databases/active` | POST | Switch active database |
+| `/api/databases` | POST | Create new timestamped database |
+
+#### CSV Browse
+| Endpoint | Method | Purpose |
+|----------|--------|---------|
+| `/api/csv/browse` | GET | Browse CSV directory (files + subdirectories) |
+
+#### Run Queue
+| Endpoint | Method | Purpose |
+|----------|--------|---------|
+| `/api/queue` | GET | Load scheduled run queue state |
+| `/api/queue` | PUT | Save/update queue state |
+| `/api/queue` | DELETE | Clear queue state |
+
+#### Analytics
+| Endpoint | Method | Purpose |
+|----------|--------|---------|
+| `/api/analytics/summary` | GET | WFA studies summary with filters and aggregated metrics |
 
 #### Strategy Configuration
 | Endpoint | Method | Purpose |
@@ -321,7 +381,7 @@ SQLite database stored at `src/storage/studies.db` with WAL (Write-Ahead Logging
 cd src/ui
 python server.py
 ```
-Opens at http://0.0.0.0:5000
+Opens at http://127.0.0.1:5000
 
 ### CLI Backtest
 ```bash
