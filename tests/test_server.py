@@ -1087,6 +1087,124 @@ def test_analytics_summary_includes_study_name_and_timestamps(client):
         assert second["completed_at_epoch"] > 0
 
 
+def test_analytics_summary_includes_focus_settings_payload(client):
+    with _temporary_active_db(f"analytics_focus_settings_{uuid.uuid4().hex[:8]}"):
+        _insert_analytics_study(
+            study_id="wfa_focus_1",
+            study_name="WFA_FOCUS_1",
+            optimization_mode="wfa",
+            adaptive_mode=1,
+            is_period_days=60,
+            config_json={
+                "objectives": ["net_profit_pct", "max_drawdown_pct"],
+                "primary_objective": "net_profit_pct",
+                "constraints": [{"enabled": True, "metric": "total_trades", "threshold": 30}],
+                "worker_processes": 4,
+                "filter_min_profit": True,
+                "min_profit_threshold": 12.5,
+                "optuna_config": {
+                    "budget_mode": "trials",
+                    "n_trials": 500,
+                    "time_limit": 3600,
+                    "convergence_patience": 50,
+                    "sampler": "tpe",
+                    "enable_pruning": False,
+                    "pruner": "median",
+                    "sanitize_enabled": True,
+                    "sanitize_trades_threshold": 3,
+                },
+                "wfa": {
+                    "is_period_days": 90,
+                    "oos_period_days": 30,
+                    "adaptive_mode": True,
+                    "max_oos_period_days": 120,
+                    "min_oos_trades": 7,
+                    "check_interval_trades": 4,
+                    "cusum_threshold": 5.5,
+                    "dd_threshold_multiplier": 1.7,
+                    "inactivity_multiplier": 6.2,
+                },
+            },
+        )
+        _insert_analytics_study(
+            study_id="wfa_focus_2",
+            study_name="WFA_FOCUS_2",
+            optimization_mode="wfa",
+            adaptive_mode=None,
+            is_period_days=None,
+            config_json={},
+        )
+        with get_db_connection() as conn:
+            conn.execute(
+                """
+                UPDATE studies
+                SET
+                    max_oos_period_days = 110,
+                    min_oos_trades = 9,
+                    check_interval_trades = 8,
+                    cusum_threshold = 4.4,
+                    dd_threshold_multiplier = 1.8,
+                    inactivity_multiplier = 7.2
+                WHERE study_id = 'wfa_focus_1'
+                """
+            )
+            conn.execute(
+                """
+                UPDATE studies
+                SET
+                    budget_mode = 'time',
+                    time_limit = 1800,
+                    sampler_type = 'random',
+                    sanitize_enabled = 0,
+                    sanitize_trades_threshold = 11,
+                    filter_min_profit = 1,
+                    min_profit_threshold = 9.0
+                WHERE study_id = 'wfa_focus_2'
+                """
+            )
+            conn.commit()
+
+        response = client.get("/api/analytics/summary")
+        assert response.status_code == 200
+        payload = response.get_json()
+        studies = payload["studies"]
+        by_id = {row["study_id"]: row for row in studies}
+
+        first = by_id["wfa_focus_1"]
+        assert first["optuna_settings"]["objectives"] == ["net_profit_pct", "max_drawdown_pct"]
+        assert first["optuna_settings"]["primary_objective"] == "net_profit_pct"
+        assert first["optuna_settings"]["budget_mode"] == "trials"
+        assert first["optuna_settings"]["n_trials"] == 500
+        assert first["optuna_settings"]["sampler_type"] == "tpe"
+        assert first["optuna_settings"]["enable_pruning"] is False
+        assert first["optuna_settings"]["pruner"] == "median"
+        assert first["optuna_settings"]["workers"] == 4
+        assert first["optuna_settings"]["sanitize_enabled"] is True
+        assert first["optuna_settings"]["sanitize_trades_threshold"] == 3
+        assert first["optuna_settings"]["filter_min_profit"] is True
+        assert first["optuna_settings"]["min_profit_threshold"] == 12.5
+
+        assert first["wfa_settings"]["is_period_days"] == 60
+        assert first["wfa_settings"]["oos_period_days"] == 30
+        assert first["wfa_settings"]["adaptive_mode"] is True
+        assert first["wfa_settings"]["max_oos_period_days"] == 110
+        assert first["wfa_settings"]["min_oos_trades"] == 9
+        assert first["wfa_settings"]["check_interval_trades"] == 8
+        assert first["wfa_settings"]["cusum_threshold"] == 4.4
+        assert first["wfa_settings"]["dd_threshold_multiplier"] == 1.8
+        assert first["wfa_settings"]["inactivity_multiplier"] == 7.2
+
+        second = by_id["wfa_focus_2"]
+        assert second["optuna_settings"]["budget_mode"] == "time"
+        assert second["optuna_settings"]["time_limit"] == 1800
+        assert second["optuna_settings"]["sampler_type"] == "random"
+        assert second["optuna_settings"]["sanitize_enabled"] is False
+        assert second["optuna_settings"]["sanitize_trades_threshold"] == 11
+        assert second["optuna_settings"]["filter_min_profit"] is True
+        assert second["optuna_settings"]["min_profit_threshold"] == 9.0
+        assert second["wfa_settings"]["adaptive_mode"] is None
+
+
 @pytest.mark.parametrize("threshold", [-1, "bad"])
 def test_optuna_sanitize_threshold_validation(threshold):
     from ui import server as server_module

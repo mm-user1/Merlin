@@ -37,6 +37,26 @@
           <div class="settings-list" id="analyticsResearchInfo"></div>
         </div>
       </div>
+
+      <div class="collapsible open" id="analytics-optuna-section" style="display: none;">
+        <div class="collapsible-header">
+          <span class="collapsible-icon">&#9660;</span>
+          <span class="collapsible-title">Optuna Settings</span>
+        </div>
+        <div class="collapsible-content">
+          <div class="settings-list" id="analyticsOptunaSettings"></div>
+        </div>
+      </div>
+
+      <div class="collapsible open" id="analytics-wfa-section" style="display: none;">
+        <div class="collapsible-header">
+          <span class="collapsible-icon">&#9660;</span>
+          <span class="collapsible-title">WFA Settings</span>
+        </div>
+        <div class="collapsible-content">
+          <div class="settings-list" id="analyticsWfaSettings"></div>
+        </div>
+      </div>
     </div>
 
     <div class="main-area">
@@ -101,6 +121,9 @@
                 </th>
                 <th>WFA</th>
                 <th>IS/OOS</th>
+                <th class="analytics-sortable" data-sort-key="ann_profit_pct">
+                  <span class="sort-label">Ann.P%</span><span class="sort-arrow"></span>
+                </th>
                 <th class="analytics-sortable" data-sort-key="profit_pct">
                   <span class="sort-label">Profit%</span><span class="sort-arrow"></span>
                 </th>

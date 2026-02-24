@@ -1931,6 +1931,35 @@
       color: #2a2a2a;
     }
 
+    #analyticsChartTitle {
+      display: inline-flex;
+      align-items: center;
+      gap: 8px;
+    }
+
+    .focus-dismiss {
+      border: 1px solid #b8b8b8;
+      background: #f4f4f4;
+      color: #2a2a2a;
+      border-radius: 3px;
+      width: 18px;
+      height: 18px;
+      line-height: 1;
+      font-size: 12px;
+      cursor: pointer;
+      padding: 0;
+      display: inline-flex;
+      align-items: center;
+      justify-content: center;
+      font-weight: 700;
+      flex: 0 0 auto;
+    }
+
+    .focus-dismiss:hover {
+      background: #e7e7e7;
+      border-color: #a6a6a6;
+    }
+
     .chart-body {
       padding: 16px;
       height: 456px;
@@ -2298,6 +2327,10 @@
 
     #analyticsSummaryTable tbody tr.analytics-study-row:hover {
       background: #e8f4ff;
+    }
+
+    #analyticsSummaryTable tbody tr.analytics-study-row.analytics-focused > td:first-child {
+      border-left: 3px solid #3498db;
     }
 
     #analyticsSummaryTable tbody tr.analytics-group-row:hover {

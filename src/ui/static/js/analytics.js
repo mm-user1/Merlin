@@ -7,6 +7,7 @@
 
   const SORT_LABELS = {
     study_name: 'Study Name',
+    ann_profit_pct: 'Ann.P%',
     profit_pct: 'Profit%',
     max_dd_pct: 'MaxDD%',
     total_trades: 'Trades',
@@ -33,9 +34,39 @@
     autoSelect: false,
     sortState: { ...DEFAULT_SORT_STATE },
     filtersInitialized: false,
+    focusedStudyId: null,
   };
 
   const MISSING_TEXT = '-';
+  const OBJECTIVE_LABELS = {
+    net_profit_pct: 'Net Profit %',
+    max_drawdown_pct: 'Max DD %',
+    sharpe_ratio: 'Sharpe Ratio',
+    sortino_ratio: 'Sortino Ratio',
+    romad: 'RoMaD',
+    profit_factor: 'Profit Factor',
+    win_rate: 'Win Rate %',
+    max_consecutive_losses: 'Max CL',
+    sqn: 'SQN',
+    ulcer_index: 'Ulcer Index',
+    consistency_score: 'Consistency %',
+    total_trades: 'Total Trades',
+    composite_score: 'Composite Score',
+  };
+  const CONSTRAINT_OPERATORS = {
+    total_trades: '>=',
+    net_profit_pct: '>=',
+    max_drawdown_pct: '<=',
+    sharpe_ratio: '>=',
+    sortino_ratio: '>=',
+    romad: '>=',
+    profit_factor: '>=',
+    win_rate: '>=',
+    max_consecutive_losses: '<=',
+    sqn: '>=',
+    ulcer_index: '<=',
+    consistency_score: '>=',
+  };
 
   function toFiniteNumber(value) {
     const parsed = Number(value);
@@ -77,6 +108,16 @@
     return String(Math.max(0, Math.round(parsed)));
   }
 
+  function isMissingValue(value) {
+    if (value === null || value === undefined) return true;
+    if (typeof value === 'string') return value.trim() === '';
+    return false;
+  }
+
+  function displayValue(value) {
+    return isMissingValue(value) ? MISSING_TEXT : String(value);
+  }
+
   function showMessage(message) {
     const messageEl = document.getElementById('analyticsMessage');
     if (!messageEl) return;
@@ -105,9 +146,261 @@
       .filter(Boolean);
   }
 
+  function formatObjectiveLabel(name) {
+    const key = String(name || '').trim();
+    return OBJECTIVE_LABELS[key] || key || MISSING_TEXT;
+  }
+
+  function formatObjectivesList(objectives) {
+    if (!Array.isArray(objectives) || !objectives.length) return MISSING_TEXT;
+    return objectives.map((item) => formatObjectiveLabel(item)).join(', ');
+  }
+
+  function formatConstraintsSummary(constraints) {
+    if (!Array.isArray(constraints) || !constraints.length) return 'None';
+    const enabled = constraints.filter((item) => item && item.enabled);
+    if (!enabled.length) return 'None';
+    return enabled.map((item) => {
+      const metric = String(item.metric || '').trim();
+      const operator = CONSTRAINT_OPERATORS[metric] || '';
+      const threshold = item.threshold !== undefined && item.threshold !== null ? item.threshold : '-';
+      return `${formatObjectiveLabel(metric)}${operator ? ` ${operator}` : ''} ${threshold}`;
+    }).join(', ');
+  }
+
+  function formatBudgetLabel(settings) {
+    const mode = String(settings?.budget_mode || '').trim().toLowerCase();
+    if (!mode) return MISSING_TEXT;
+    if (mode === 'trials') {
+      const nTrials = toFiniteNumber(settings?.n_trials);
+      return `${nTrials === null ? 0 : Math.max(0, Math.round(nTrials))} trials`;
+    }
+    if (mode === 'time') {
+      const timeLimit = toFiniteNumber(settings?.time_limit);
+      const minutes = timeLimit === null ? 0 : Math.round(timeLimit / 60);
+      return `${Math.max(0, minutes)} min`;
+    }
+    if (mode === 'convergence') {
+      const patience = toFiniteNumber(settings?.convergence_patience);
+      return `No improvement ${patience === null ? 0 : Math.max(0, Math.round(patience))} trials`;
+    }
+    return MISSING_TEXT;
+  }
+
+  function renderSettingsList(container, rows) {
+    if (!container) return;
+    container.innerHTML = '';
+    (rows || []).forEach((row) => {
+      const item = document.createElement('div');
+      item.className = 'setting-item';
+
+      const key = document.createElement('span');
+      key.className = 'key';
+      key.textContent = String(row.key || '');
+
+      const val = document.createElement('span');
+      val.className = 'val';
+      val.textContent = displayValue(row.val);
+
+      item.appendChild(key);
+      item.appendChild(val);
+      container.appendChild(item);
+    });
+  }
+
+  function hideFocusSidebar() {
+    const optunaSection = document.getElementById('analytics-optuna-section');
+    const wfaSection = document.getElementById('analytics-wfa-section');
+    if (optunaSection) optunaSection.style.display = 'none';
+    if (wfaSection) wfaSection.style.display = 'none';
+  }
+
+  function renderFocusedSidebar(study) {
+    const optunaSection = document.getElementById('analytics-optuna-section');
+    const wfaSection = document.getElementById('analytics-wfa-section');
+    const optunaContainer = document.getElementById('analyticsOptunaSettings');
+    const wfaContainer = document.getElementById('analyticsWfaSettings');
+    if (!optunaSection || !wfaSection || !optunaContainer || !wfaContainer) return;
+
+    const optunaSettings = study?.optuna_settings || {};
+    const wfaSettings = study?.wfa_settings || {};
+    const enablePruning = optunaSettings.enable_pruning === null || optunaSettings.enable_pruning === undefined
+      ? null
+      : Boolean(optunaSettings.enable_pruning);
+    const prunerValue = enablePruning === false
+      ? '-'
+      : (String(optunaSettings.pruner || '').trim() || (enablePruning ? 'On' : MISSING_TEXT));
+
+    const optunaRows = [
+      { key: 'Objectives', val: formatObjectivesList(optunaSettings.objectives) },
+      {
+        key: 'Primary',
+        val: optunaSettings.primary_objective ? formatObjectiveLabel(optunaSettings.primary_objective) : MISSING_TEXT,
+      },
+      { key: 'Constraints', val: formatConstraintsSummary(optunaSettings.constraints) },
+      { key: 'Budget', val: formatBudgetLabel(optunaSettings) },
+      {
+        key: 'Sampler',
+        val: String(optunaSettings.sampler_type || '').trim()
+          ? String(optunaSettings.sampler_type).toUpperCase()
+          : MISSING_TEXT,
+      },
+      { key: 'Pruner', val: prunerValue },
+      {
+        key: 'Workers',
+        val: toFiniteNumber(optunaSettings.workers) === null
+          ? MISSING_TEXT
+          : String(Math.max(0, Math.round(Number(optunaSettings.workers)))),
+      },
+    ];
+    renderSettingsList(optunaContainer, optunaRows);
+
+    const adaptiveModeRaw = wfaSettings.adaptive_mode;
+    const adaptiveMode = adaptiveModeRaw === null || adaptiveModeRaw === undefined
+      ? null
+      : Boolean(adaptiveModeRaw);
+    const wfaRows = [
+      {
+        key: 'IS (days)',
+        val: toFiniteNumber(wfaSettings.is_period_days) === null
+          ? MISSING_TEXT
+          : String(Math.max(0, Math.round(Number(wfaSettings.is_period_days)))),
+      },
+      {
+        key: 'OOS (days)',
+        val: toFiniteNumber(wfaSettings.oos_period_days) === null
+          ? MISSING_TEXT
+          : String(Math.max(0, Math.round(Number(wfaSettings.oos_period_days)))),
+      },
+      { key: 'Adaptive', val: adaptiveMode === null ? MISSING_TEXT : (adaptiveMode ? 'On' : 'Off') },
+    ];
+    if (adaptiveMode === true) {
+      wfaRows.push(
+        {
+          key: 'Max OOS (days)',
+          val: toFiniteNumber(wfaSettings.max_oos_period_days) === null
+            ? MISSING_TEXT
+            : String(Math.max(0, Math.round(Number(wfaSettings.max_oos_period_days)))),
+        },
+        {
+          key: 'Min OOS Trades',
+          val: toFiniteNumber(wfaSettings.min_oos_trades) === null
+            ? MISSING_TEXT
+            : String(Math.max(0, Math.round(Number(wfaSettings.min_oos_trades)))),
+        },
+        {
+          key: 'CUSUM Threshold',
+          val: toFiniteNumber(wfaSettings.cusum_threshold) === null
+            ? MISSING_TEXT
+            : Number(wfaSettings.cusum_threshold).toFixed(2),
+        },
+        {
+          key: 'DD Multiplier',
+          val: toFiniteNumber(wfaSettings.dd_threshold_multiplier) === null
+            ? MISSING_TEXT
+            : Number(wfaSettings.dd_threshold_multiplier).toFixed(2),
+        },
+        {
+          key: 'Inactivity Mult.',
+          val: toFiniteNumber(wfaSettings.inactivity_multiplier) === null
+            ? MISSING_TEXT
+            : Number(wfaSettings.inactivity_multiplier).toFixed(2),
+        }
+      );
+    }
+    renderSettingsList(wfaContainer, wfaRows);
+
+    optunaSection.style.display = '';
+    wfaSection.style.display = '';
+  }
+
+  function getFocusedStudy() {
+    const focusedId = String(AnalyticsState.focusedStudyId || '');
+    if (!focusedId) return null;
+    return getStudyMap().get(focusedId) || null;
+  }
+
+  function renderFocusedCards(study) {
+    const container = document.getElementById('analyticsSummaryRow');
+    if (!container || !study) return;
+
+    const netProfit = toFiniteNumber(study.profit_pct);
+    const maxDrawdown = toFiniteNumber(study.max_dd_pct);
+    const totalTradesRaw = toFiniteNumber(study.total_trades);
+    const winningTradesRaw = toFiniteNumber(study.winning_trades);
+    const totalTrades = totalTradesRaw === null ? null : Math.max(0, Math.round(totalTradesRaw));
+    let winningTrades = winningTradesRaw === null ? null : Math.max(0, Math.round(winningTradesRaw));
+    if (winningTrades !== null && totalTrades !== null) {
+      winningTrades = Math.min(winningTrades, totalTrades);
+    } else if (winningTrades === null && totalTrades === 0) {
+      winningTrades = 0;
+    }
+    const totalTradesText = totalTrades !== null
+      ? `${winningTrades !== null ? winningTrades : 'N/A'}/${totalTrades}`
+      : (winningTrades !== null ? `${winningTrades}/N/A` : 'N/A');
+
+    const profitableWindowsRaw = toFiniteNumber(study.profitable_windows);
+    const totalWindowsRaw = toFiniteNumber(study.total_windows);
+    const profitableWindows = profitableWindowsRaw === null ? null : Math.max(0, Math.round(profitableWindowsRaw));
+    const totalWindows = totalWindowsRaw === null ? null : Math.max(0, Math.round(totalWindowsRaw));
+    const oosWinsPctRaw = toFiniteNumber(study.profitable_windows_pct);
+    const oosWinsPct = oosWinsPctRaw !== null
+      ? oosWinsPctRaw
+      : (profitableWindows !== null && totalWindows !== null && totalWindows > 0
+        ? (profitableWindows / totalWindows) * 100
+        : 0);
+    const oosWinsText = (profitableWindows !== null && totalWindows !== null)
+      ? `${Math.min(profitableWindows, totalWindows)}/${totalWindows} (${Math.round(totalWindows > 0 ? oosWinsPct : 0)}%)`
+      : (oosWinsPctRaw !== null ? `${Math.round(oosWinsPctRaw)}%` : 'N/A');
+
+    const wfe = toFiniteNumber(study.wfe_pct);
+    const medianProfit = toFiniteNumber(study.median_window_profit);
+    const medianWr = toFiniteNumber(study.median_window_wr);
+
+    const netClass = netProfit === null ? '' : (netProfit >= 0 ? 'positive' : 'negative');
+    const medianProfitClass = medianProfit === null ? '' : (medianProfit >= 0 ? 'positive' : 'negative');
+
+    container.innerHTML = `
+      <div class="summary-card highlight">
+        <div class="value ${netClass}">${formatSignedPercent(netProfit, 2)}</div>
+        <div class="label">NET PROFIT</div>
+      </div>
+      <div class="summary-card">
+        <div class="value negative">${formatNegativePercent(maxDrawdown, 2)}</div>
+        <div class="label">MAX DRAWDOWN</div>
+      </div>
+      <div class="summary-card">
+        <div class="value">${totalTradesText}</div>
+        <div class="label">TOTAL TRADES</div>
+      </div>
+      <div class="summary-card">
+        <div class="value">${wfe === null ? 'N/A' : `${wfe.toFixed(1)}%`}</div>
+        <div class="label">WFE</div>
+      </div>
+      <div class="summary-card">
+        <div class="value">${oosWinsText}</div>
+        <div class="label">OOS WINS</div>
+      </div>
+      <div class="summary-card">
+        <div class="value ${medianProfitClass}">${formatSignedPercent(medianProfit, 1)}</div>
+        <div class="label">OOS PROFIT (MED)</div>
+      </div>
+      <div class="summary-card">
+        <div class="value">${formatUnsignedPercent(medianWr, 1)}</div>
+        <div class="label">OOS WIN RATE (MED)</div>
+      </div>
+    `;
+  }
+
   function renderSummaryCards() {
     const container = document.getElementById('analyticsSummaryRow');
     if (!container) return;
+
+    const focusedStudy = getFocusedStudy();
+    if (focusedStudy) {
+      renderFocusedCards(focusedStudy);
+      return;
+    }
 
     const selected = getSelectedStudies();
     if (!selected.length) {
@@ -168,16 +461,39 @@
     `;
   }
 
-  function renderSelectedStudyChart() {
+  function renderChartTitle(study) {
     const titleEl = document.getElementById('analyticsChartTitle');
     if (!titleEl) return;
+    titleEl.textContent = '';
 
-    if (!AnalyticsState.checkedStudyIds.size) {
+    if (!study) {
       titleEl.textContent = 'Stitched OOS Equity';
-      window.AnalyticsEquity.renderEmpty('No data to display');
       return;
     }
 
+    const rowNumber = Math.max(1, AnalyticsState.orderedStudyIds.indexOf(String(study.study_id || '')) + 1);
+    const symbol = study.symbol || '-';
+    const tf = study.tf || '-';
+    titleEl.appendChild(document.createTextNode(`Stitched OOS Equity - #${rowNumber} ${symbol} ${tf}`));
+
+    if (String(AnalyticsState.focusedStudyId || '') === String(study.study_id || '')) {
+      const dismissBtn = document.createElement('button');
+      dismissBtn.type = 'button';
+      dismissBtn.className = 'focus-dismiss';
+      dismissBtn.id = 'analyticsFocusDismiss';
+      dismissBtn.title = 'Exit focus mode';
+      dismissBtn.setAttribute('aria-label', 'Exit focus mode');
+      dismissBtn.textContent = 'x';
+      dismissBtn.addEventListener('click', (event) => {
+        event.preventDefault();
+        event.stopPropagation();
+        clearFocus();
+      });
+      titleEl.appendChild(dismissBtn);
+    }
+  }
+
+  function getPrimaryCheckedStudy() {
     const map = getStudyMap();
     let selectedId = null;
     for (const studyId of AnalyticsState.orderedStudyIds) {
@@ -189,28 +505,32 @@
     if (!selectedId) {
       selectedId = Array.from(AnalyticsState.checkedStudyIds)[0] || null;
     }
+    return selectedId ? map.get(selectedId) || null : null;
+  }
 
-    const study = selectedId ? map.get(selectedId) : null;
+  function renderSelectedStudyChart() {
+    const focusedStudy = getFocusedStudy();
+    const study = focusedStudy || getPrimaryCheckedStudy();
+    renderChartTitle(study);
+
     if (!study) {
-      titleEl.textContent = 'Stitched OOS Equity';
       window.AnalyticsEquity.renderEmpty('No data to display');
       return;
     }
-
-    const rowNumber = Math.max(1, AnalyticsState.orderedStudyIds.indexOf(String(study.study_id || '')) + 1);
-    const symbol = study.symbol || '-';
-    const tf = study.tf || '-';
-    titleEl.textContent = `Stitched OOS Equity - #${rowNumber} ${symbol} ${tf}`;
-
     if (!study.has_equity_curve) {
       window.AnalyticsEquity.renderEmpty('No stitched OOS equity data for selected study');
       return;
     }
-
     window.AnalyticsEquity.renderChart(study.equity_curve || [], study.equity_timestamps || []);
   }
 
   function updateVisualsForSelection() {
+    const focusedStudy = getFocusedStudy();
+    if (focusedStudy) {
+      renderFocusedSidebar(focusedStudy);
+    } else {
+      hideFocusSidebar();
+    }
     renderSummaryCards();
     renderSelectedStudyChart();
   }
@@ -250,7 +570,7 @@
 
       const val = document.createElement('span');
       val.className = 'val';
-      val.textContent = String(row.val || MISSING_TEXT);
+      val.textContent = displayValue(row.val);
 
       item.appendChild(key);
       item.appendChild(val);
@@ -302,6 +622,7 @@
           await switchDatabaseRequest(db.name);
           AnalyticsState.checkedStudyIds = new Set();
           AnalyticsState.sortState = { ...DEFAULT_SORT_STATE };
+          AnalyticsState.focusedStudyId = null;
           await Promise.all([loadDatabases(), loadSummary()]);
         } catch (error) {
           alert(error.message || 'Failed to switch database.');
@@ -316,6 +637,36 @@
   function onTableSelectionChange(checkedSet) {
     AnalyticsState.checkedStudyIds = new Set(checkedSet || []);
     updateVisualsForSelection();
+  }
+
+  function clearFocus() {
+    if (!AnalyticsState.focusedStudyId) return;
+    AnalyticsState.focusedStudyId = null;
+    if (window.AnalyticsTable && typeof window.AnalyticsTable.setFocusedStudyId === 'function') {
+      window.AnalyticsTable.setFocusedStudyId(null);
+    }
+    updateVisualsForSelection();
+  }
+
+  function setFocus(studyId) {
+    const normalized = String(studyId || '').trim();
+    if (!normalized) {
+      clearFocus();
+      return;
+    }
+    if (AnalyticsState.focusedStudyId === normalized) {
+      clearFocus();
+      return;
+    }
+    AnalyticsState.focusedStudyId = normalized;
+    if (window.AnalyticsTable && typeof window.AnalyticsTable.setFocusedStudyId === 'function') {
+      window.AnalyticsTable.setFocusedStudyId(normalized);
+    }
+    updateVisualsForSelection();
+  }
+
+  function onTableFocusToggle(studyId) {
+    setFocus(studyId);
   }
 
   function onTableSortChange(sortState) {
@@ -339,11 +690,22 @@
         autoSelect: AnalyticsState.autoSelect,
         sortState: AnalyticsState.sortState,
         onSortChange: onTableSortChange,
+        onFocusToggle: onTableFocusToggle,
+        focusedStudyId: AnalyticsState.focusedStudyId,
       }
     );
 
     AnalyticsState.checkedStudyIds = new Set(window.AnalyticsTable.getCheckedStudyIds());
     AnalyticsState.orderedStudyIds = window.AnalyticsTable.getOrderedStudyIds();
+    if (AnalyticsState.focusedStudyId && typeof window.AnalyticsTable.getVisibleStudyIds === 'function') {
+      const visibleSet = new Set(window.AnalyticsTable.getVisibleStudyIds());
+      if (!visibleSet.has(AnalyticsState.focusedStudyId)) {
+        AnalyticsState.focusedStudyId = null;
+      }
+    }
+    if (typeof window.AnalyticsTable.setFocusedStudyId === 'function') {
+      window.AnalyticsTable.setFocusedStudyId(AnalyticsState.focusedStudyId);
+    }
     updateVisualsForSelection();
   }
 
@@ -398,6 +760,7 @@
     AnalyticsState.studies = Array.isArray(data.studies) ? data.studies : [];
     AnalyticsState.researchInfo = data.research_info || {};
     AnalyticsState.checkedStudyIds = new Set();
+    AnalyticsState.focusedStudyId = null;
 
     renderDbName();
     renderResearchInfo();
@@ -445,10 +808,19 @@
     }
   }
 
+  function bindFocusHotkeys() {
+    document.addEventListener('keydown', (event) => {
+      if (event.key === 'Escape' && AnalyticsState.focusedStudyId) {
+        clearFocus();
+      }
+    });
+  }
+
   async function initAnalyticsPage() {
     bindCollapsibleHeaders();
     bindSelectionButtons();
     bindAutoSelect();
+    bindFocusHotkeys();
     try {
       await Promise.all([loadDatabases(), loadSummary()]);
     } catch (error) {

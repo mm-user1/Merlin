@@ -53,6 +53,24 @@ def register_routes(app):
             return None
         return int(round(parsed))
 
+    def _safe_bool(value: Any) -> Optional[bool]:
+        if value is None:
+            return None
+        if isinstance(value, bool):
+            return value
+        if isinstance(value, (int, float)):
+            parsed = _safe_int(value)
+            if parsed is None:
+                return None
+            return bool(parsed)
+        if isinstance(value, str):
+            token = value.strip().lower()
+            if token in {"1", "true", "yes", "y", "on"}:
+                return True
+            if token in {"0", "false", "no", "n", "off"}:
+                return False
+        return None
+
     def _parse_json_dict(raw_value: Any) -> Dict[str, Any]:
         if isinstance(raw_value, dict):
             return raw_value
@@ -174,6 +192,13 @@ def register_routes(app):
             return "Adaptive"
         return "Unknown"
 
+    def _format_wfa_mode_bool(adaptive_mode: Optional[bool]) -> str:
+        if adaptive_mode is True:
+            return "Adaptive"
+        if adaptive_mode is False:
+            return "Fixed"
+        return "Unknown"
+
     def _extract_oos_period_days(config_json_value: Any) -> Optional[int]:
         config_payload = _parse_json_dict(config_json_value)
         wfa_payload = config_payload.get("wfa")
@@ -205,6 +230,24 @@ def register_routes(app):
                     csv_file_name,
                     adaptive_mode,
                     is_period_days,
+                    max_oos_period_days,
+                    min_oos_trades,
+                    check_interval_trades,
+                    cusum_threshold,
+                    dd_threshold_multiplier,
+                    inactivity_multiplier,
+                    budget_mode,
+                    n_trials,
+                    time_limit,
+                    convergence_patience,
+                    sampler_type,
+                    objectives_json,
+                    primary_objective,
+                    constraints_json,
+                    filter_min_profit,
+                    min_profit_threshold,
+                    sanitize_enabled,
+                    sanitize_trades_threshold,
                     config_json,
                     dataset_start_date,
                     dataset_end_date,
@@ -236,6 +279,13 @@ def register_routes(app):
 
         for row in rows:
             row_dict = dict(row)
+            config_payload = _parse_json_dict(row_dict.get("config_json"))
+            optuna_config = _parse_json_dict(config_payload.get("optuna_config"))
+            wfa_config = _parse_json_dict(config_payload.get("wfa"))
+            config_objectives = _parse_json_array(config_payload.get("objectives"))
+            config_constraints = _parse_json_array(config_payload.get("constraints"))
+            row_objectives = _parse_json_array(row_dict.get("objectives_json"))
+            row_constraints = _parse_json_array(row_dict.get("constraints_json"))
 
             strategy_label = _format_strategy_label(
                 row_dict.get("strategy_id"),
@@ -249,11 +299,21 @@ def register_routes(app):
             if tf:
                 timeframe_values.add(tf)
 
-            wfa_mode = _format_wfa_mode(row_dict.get("adaptive_mode"))
+            adaptive_mode_bool = _safe_bool(row_dict.get("adaptive_mode"))
+            if adaptive_mode_bool is None:
+                adaptive_mode_bool = _safe_bool(wfa_config.get("adaptive_mode"))
+            if adaptive_mode_bool is None:
+                adaptive_mode_bool = _safe_bool(config_payload.get("adaptive_mode"))
+
+            wfa_mode = _format_wfa_mode_bool(adaptive_mode_bool)
+            if wfa_mode == "Unknown":
+                wfa_mode = _format_wfa_mode(row_dict.get("adaptive_mode"))
             wfa_mode_values.add(wfa_mode)
 
             is_period_days = _safe_int(row_dict.get("is_period_days"))
-            oos_period_days = _extract_oos_period_days(row_dict.get("config_json"))
+            oos_period_days = _safe_int(wfa_config.get("oos_period_days"))
+            if oos_period_days is None:
+                oos_period_days = _extract_oos_period_days(row_dict.get("config_json"))
             if is_period_days is None and oos_period_days is None:
                 is_oos = "N/A"
             else:
@@ -300,6 +360,16 @@ def register_routes(app):
                 equity_curve = []
                 equity_timestamps = []
 
+            sampler_type = (
+                _parse_json_dict(optuna_config.get("sampler_config")).get("sampler_type")
+                or optuna_config.get("sampler_type")
+                or optuna_config.get("sampler")
+                or row_dict.get("sampler_type")
+            )
+            workers_value = _safe_int(config_payload.get("worker_processes"))
+            if workers_value is None:
+                workers_value = _safe_int(config_payload.get("workerProcesses"))
+
             studies.append(
                 {
                     "study_id": row_dict.get("study_id"),
@@ -330,6 +400,96 @@ def register_routes(app):
                     "has_equity_curve": has_equity_curve,
                     "equity_curve": equity_curve,
                     "equity_timestamps": equity_timestamps,
+                    "optuna_settings": {
+                        "objectives": list(config_objectives or row_objectives or []),
+                        "primary_objective": (
+                            config_payload.get("primary_objective")
+                            or row_dict.get("primary_objective")
+                        ),
+                        "constraints": list(config_constraints or row_constraints or []),
+                        "budget_mode": (
+                            optuna_config.get("budget_mode")
+                            or row_dict.get("budget_mode")
+                        ),
+                        "n_trials": (
+                            _safe_int(optuna_config.get("n_trials"))
+                            if _safe_int(optuna_config.get("n_trials")) is not None
+                            else _safe_int(row_dict.get("n_trials"))
+                        ),
+                        "time_limit": (
+                            _safe_int(optuna_config.get("time_limit"))
+                            if _safe_int(optuna_config.get("time_limit")) is not None
+                            else _safe_int(row_dict.get("time_limit"))
+                        ),
+                        "convergence_patience": (
+                            _safe_int(optuna_config.get("convergence_patience"))
+                            if _safe_int(optuna_config.get("convergence_patience")) is not None
+                            else _safe_int(row_dict.get("convergence_patience"))
+                        ),
+                        "sampler_type": sampler_type,
+                        "enable_pruning": _safe_bool(optuna_config.get("enable_pruning")),
+                        "pruner": optuna_config.get("pruner"),
+                        "workers": workers_value,
+                        "sanitize_enabled": (
+                            _safe_bool(optuna_config.get("sanitize_enabled"))
+                            if _safe_bool(optuna_config.get("sanitize_enabled")) is not None
+                            else _safe_bool(row_dict.get("sanitize_enabled"))
+                        ),
+                        "sanitize_trades_threshold": (
+                            _safe_int(optuna_config.get("sanitize_trades_threshold"))
+                            if _safe_int(optuna_config.get("sanitize_trades_threshold")) is not None
+                            else _safe_int(row_dict.get("sanitize_trades_threshold"))
+                        ),
+                        "filter_min_profit": (
+                            _safe_bool(config_payload.get("filter_min_profit"))
+                            if _safe_bool(config_payload.get("filter_min_profit")) is not None
+                            else _safe_bool(row_dict.get("filter_min_profit"))
+                        ),
+                        "min_profit_threshold": (
+                            _safe_float(config_payload.get("min_profit_threshold"))
+                            if _safe_float(config_payload.get("min_profit_threshold")) is not None
+                            else _safe_float(row_dict.get("min_profit_threshold"))
+                        ),
+                    },
+                    "wfa_settings": {
+                        "is_period_days": (
+                            is_period_days
+                            if is_period_days is not None
+                            else _safe_int(wfa_config.get("is_period_days"))
+                        ),
+                        "oos_period_days": oos_period_days,
+                        "adaptive_mode": adaptive_mode_bool,
+                        "max_oos_period_days": (
+                            _safe_int(row_dict.get("max_oos_period_days"))
+                            if _safe_int(row_dict.get("max_oos_period_days")) is not None
+                            else _safe_int(wfa_config.get("max_oos_period_days"))
+                        ),
+                        "min_oos_trades": (
+                            _safe_int(row_dict.get("min_oos_trades"))
+                            if _safe_int(row_dict.get("min_oos_trades")) is not None
+                            else _safe_int(wfa_config.get("min_oos_trades"))
+                        ),
+                        "check_interval_trades": (
+                            _safe_int(row_dict.get("check_interval_trades"))
+                            if _safe_int(row_dict.get("check_interval_trades")) is not None
+                            else _safe_int(wfa_config.get("check_interval_trades"))
+                        ),
+                        "cusum_threshold": (
+                            _safe_float(row_dict.get("cusum_threshold"))
+                            if _safe_float(row_dict.get("cusum_threshold")) is not None
+                            else _safe_float(wfa_config.get("cusum_threshold"))
+                        ),
+                        "dd_threshold_multiplier": (
+                            _safe_float(row_dict.get("dd_threshold_multiplier"))
+                            if _safe_float(row_dict.get("dd_threshold_multiplier")) is not None
+                            else _safe_float(wfa_config.get("dd_threshold_multiplier"))
+                        ),
+                        "inactivity_multiplier": (
+                            _safe_float(row_dict.get("inactivity_multiplier"))
+                            if _safe_float(row_dict.get("inactivity_multiplier")) is not None
+                            else _safe_float(wfa_config.get("inactivity_multiplier"))
+                        ),
+                    },
                 }
             )
 

@@ -1,4 +1,6 @@
 (function () {
+  const MS_PER_DAY = 24 * 60 * 60 * 1000;
+
   const FILTER_TO_FIELD = {
     strategy: 'strategy',
     symbol: 'symbol',
@@ -9,6 +11,7 @@
 
   const SORT_META = {
     study_name: { label: 'Study Name', bestDirection: 'asc' },
+    ann_profit_pct: { label: 'Ann.P%', bestDirection: 'desc' },
     profit_pct: { label: 'Profit%', bestDirection: 'desc' },
     max_dd_pct: { label: 'MaxDD%', bestDirection: 'asc' },
     total_trades: { label: 'Trades', bestDirection: 'desc' },
@@ -38,8 +41,10 @@
     autoSelect: false,
     onSelectionChange: null,
     onSortChange: null,
+    onFocusToggle: null,
     rangeAnchorStudyId: null,
     rangeAnchorChecked: null,
+    focusedStudyId: null,
     bound: false,
   };
 
@@ -225,6 +230,7 @@
     const createdMs = createdEpoch === null ? parseTimestampMs(study?.created_at) : createdEpoch * 1000;
     const completedMs = completedEpoch === null ? parseTimestampMs(study?.completed_at) : completedEpoch * 1000;
     const studyNameDisplay = buildDisplayStudyName(study);
+    const annMetrics = computeAnnualizedProfitMetrics(study);
     return {
       ...study,
       _study_name_display: studyNameDisplay,
@@ -232,6 +238,8 @@
       _created_ms: createdMs,
       _completed_ms: completedMs,
       _default_order_ms: createdMs === null ? completedMs : createdMs,
+      ann_profit_pct: annMetrics.annProfitPct,
+      _oos_span_days: annMetrics.oosSpanDays,
     };
   }
 
@@ -381,6 +389,10 @@
     return Array.from(table.querySelectorAll('tbody tr.analytics-study-row'));
   }
 
+  function encodeStudyId(studyId) {
+    return encodeURIComponent(String(studyId || ''));
+  }
+
   function isElementVisible(element) {
     if (!element) return false;
     return element.style.display !== 'none';
@@ -422,6 +434,7 @@
   function commitSelectionState() {
     syncHierarchyCheckboxes();
     tableState.checkedSet = new Set(getCheckedStudyIds());
+    applyFocusedRowClass();
     notifySelectionChanged();
   }
 
@@ -565,6 +578,18 @@
     updateRowSelectionClasses();
   }
 
+  function applyFocusedRowClass() {
+    const focused = String(tableState.focusedStudyId || '');
+    getStudyRows().forEach((row) => {
+      row.classList.remove('analytics-focused');
+      if (!focused) return;
+      const rowStudyId = decodeStudyId(row.dataset.studyId || '');
+      if (rowStudyId === focused) {
+        row.classList.add('analytics-focused');
+      }
+    });
+  }
+
   function notifySelectionChanged() {
     if (typeof tableState.onSelectionChange !== 'function') return;
     tableState.onSelectionChange(new Set(getCheckedStudyIds()));
@@ -684,7 +709,7 @@
     if (!groups.length) {
       tbody.innerHTML = `
         <tr>
-          <td colspan="13" class="analytics-empty-cell">No WFA studies found in this database.</td>
+          <td colspan="14" class="analytics-empty-cell">No WFA studies found in this database.</td>
         </tr>
       `;
       updateSortHeaders();
@@ -720,6 +745,11 @@
 
         const profitText = escapeHtml(formatSignedPercentValue(study.profit_pct, 1));
         const maxDdText = escapeHtml(formatNegativePercentValue(study.max_dd_pct, 1));
+        const annProfitCell = formatAnnualizedProfitCell(study);
+        const annProfitText = escapeHtml(annProfitCell.text);
+        const annProfitTitleAttr = annProfitCell.tooltip
+          ? ` title="${escapeHtml(annProfitCell.tooltip)}"`
+          : '';
         const wfeRaw = toFiniteNumber(study.wfe_pct);
         const wfeText = escapeHtml(wfeRaw === null ? 'N/A' : `${wfeRaw.toFixed(1)}%`);
         const oosProfitText = escapeHtml(formatSignedPercentValue(study.median_window_profit, 1));
@@ -749,6 +779,7 @@
             <td title="${studyNameTitle}">${studyNameText}</td>
             <td>${wfaModeText}</td>
             <td>${isOosText}</td>
+            <td class="${annProfitCell.className || ''}"${annProfitTitleAttr}>${annProfitText}</td>
             <td class="${profitClass}">${profitText}</td>
             <td class="${maxDdClass}">${maxDdText}</td>
             <td>${totalTradesText}</td>
@@ -764,7 +795,7 @@
       html.push(`
         <tr class="group-row analytics-group-row" data-group="${groupToken}"${groupHiddenStyle}>
           <td class="col-check"><input type="checkbox" class="analytics-group-check" data-group="${groupToken}" /></td>
-          <td colspan="12">
+          <td colspan="13">
             <div class="group-label">
               <span class="group-dates">${groupStart} &mdash; ${groupEnd}</span>
               <span class="group-duration">(${daysText} days)</span>
@@ -783,6 +814,7 @@
     renumberVisibleRows();
     syncHierarchyCheckboxes();
     updateSortHeaders();
+    applyFocusedRowClass();
 
     const afterChecked = new Set(getCheckedStudyIds());
     tableState.checkedSet = afterChecked;
@@ -872,8 +904,8 @@
 
         tableState.checkedSet = new Set(getCheckedStudyIds());
         cycleSortForColumn(sortKey);
-        notifySortChanged();
         renderTableBody();
+        notifySortChanged();
         return;
       }
 
@@ -884,6 +916,14 @@
       if (!(rowCheckbox instanceof HTMLInputElement) || rowCheckbox.type !== 'checkbox') return;
       const studyId = decodeStudyId(rowCheckbox.dataset.studyId || '');
       const clickedRowCheckbox = Boolean(target.closest('input.analytics-row-check'));
+
+      if (event.altKey) {
+        event.preventDefault();
+        if (studyId && typeof tableState.onFocusToggle === 'function') {
+          tableState.onFocusToggle(studyId);
+        }
+        return;
+      }
 
       if (clickedRowCheckbox && !event.ctrlKey && !event.shiftKey) {
         // Allow native checkbox toggle; change handler will sync state.
@@ -924,9 +964,11 @@
     tableState.checkedSet = new Set(Array.from(checkedStudyIds || []));
     tableState.onSelectionChange = onSelectionChange;
     tableState.onSortChange = typeof opts.onSortChange === 'function' ? opts.onSortChange : null;
+    tableState.onFocusToggle = typeof opts.onFocusToggle === 'function' ? opts.onFocusToggle : null;
     tableState.filters = normalizeFilters(opts.filters);
     tableState.autoSelect = Boolean(opts.autoSelect);
     tableState.sortState = normalizeSortState(opts.sortState);
+    tableState.focusedStudyId = String(opts.focusedStudyId || '') || null;
 
     bindEventsOnce();
     renderTableBody();
@@ -949,11 +991,89 @@
     return cloneSortState();
   }
 
+  function setFocusedStudyId(studyId) {
+    const normalized = String(studyId || '').trim();
+    tableState.focusedStudyId = normalized || null;
+    applyFocusedRowClass();
+  }
+
+  function getVisibleStudyIds() {
+    return Array.from(tableState.visibleSet);
+  }
+
+  function computeAnnualizedProfitMetrics(study) {
+    const timestamps = Array.isArray(study?.equity_timestamps) ? study.equity_timestamps : [];
+    if (timestamps.length < 2) {
+      return { annProfitPct: null, oosSpanDays: null };
+    }
+
+    const firstMs = parseTimestampMs(timestamps[0]);
+    const lastMs = parseTimestampMs(timestamps[timestamps.length - 1]);
+    if (firstMs === null || lastMs === null) {
+      return { annProfitPct: null, oosSpanDays: null };
+    }
+
+    const oosSpanDays = (lastMs - firstMs) / MS_PER_DAY;
+    if (!Number.isFinite(oosSpanDays) || oosSpanDays <= 0) {
+      return { annProfitPct: null, oosSpanDays };
+    }
+
+    const profitPct = toFiniteNumber(study?.profit_pct);
+    if (profitPct === null) {
+      return { annProfitPct: null, oosSpanDays };
+    }
+
+    if (oosSpanDays <= 30) {
+      return { annProfitPct: null, oosSpanDays };
+    }
+
+    const returnMultiple = 1 + (profitPct / 100);
+    if (returnMultiple <= 0) {
+      return { annProfitPct: null, oosSpanDays };
+    }
+
+    const annProfitPct = (Math.pow(returnMultiple, 365 / oosSpanDays) - 1) * 100;
+    if (!Number.isFinite(annProfitPct)) {
+      return { annProfitPct: null, oosSpanDays };
+    }
+
+    return { annProfitPct, oosSpanDays };
+  }
+
+  function formatAnnualizedProfitCell(study) {
+    const annProfitPct = toFiniteNumber(study?.ann_profit_pct);
+    const oosSpanDays = toFiniteNumber(study?._oos_span_days);
+
+    if (annProfitPct === null) {
+      if (oosSpanDays !== null && oosSpanDays > 0 && oosSpanDays <= 30) {
+        return {
+          text: 'N/A',
+          className: '',
+          tooltip: `OOS period too short for meaningful annualization (${Math.round(oosSpanDays)} days)`,
+        };
+      }
+      return { text: 'N/A', className: '', tooltip: '' };
+    }
+
+    const className = annProfitPct >= 0 ? 'val-positive' : 'val-negative';
+    if (oosSpanDays !== null && oosSpanDays >= 31 && oosSpanDays < 90) {
+      return {
+        text: `${formatSignedPercentValue(annProfitPct, 1)}*`,
+        className,
+        tooltip: `Short OOS period (${Math.round(oosSpanDays)} days) - annualized value may be misleading`,
+      };
+    }
+    return { text: formatSignedPercentValue(annProfitPct, 1), className, tooltip: '' };
+  }
+
   window.AnalyticsTable = {
     renderTable,
     setAllChecked,
     getCheckedStudyIds,
     getOrderedStudyIds,
     getSortState,
+    setFocusedStudyId,
+    getVisibleStudyIds,
+    encodeStudyId,
   };
 })();
