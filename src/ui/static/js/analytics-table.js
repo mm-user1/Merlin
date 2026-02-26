@@ -25,6 +25,7 @@
     studies: [],
     checkedSet: new Set(),
     visibleSet: new Set(),
+    visibleStudyIds: null,
     orderedStudyIds: [],
     sortState: {
       sortColumn: null,
@@ -342,6 +343,16 @@
       sortDirection,
       sortClickCount: clickCount,
     };
+  }
+
+  function normalizeVisibleStudyIds(visibleStudyIds) {
+    if (!(visibleStudyIds instanceof Set)) return null;
+    const normalized = new Set();
+    visibleStudyIds.forEach((studyId) => {
+      const value = String(studyId || '').trim();
+      if (value) normalized.add(value);
+    });
+    return normalized;
   }
 
   function cloneSortState() {
@@ -732,7 +743,9 @@
       group.displayStudies.forEach((study) => {
         const studyId = String(study.study_id || '');
         const encodedStudyId = encodeURIComponent(studyId);
-        const visible = matchesFilters(study);
+        const visibleBySet = !(tableState.visibleStudyIds instanceof Set)
+          || tableState.visibleStudyIds.has(studyId);
+        const visible = visibleBySet && matchesFilters(study);
         const checked = tableState.autoSelect ? visible : tableState.checkedSet.has(studyId);
         const styleHidden = visible ? '' : ' style="display:none;"';
 
@@ -966,6 +979,7 @@
     tableState.onSortChange = typeof opts.onSortChange === 'function' ? opts.onSortChange : null;
     tableState.onFocusToggle = typeof opts.onFocusToggle === 'function' ? opts.onFocusToggle : null;
     tableState.filters = normalizeFilters(opts.filters);
+    tableState.visibleStudyIds = normalizeVisibleStudyIds(opts.visibleStudyIds);
     tableState.autoSelect = Boolean(opts.autoSelect);
     tableState.sortState = normalizeSortState(opts.sortState);
     tableState.focusedStudyId = String(opts.focusedStudyId || '') || null;
@@ -1075,5 +1089,6 @@
     setFocusedStudyId,
     getVisibleStudyIds,
     encodeStudyId,
+    computeAnnualizedProfitMetrics,
   };
 })();

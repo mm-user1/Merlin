@@ -375,3 +375,62 @@ async function createDatabaseRequest(label) {
   }
   return response.json();
 }
+
+async function fetchAnalyticsSetsRequest() {
+  const response = await fetch('/api/analytics/sets');
+  if (!response.ok) {
+    const payload = await response.json().catch(() => ({}));
+    throw new Error(payload.error || 'Failed to load study sets.');
+  }
+  return response.json();
+}
+
+async function createAnalyticsSetRequest(name, studyIds) {
+  const response = await fetch('/api/analytics/sets', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ name, study_ids: Array.isArray(studyIds) ? studyIds : [] })
+  });
+  if (!response.ok) {
+    const payload = await response.json().catch(() => ({}));
+    throw new Error(payload.error || 'Failed to create study set.');
+  }
+  return response.json();
+}
+
+async function updateAnalyticsSetRequest(setId, payload) {
+  const response = await fetch(`/api/analytics/sets/${encodeURIComponent(setId)}`, {
+    method: 'PUT',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(payload || {})
+  });
+  if (!response.ok) {
+    const body = await response.json().catch(() => ({}));
+    throw new Error(body.error || 'Failed to update study set.');
+  }
+  return response.json();
+}
+
+async function deleteAnalyticsSetRequest(setId) {
+  const response = await fetch(`/api/analytics/sets/${encodeURIComponent(setId)}`, {
+    method: 'DELETE'
+  });
+  if (!response.ok) {
+    const body = await response.json().catch(() => ({}));
+    throw new Error(body.error || 'Failed to delete study set.');
+  }
+  return response.json();
+}
+
+async function reorderAnalyticsSetsRequest(order) {
+  const response = await fetch('/api/analytics/sets/reorder', {
+    method: 'PUT',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ order: Array.isArray(order) ? order : [] })
+  });
+  if (!response.ok) {
+    const body = await response.json().catch(() => ({}));
+    throw new Error(body.error || 'Failed to reorder study sets.');
+  }
+  return response.json();
+}

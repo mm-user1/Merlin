@@ -85,6 +85,34 @@
     return snapshot;
   }
 
+  function filtersEqual(left, right) {
+    return FILTER_DEFS.every((def) => {
+      const leftSet = left?.[def.key];
+      const rightSet = right?.[def.key];
+      const leftIsSet = leftSet instanceof Set;
+      const rightIsSet = rightSet instanceof Set;
+      if (leftIsSet !== rightIsSet) return false;
+      if (!leftIsSet) return true;
+      if (leftSet.size !== rightSet.size) return false;
+      for (const value of leftSet) {
+        if (!rightSet.has(value)) return false;
+      }
+      return true;
+    });
+  }
+
+  function optionsEqual(left, right) {
+    return FILTER_DEFS.every((def) => {
+      const leftValues = Array.isArray(left?.[def.key]) ? left[def.key] : [];
+      const rightValues = Array.isArray(right?.[def.key]) ? right[def.key] : [];
+      if (leftValues.length !== rightValues.length) return false;
+      for (let index = 0; index < leftValues.length; index += 1) {
+        if (leftValues[index] !== rightValues[index]) return false;
+      }
+      return true;
+    });
+  }
+
   function getFilters() {
     return cloneFilters(state.filters);
   }
@@ -348,12 +376,24 @@
     state.outsideBound = true;
   }
 
-  function updateStudies(studies) {
+  function updateStudies(studies, options = {}) {
+    const emitChange = options.emitChange !== false;
+    const beforeOptions = state.options;
+    const beforeFilters = getFilters();
+
     state.studies = Array.isArray(studies) ? studies.slice() : [];
     state.options = buildOptions(state.studies);
     reconcileFilters();
-    render();
-    notifyFiltersChanged();
+
+    const afterFilters = getFilters();
+    const optionsChanged = !optionsEqual(beforeOptions, state.options);
+    const filtersChanged = !filtersEqual(beforeFilters, afterFilters);
+    if (optionsChanged || filtersChanged) {
+      render();
+    }
+    if (emitChange && filtersChanged) {
+      notifyFiltersChanged();
+    }
   }
 
   function init(params) {
@@ -361,7 +401,7 @@
     state.onChange = typeof payload.onChange === 'function' ? payload.onChange : null;
     state.initialized = true;
     bindOutsideClickOnce();
-    updateStudies(payload.studies || []);
+    updateStudies(payload.studies || [], { emitChange: false });
   }
 
   window.AnalyticsFilters = {

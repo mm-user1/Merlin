@@ -14,7 +14,7 @@ from datetime import datetime, timezone
 from contextlib import contextmanager
 from dataclasses import asdict
 from pathlib import Path
-from typing import Any, Dict, Iterator, List, Optional
+from typing import Any, Dict, Iterator, List, Optional, Sequence
 
 OBJECTIVE_DIRECTIONS: Dict[str, str] = {
     "net_profit_pct": "maximize",
@@ -407,6 +407,7 @@ def _create_schema(conn: sqlite3.Connection) -> None:
     )
     _ensure_columns(conn)
     _ensure_wfa_schema_updated(conn)
+    ensure_study_sets_tables(conn=conn)
 
 
 def _ensure_columns(conn: sqlite3.Connection) -> None:
@@ -691,6 +692,335 @@ def list_db_files() -> List[Dict[str, Any]]:
             reverse=True,
         )
         return [{"name": path.name, "active": path.name == active_name} for path in db_files]
+
+
+def ensure_study_sets_tables(
+    db_path: Optional[Path] = None,
+    conn: Optional[sqlite3.Connection] = None,
+) -> None:
+    """
+    Ensure Study Sets tables exist and remove legacy orphan members.
+
+    When `conn` is provided, this function uses it directly and does not commit.
+    """
+    if conn is not None:
+        _ensure_study_sets_tables_with_conn(conn)
+        return
+
+    path = db_path or _active_db_path
+    init_database(db_path=path)
+    with sqlite3.connect(
+        str(path),
+        check_same_thread=False,
+        timeout=30.0,
+        isolation_level="DEFERRED",
+    ) as local_conn:
+        _configure_connection(local_conn)
+        _ensure_study_sets_tables_with_conn(local_conn)
+        local_conn.commit()
+
+
+def _ensure_study_sets_tables_with_conn(conn: sqlite3.Connection) -> None:
+    conn.executescript(
+        """
+        CREATE TABLE IF NOT EXISTS study_sets (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            name TEXT NOT NULL,
+            sort_order INTEGER NOT NULL DEFAULT 0,
+            created_at TEXT DEFAULT (datetime('now'))
+        );
+
+        CREATE UNIQUE INDEX IF NOT EXISTS idx_study_sets_name_nocase
+            ON study_sets(LOWER(name));
+        CREATE INDEX IF NOT EXISTS idx_study_sets_sort
+            ON study_sets(sort_order ASC, id ASC);
+
+        CREATE TABLE IF NOT EXISTS study_set_members (
+            set_id INTEGER NOT NULL,
+            study_id TEXT NOT NULL,
+            UNIQUE(set_id, study_id),
+            FOREIGN KEY (set_id) REFERENCES study_sets(id) ON DELETE CASCADE,
+            FOREIGN KEY (study_id) REFERENCES studies(study_id) ON DELETE CASCADE
+        );
+
+        CREATE INDEX IF NOT EXISTS idx_study_set_members_set_id
+            ON study_set_members(set_id);
+        CREATE INDEX IF NOT EXISTS idx_study_set_members_study_id
+            ON study_set_members(study_id);
+        """
+    )
+
+    # Clean legacy orphans from pre-FK setups or manually edited DBs.
+    conn.execute(
+        """
+        DELETE FROM study_set_members
+        WHERE set_id NOT IN (SELECT id FROM study_sets)
+           OR study_id NOT IN (SELECT study_id FROM studies)
+        """
+    )
+
+
+def _normalize_study_set_name(name: Any) -> str:
+    normalized = str(name or "").strip()
+    if not normalized:
+        raise ValueError("Set name cannot be empty.")
+    if len(normalized) > 120:
+        raise ValueError("Set name is too long (max 120 characters).")
+    return normalized
+
+
+def _normalize_set_study_ids(study_ids: Any) -> List[str]:
+    if study_ids is None:
+        return []
+    if not isinstance(study_ids, (list, tuple, set)):
+        raise ValueError("study_ids must be an array.")
+
+    seen = set()
+    normalized: List[str] = []
+    for raw in study_ids:
+        value = str(raw or "").strip()
+        if not value or value in seen:
+            continue
+        seen.add(value)
+        normalized.append(value)
+    return normalized
+
+
+def _validate_wfa_study_ids(conn: sqlite3.Connection, study_ids: Sequence[str]) -> None:
+    ids = [str(value or "").strip() for value in study_ids if str(value or "").strip()]
+    if not ids:
+        return
+
+    placeholders = ",".join(["?"] * len(ids))
+    rows = conn.execute(
+        f"""
+        SELECT study_id
+        FROM studies
+        WHERE study_id IN ({placeholders})
+          AND LOWER(COALESCE(optimization_mode, '')) = 'wfa'
+        """,
+        tuple(ids),
+    ).fetchall()
+    existing = {str(row["study_id"]) for row in rows}
+    missing = [value for value in ids if value not in existing]
+    if missing:
+        preview = ", ".join(missing[:5])
+        suffix = "..." if len(missing) > 5 else ""
+        raise ValueError(f"Unknown or non-WFA study IDs: {preview}{suffix}")
+
+
+def _load_study_set_by_id(conn: sqlite3.Connection, set_id: int) -> Optional[Dict[str, Any]]:
+    row = conn.execute(
+        """
+        SELECT id, name, sort_order, created_at
+        FROM study_sets
+        WHERE id = ?
+        """,
+        (int(set_id),),
+    ).fetchone()
+    if row is None:
+        return None
+
+    member_rows = conn.execute(
+        """
+        SELECT study_id
+        FROM study_set_members
+        WHERE set_id = ?
+        ORDER BY rowid ASC
+        """,
+        (int(set_id),),
+    ).fetchall()
+    return {
+        "id": int(row["id"]),
+        "name": str(row["name"] or ""),
+        "sort_order": int(row["sort_order"] or 0),
+        "created_at": row["created_at"],
+        "study_ids": [str(member["study_id"] or "") for member in member_rows if member["study_id"]],
+    }
+
+
+def list_study_sets(db_path: Optional[Path] = None) -> List[Dict[str, Any]]:
+    with get_db_connection() as conn:
+        ensure_study_sets_tables(conn=conn)
+        set_rows = conn.execute(
+            """
+            SELECT id, name, sort_order, created_at
+            FROM study_sets
+            ORDER BY sort_order ASC, id ASC
+            """
+        ).fetchall()
+        member_rows = conn.execute(
+            """
+            SELECT set_id, study_id
+            FROM study_set_members
+            ORDER BY set_id ASC, rowid ASC
+            """
+        ).fetchall()
+
+    members_by_set: Dict[int, List[str]] = {}
+    for row in member_rows:
+        set_id = int(row["set_id"])
+        study_id = str(row["study_id"] or "").strip()
+        if not study_id:
+            continue
+        members_by_set.setdefault(set_id, []).append(study_id)
+
+    return [
+        {
+            "id": int(row["id"]),
+            "name": str(row["name"] or ""),
+            "sort_order": int(row["sort_order"] or 0),
+            "created_at": row["created_at"],
+            "study_ids": members_by_set.get(int(row["id"]), []),
+        }
+        for row in set_rows
+    ]
+
+
+def create_study_set(name: Any, study_ids: Any, db_path: Optional[Path] = None) -> Dict[str, Any]:
+    normalized_name = _normalize_study_set_name(name)
+    normalized_ids = _normalize_set_study_ids(study_ids)
+    if not normalized_ids:
+        raise ValueError("Set must contain at least one study_id.")
+
+    with get_db_connection() as conn:
+        ensure_study_sets_tables(conn=conn)
+        _validate_wfa_study_ids(conn, normalized_ids)
+
+        next_order_row = conn.execute(
+            "SELECT COALESCE(MAX(sort_order), -1) + 1 AS next_order FROM study_sets"
+        ).fetchone()
+        next_order = int(next_order_row["next_order"] if next_order_row else 0)
+
+        try:
+            cursor = conn.execute(
+                """
+                INSERT INTO study_sets (name, sort_order)
+                VALUES (?, ?)
+                """,
+                (normalized_name, next_order),
+            )
+        except sqlite3.IntegrityError as exc:
+            raise ValueError("Set with this name already exists.") from exc
+
+        set_id = int(cursor.lastrowid)
+        conn.executemany(
+            """
+            INSERT INTO study_set_members (set_id, study_id)
+            VALUES (?, ?)
+            """,
+            [(set_id, study_id) for study_id in normalized_ids],
+        )
+        conn.commit()
+        created = _load_study_set_by_id(conn, set_id)
+
+    if created is None:
+        raise RuntimeError("Failed to load created study set.")
+    return created
+
+
+def update_study_set(
+    set_id: int,
+    name: Any = None,
+    study_ids: Any = None,
+    sort_order: Any = None,
+    db_path: Optional[Path] = None,
+) -> Dict[str, Any]:
+    set_id_int = int(set_id)
+
+    if name is None and study_ids is None and sort_order is None:
+        raise ValueError("No fields provided to update.")
+
+    with get_db_connection() as conn:
+        ensure_study_sets_tables(conn=conn)
+        current = _load_study_set_by_id(conn, set_id_int)
+        if current is None:
+            raise ValueError("Study set not found.")
+
+        if name is not None:
+            normalized_name = _normalize_study_set_name(name)
+            try:
+                conn.execute(
+                    "UPDATE study_sets SET name = ? WHERE id = ?",
+                    (normalized_name, set_id_int),
+                )
+            except sqlite3.IntegrityError as exc:
+                raise ValueError("Set with this name already exists.") from exc
+
+        if sort_order is not None:
+            try:
+                sort_value = int(sort_order)
+            except (TypeError, ValueError) as exc:
+                raise ValueError("sort_order must be an integer.") from exc
+            if sort_value < 0:
+                raise ValueError("sort_order cannot be negative.")
+            conn.execute(
+                "UPDATE study_sets SET sort_order = ? WHERE id = ?",
+                (sort_value, set_id_int),
+            )
+
+        if study_ids is not None:
+            normalized_ids = _normalize_set_study_ids(study_ids)
+            _validate_wfa_study_ids(conn, normalized_ids)
+            conn.execute("DELETE FROM study_set_members WHERE set_id = ?", (set_id_int,))
+            if normalized_ids:
+                conn.executemany(
+                    """
+                    INSERT INTO study_set_members (set_id, study_id)
+                    VALUES (?, ?)
+                    """,
+                    [(set_id_int, study_id) for study_id in normalized_ids],
+                )
+
+        conn.commit()
+        updated = _load_study_set_by_id(conn, set_id_int)
+
+    if updated is None:
+        raise RuntimeError("Failed to load updated study set.")
+    return updated
+
+
+def delete_study_set(set_id: int, db_path: Optional[Path] = None) -> bool:
+    with get_db_connection() as conn:
+        ensure_study_sets_tables(conn=conn)
+        cursor = conn.execute("DELETE FROM study_sets WHERE id = ?", (int(set_id),))
+        conn.commit()
+        return cursor.rowcount > 0
+
+
+def reorder_study_sets(id_order: Any, db_path: Optional[Path] = None) -> None:
+    if not isinstance(id_order, (list, tuple)):
+        raise ValueError("order must be an array of set IDs.")
+
+    normalized_order: List[int] = []
+    seen = set()
+    for raw in id_order:
+        try:
+            set_id = int(raw)
+        except (TypeError, ValueError) as exc:
+            raise ValueError("order must contain integer set IDs.") from exc
+        if set_id in seen:
+            raise ValueError("order contains duplicate set IDs.")
+        seen.add(set_id)
+        normalized_order.append(set_id)
+
+    with get_db_connection() as conn:
+        ensure_study_sets_tables(conn=conn)
+        rows = conn.execute("SELECT id FROM study_sets ORDER BY id ASC").fetchall()
+        existing_ids = [int(row["id"]) for row in rows]
+
+        if len(existing_ids) != len(normalized_order) or set(existing_ids) != set(normalized_order):
+            raise ValueError("order must contain all existing set IDs exactly once.")
+
+        conn.executemany(
+            """
+            UPDATE study_sets
+            SET sort_order = ?
+            WHERE id = ?
+            """,
+            [(index, set_id) for index, set_id in enumerate(normalized_order)],
+        )
+        conn.commit()
 
 
 def generate_study_id() -> str:

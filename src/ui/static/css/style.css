@@ -2027,6 +2027,183 @@
       margin-bottom: 16px;
     }
 
+    .analytics-sets-section {
+      margin-bottom: 12px;
+    }
+
+    .analytics-sets-header {
+      gap: 8px;
+    }
+
+    .analytics-sets-summary {
+      color: #5a5a5a;
+      font-size: 12px;
+      margin-left: 4px;
+      white-space: nowrap;
+      overflow: hidden;
+      text-overflow: ellipsis;
+    }
+
+    .analytics-sets-header-actions {
+      margin-left: auto;
+      display: inline-flex;
+      align-items: center;
+      gap: 8px;
+      flex: 0 0 auto;
+    }
+
+    .analytics-set-update-wrap {
+      position: relative;
+      display: inline-flex;
+      align-items: center;
+    }
+
+    .analytics-update-set-btn {
+      padding: 4px 10px;
+      font-size: 12px;
+      flex: 0 0 auto;
+    }
+
+    .analytics-update-set-btn:disabled {
+      opacity: 0.55;
+      cursor: default;
+      background: #e8e8e8;
+      border-color: #c7c7c7;
+    }
+
+    .analytics-set-update-menu {
+      position: absolute;
+      top: calc(100% + 4px);
+      right: 0;
+      min-width: 220px;
+      max-height: 260px;
+      overflow-y: auto;
+      border: 1px solid #bbbbbb;
+      border-radius: 4px;
+      background: #ffffff;
+      box-shadow: 0 6px 14px rgba(0, 0, 0, 0.12);
+      z-index: 45;
+      padding: 4px 0;
+    }
+
+    .analytics-set-update-menu[hidden] {
+      display: none;
+    }
+
+    .analytics-set-update-item {
+      width: 100%;
+      border: none;
+      background: transparent;
+      text-align: left;
+      color: #2a2a2a;
+      font-size: 12px;
+      padding: 7px 10px;
+      cursor: pointer;
+      white-space: nowrap;
+    }
+
+    .analytics-set-update-item:hover {
+      background: #edf6ff;
+    }
+
+    .analytics-set-update-empty {
+      font-size: 12px;
+      color: #666666;
+      padding: 7px 10px;
+      white-space: nowrap;
+    }
+
+    .analytics-save-set-btn {
+      margin-left: 0;
+      padding: 4px 10px;
+      font-size: 12px;
+      flex: 0 0 auto;
+    }
+
+    .analytics-sets-table-wrap {
+      border: 1px solid #d0d0d0;
+      border-radius: 3px;
+      background: #ffffff;
+      max-height: 260px;
+      overflow: auto;
+    }
+
+    .analytics-sets-table-wrap.expanded {
+      max-height: 420px;
+    }
+
+    .analytics-sets-table {
+      width: 100%;
+      border-collapse: collapse;
+      font-size: 14px;
+      min-width: 820px;
+    }
+
+    .analytics-sets-table th {
+      background: #3498db;
+      color: #ffffff;
+      padding: 8px;
+      text-align: left;
+      white-space: nowrap;
+      position: sticky;
+      top: 0;
+      z-index: 1;
+    }
+
+    .analytics-sets-table td {
+      padding: 8px;
+      border-bottom: 1px solid #e6e6e6;
+      white-space: nowrap;
+    }
+
+    .analytics-sets-table .col-check {
+      width: 34px;
+      text-align: center;
+    }
+
+    .analytics-set-row {
+      cursor: pointer;
+    }
+
+    .analytics-set-row:hover {
+      background: #e8f4ff;
+    }
+
+    .analytics-set-row.analytics-set-focused > td:first-child {
+      border-left: 3px solid #3498db;
+    }
+
+    .analytics-set-row.analytics-set-moving {
+      background: #fff4d9;
+    }
+
+    .analytics-set-all-row {
+      background: #f7f7f7;
+      font-weight: 600;
+      cursor: pointer;
+    }
+
+    .analytics-set-all-row:hover {
+      background: #eef6ff;
+    }
+
+    .analytics-sets-actions {
+      display: flex;
+      gap: 8px;
+      flex-wrap: wrap;
+      margin-top: 8px;
+      align-items: center;
+    }
+
+    .analytics-sets-actions .hint {
+      font-size: 12px;
+      color: #666666;
+    }
+
+    .analytics-sets-expand {
+      border-top: none;
+    }
+
     .summary-card {
       background: #ffffff;
       border: 1px solid #cccccc;
@@ -2152,6 +2329,11 @@
       cursor: pointer;
       font-size: 12px;
       text-align: left;
+    }
+
+    .analytics-filter:not(.open) .analytics-filter-btn:hover:not(:disabled) {
+      background: #dcdcdc;
+      border-color: #aeaeae;
     }
 
     .analytics-filter-btn:disabled {
@@ -2376,11 +2558,22 @@
       transition: all 0.2s ease;
     }
 
+    .tab-btn:hover {
+      background: #d8d8d8;
+      border-color: #afafaf;
+    }
+
     .tab-btn.active {
       background: #d4e9ff;
       border-color: #4a90e2;
       color: #1e5ea8;
       font-weight: 600;
+    }
+
+    .tab-btn.active:hover {
+      background: #cbe4ff;
+      border-color: #4a90e2;
+      color: #1e5ea8;
     }
 
     .table-card-header .table-header-left {

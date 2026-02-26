@@ -2,12 +2,21 @@ import json
 import math
 import re
 from datetime import datetime
+from http import HTTPStatus
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
 
-from flask import jsonify, render_template
+from flask import jsonify, render_template, request
 
-from core.storage import get_active_db_name, get_db_connection
+from core.storage import (
+    create_study_set,
+    delete_study_set,
+    get_active_db_name,
+    get_db_connection,
+    list_study_sets,
+    reorder_study_sets,
+    update_study_set,
+)
 
 
 def register_routes(app):
@@ -205,6 +214,95 @@ def register_routes(app):
         if not isinstance(wfa_payload, dict):
             return None
         return _safe_int(wfa_payload.get("oos_period_days"))
+
+    def _json_error(message: str, status: HTTPStatus) -> object:
+        return jsonify({"error": message}), status
+
+    def _parse_study_ids_payload(payload: Any) -> List[str]:
+        if payload is None:
+            return []
+        if not isinstance(payload, list):
+            raise ValueError("study_ids must be an array.")
+        values: List[str] = []
+        seen = set()
+        for raw in payload:
+            value = str(raw or "").strip()
+            if not value or value in seen:
+                continue
+            seen.add(value)
+            values.append(value)
+        return values
+
+    @app.get("/api/analytics/sets")
+    def analytics_sets_list() -> object:
+        return jsonify({"sets": list_study_sets()})
+
+    @app.post("/api/analytics/sets")
+    def analytics_sets_create() -> object:
+        payload = request.get_json(silent=True)
+        if not isinstance(payload, dict):
+            return _json_error("Expected JSON payload.", HTTPStatus.BAD_REQUEST)
+
+        name = payload.get("name")
+        study_ids_raw = payload.get("study_ids")
+        try:
+            study_ids = _parse_study_ids_payload(study_ids_raw)
+            created = create_study_set(name, study_ids)
+        except ValueError as exc:
+            return _json_error(str(exc), HTTPStatus.BAD_REQUEST)
+
+        return jsonify(created), HTTPStatus.CREATED
+
+    @app.put("/api/analytics/sets/<int:set_id>")
+    def analytics_sets_update(set_id: int) -> object:
+        payload = request.get_json(silent=True)
+        if not isinstance(payload, dict):
+            return _json_error("Expected JSON payload.", HTTPStatus.BAD_REQUEST)
+
+        kwargs: Dict[str, Any] = {}
+        if "name" in payload:
+            kwargs["name"] = payload.get("name")
+        if "study_ids" in payload:
+            try:
+                kwargs["study_ids"] = _parse_study_ids_payload(payload.get("study_ids"))
+            except ValueError as exc:
+                return _json_error(str(exc), HTTPStatus.BAD_REQUEST)
+        if "sort_order" in payload:
+            kwargs["sort_order"] = payload.get("sort_order")
+
+        if not kwargs:
+            return _json_error("No fields provided to update.", HTTPStatus.BAD_REQUEST)
+
+        try:
+            update_study_set(set_id=set_id, **kwargs)
+        except ValueError as exc:
+            message = str(exc)
+            status = HTTPStatus.NOT_FOUND if "not found" in message.lower() else HTTPStatus.BAD_REQUEST
+            return _json_error(message, status)
+
+        return jsonify({"ok": True})
+
+    @app.delete("/api/analytics/sets/<int:set_id>")
+    def analytics_sets_delete(set_id: int) -> object:
+        if not delete_study_set(set_id):
+            return _json_error("Study set not found.", HTTPStatus.NOT_FOUND)
+        return jsonify({"ok": True})
+
+    @app.put("/api/analytics/sets/reorder")
+    def analytics_sets_reorder() -> object:
+        payload = request.get_json(silent=True)
+        if not isinstance(payload, dict):
+            return _json_error("Expected JSON payload.", HTTPStatus.BAD_REQUEST)
+        if "order" not in payload:
+            return _json_error("Missing order array.", HTTPStatus.BAD_REQUEST)
+
+        order = payload.get("order")
+        try:
+            reorder_study_sets(order)
+        except ValueError as exc:
+            return _json_error(str(exc), HTTPStatus.BAD_REQUEST)
+
+        return jsonify({"ok": True})
 
     @app.route("/analytics")
     def analytics_page() -> object:

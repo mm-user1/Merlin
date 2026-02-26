@@ -8,10 +8,14 @@ import pandas as pd
 sys.path.insert(0, str(Path(__file__).parent.parent / "src"))
 
 from core.storage import (
+    create_study_set,
     get_db_connection,
+    list_study_sets,
     load_study_from_db,
     load_wfa_window_trials,
+    reorder_study_sets,
     save_wfa_study_to_db,
+    update_study_set,
 )
 from core.walkforward_engine import OOSStitchedResult, WFConfig, WFResult, WindowResult
 
@@ -101,6 +105,18 @@ def test_wfa_window_trials_table_created():
         assert cursor.fetchone() is not None
 
 
+def test_study_sets_tables_created():
+    with get_db_connection() as conn:
+        sets_table = conn.execute(
+            "SELECT name FROM sqlite_master WHERE type='table' AND name='study_sets'"
+        ).fetchone()
+        members_table = conn.execute(
+            "SELECT name FROM sqlite_master WHERE type='table' AND name='study_set_members'"
+        ).fetchone()
+        assert sets_table is not None
+        assert members_table is not None
+
+
 def test_wfa_window_new_columns():
     with get_db_connection() as conn:
         cursor = conn.execute("PRAGMA table_info(wfa_windows)")
@@ -181,6 +197,41 @@ def test_save_wfa_study_with_trials():
     assert study.get("median_window_wr") == 50.0
     assert study.get("worst_window_profit") == 2.0
     assert study.get("worst_window_dd") == 0.7
+
+
+def test_study_sets_storage_roundtrip():
+    wf_result_a = _build_dummy_wfa_result()
+    study_id_a = save_wfa_study_to_db(
+        wf_result=wf_result_a,
+        config={},
+        csv_file_path="",
+        start_time=0.0,
+        score_config=None,
+    )
+
+    wf_result_b = _build_dummy_wfa_result()
+    wf_result_b.windows[0].window_id = 2
+    study_id_b = save_wfa_study_to_db(
+        wf_result=wf_result_b,
+        config={},
+        csv_file_path="",
+        start_time=time.time(),
+        score_config=None,
+    )
+
+    created = create_study_set("Storage Roundtrip Set", [study_id_a, study_id_b])
+    assert created["name"] == "Storage Roundtrip Set"
+    assert created["study_ids"] == [study_id_a, study_id_b]
+
+    updated = update_study_set(created["id"], name="Storage Roundtrip Set v2", study_ids=[study_id_b])
+    assert updated["name"] == "Storage Roundtrip Set v2"
+    assert updated["study_ids"] == [study_id_b]
+
+    second = create_study_set("Storage Roundtrip Set v3", [study_id_a])
+    reorder_study_sets([second["id"], created["id"]])
+
+    sets = list_study_sets()
+    assert [entry["id"] for entry in sets[:2]] == [second["id"], created["id"]]
 
 
 def test_save_wfa_study_layer1_aggregates_multi_window():

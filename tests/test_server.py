@@ -16,6 +16,7 @@ from core.backtest_engine import TradeRecord
 from core.walkforward_engine import OOSStitchedResult, WFConfig, WFResult, WindowResult
 from core.storage import (
     create_new_db,
+    delete_study,
     get_active_db_name,
     get_db_connection,
     save_wfa_study_to_db,
@@ -1203,6 +1204,136 @@ def test_analytics_summary_includes_focus_settings_payload(client):
         assert second["optuna_settings"]["filter_min_profit"] is True
         assert second["optuna_settings"]["min_profit_threshold"] == 9.0
         assert second["wfa_settings"]["adaptive_mode"] is None
+
+
+def test_analytics_sets_crud_and_reorder(client):
+    with _temporary_active_db(f"analytics_sets_{uuid.uuid4().hex[:8]}"):
+        _insert_analytics_study(
+            study_id="wfa_set_1",
+            study_name="WFA_SET_1",
+            optimization_mode="wfa",
+        )
+        _insert_analytics_study(
+            study_id="wfa_set_2",
+            study_name="WFA_SET_2",
+            optimization_mode="wfa",
+        )
+
+        create_response = client.post(
+            "/api/analytics/sets",
+            json={"name": "First Set", "study_ids": ["wfa_set_1", "wfa_set_2"]},
+        )
+        assert create_response.status_code == 201
+        created_first = create_response.get_json()
+        assert created_first["name"] == "First Set"
+        assert created_first["study_ids"] == ["wfa_set_1", "wfa_set_2"]
+
+        second_response = client.post(
+            "/api/analytics/sets",
+            json={"name": "Second Set", "study_ids": ["wfa_set_2"]},
+        )
+        assert second_response.status_code == 201
+        created_second = second_response.get_json()
+
+        list_response = client.get("/api/analytics/sets")
+        assert list_response.status_code == 200
+        payload = list_response.get_json()
+        assert [item["name"] for item in payload["sets"]] == ["First Set", "Second Set"]
+
+        update_response = client.put(
+            f"/api/analytics/sets/{created_first['id']}",
+            json={"name": "First Set Updated", "study_ids": ["wfa_set_1"]},
+        )
+        assert update_response.status_code == 200
+        assert update_response.get_json()["ok"] is True
+
+        reorder_response = client.put(
+            "/api/analytics/sets/reorder",
+            json={"order": [created_second["id"], created_first["id"]]},
+        )
+        assert reorder_response.status_code == 200
+        assert reorder_response.get_json()["ok"] is True
+
+        list_after_reorder = client.get("/api/analytics/sets").get_json()
+        assert [item["id"] for item in list_after_reorder["sets"]] == [
+            created_second["id"],
+            created_first["id"],
+        ]
+        by_id = {item["id"]: item for item in list_after_reorder["sets"]}
+        assert by_id[created_first["id"]]["name"] == "First Set Updated"
+        assert by_id[created_first["id"]]["study_ids"] == ["wfa_set_1"]
+
+        delete_response = client.delete(f"/api/analytics/sets/{created_first['id']}")
+        assert delete_response.status_code == 200
+        assert delete_response.get_json()["ok"] is True
+
+        final_payload = client.get("/api/analytics/sets").get_json()
+        assert [item["id"] for item in final_payload["sets"]] == [created_second["id"]]
+
+
+def test_analytics_sets_reject_non_wfa_study_ids(client):
+    with _temporary_active_db(f"analytics_sets_validation_{uuid.uuid4().hex[:8]}"):
+        _insert_analytics_study(
+            study_id="optuna_not_allowed",
+            study_name="OPTUNA_NOT_ALLOWED",
+            optimization_mode="optuna",
+        )
+        response = client.post(
+            "/api/analytics/sets",
+            json={"name": "Invalid Set", "study_ids": ["optuna_not_allowed"]},
+        )
+        assert response.status_code == 400
+        payload = response.get_json()
+        assert "non-WFA" in payload["error"]
+
+
+def test_analytics_sets_members_cascade_on_study_delete(client):
+    with _temporary_active_db(f"analytics_sets_cascade_{uuid.uuid4().hex[:8]}"):
+        _insert_analytics_study(
+            study_id="wfa_cascade_1",
+            study_name="WFA_CASCADE_1",
+            optimization_mode="wfa",
+        )
+        create_response = client.post(
+            "/api/analytics/sets",
+            json={"name": "Cascade Set", "study_ids": ["wfa_cascade_1"]},
+        )
+        assert create_response.status_code == 201
+
+        assert delete_study("wfa_cascade_1") is True
+
+        payload = client.get("/api/analytics/sets").get_json()
+        assert payload["sets"][0]["name"] == "Cascade Set"
+        assert payload["sets"][0]["study_ids"] == []
+
+
+def test_analytics_sets_reorder_requires_complete_order(client):
+    with _temporary_active_db(f"analytics_sets_reorder_{uuid.uuid4().hex[:8]}"):
+        _insert_analytics_study(
+            study_id="wfa_r1",
+            study_name="WFA_R1",
+            optimization_mode="wfa",
+        )
+        _insert_analytics_study(
+            study_id="wfa_r2",
+            study_name="WFA_R2",
+            optimization_mode="wfa",
+        )
+        first = client.post(
+            "/api/analytics/sets",
+            json={"name": "R1", "study_ids": ["wfa_r1"]},
+        ).get_json()
+        client.post(
+            "/api/analytics/sets",
+            json={"name": "R2", "study_ids": ["wfa_r2"]},
+        )
+
+        bad_reorder = client.put(
+            "/api/analytics/sets/reorder",
+            json={"order": [first["id"]]},
+        )
+        assert bad_reorder.status_code == 400
+        assert "exactly once" in bad_reorder.get_json()["error"]
 
 
 @pytest.mark.parametrize("threshold", [-1, "bad"])
