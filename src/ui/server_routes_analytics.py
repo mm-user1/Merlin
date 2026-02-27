@@ -1,13 +1,15 @@
 import json
 import math
 import re
+import time
 from datetime import datetime
 from http import HTTPStatus
 from pathlib import Path
-from typing import Any, Dict, List, Optional, Tuple
+from typing import Any, Dict, Iterable, List, Optional, Sequence, Tuple
 
 from flask import jsonify, render_template, request
 
+from core.analytics import aggregate_equity_curves
 from core.storage import (
     create_study_set,
     delete_study_set,
@@ -20,6 +22,12 @@ from core.storage import (
 
 
 def register_routes(app):
+    analytics_equity_cache: Dict[Tuple[str, Tuple[str, ...]], Tuple[float, Dict[str, Any]]] = {}
+    analytics_equity_cache_ttl_seconds = 10.0
+    analytics_equity_cache_max_entries = 256
+    analytics_equity_max_study_ids = 500
+    analytics_equity_chunk_size = 200
+
     def _parse_date_flexible(date_str: Any) -> Optional[datetime]:
         """Parse date in YYYY-MM-DD or YYYY.MM.DD format."""
         value = str(date_str or "").strip()
@@ -233,6 +241,96 @@ def register_routes(app):
             values.append(value)
         return values
 
+    def _chunked(values: Sequence[str], chunk_size: int) -> Iterable[List[str]]:
+        start = 0
+        total = len(values)
+        while start < total:
+            yield list(values[start : start + chunk_size])
+            start += chunk_size
+
+    def _build_equity_cache_key(study_ids: Sequence[str]) -> Tuple[str, Tuple[str, ...]]:
+        db_name = str(get_active_db_name() or "")
+        normalized = tuple(sorted(study_ids))
+        return db_name, normalized
+
+    def _cache_get_equity(cache_key: Tuple[str, Tuple[str, ...]]) -> Optional[Dict[str, Any]]:
+        cached = analytics_equity_cache.get(cache_key)
+        if not cached:
+            return None
+
+        cached_at, payload = cached
+        if (time.monotonic() - cached_at) > analytics_equity_cache_ttl_seconds:
+            analytics_equity_cache.pop(cache_key, None)
+            return None
+
+        return dict(payload)
+
+    def _cache_set_equity(cache_key: Tuple[str, Tuple[str, ...]], payload: Dict[str, Any]) -> None:
+        if len(analytics_equity_cache) >= analytics_equity_cache_max_entries:
+            oldest_key = min(analytics_equity_cache, key=lambda key: analytics_equity_cache[key][0])
+            analytics_equity_cache.pop(oldest_key, None)
+        analytics_equity_cache[cache_key] = (time.monotonic(), dict(payload))
+
+    def _load_equity_rows(study_ids: Sequence[str]) -> Dict[str, Dict[str, Any]]:
+        rows_by_id: Dict[str, Dict[str, Any]] = {}
+        if not study_ids:
+            return rows_by_id
+
+        with get_db_connection() as conn:
+            for chunk in _chunked(study_ids, analytics_equity_chunk_size):
+                placeholders = ",".join("?" for _ in chunk)
+                cursor = conn.execute(
+                    f"""
+                    SELECT
+                        study_id,
+                        stitched_oos_equity_curve,
+                        stitched_oos_timestamps_json
+                    FROM studies
+                    WHERE study_id IN ({placeholders})
+                      AND LOWER(COALESCE(optimization_mode, '')) = 'wfa'
+                    """,
+                    tuple(chunk),
+                )
+                for row in cursor.fetchall():
+                    row_dict = dict(row)
+                    rows_by_id[str(row_dict.get("study_id") or "")] = row_dict
+        return rows_by_id
+
+    def _compute_equity_for_study_ids(study_ids: Sequence[str]) -> Dict[str, Any]:
+        cache_key = _build_equity_cache_key(study_ids)
+        cached = _cache_get_equity(cache_key)
+        if cached is not None:
+            return cached
+
+        rows_by_id = _load_equity_rows(study_ids)
+        studies_data: List[Dict[str, Any]] = []
+        missing_study_ids: List[str] = []
+
+        for study_id in study_ids:
+            row = rows_by_id.get(study_id)
+            if not row:
+                missing_study_ids.append(study_id)
+                continue
+            studies_data.append(
+                {
+                    "equity_curve": _parse_json_array(row.get("stitched_oos_equity_curve")),
+                    "timestamps": _parse_json_array(row.get("stitched_oos_timestamps_json")),
+                }
+            )
+
+        result = dict(aggregate_equity_curves(studies_data))
+        if missing_study_ids:
+            result["studies_excluded"] = int(result.get("studies_excluded") or 0) + len(missing_study_ids)
+            warning = str(result.get("warning") or "").strip()
+            missing_note = f"{len(missing_study_ids)} selected studies were not found."
+            result["warning"] = f"{warning} {missing_note}".strip() if warning else missing_note
+
+        result["selected_count"] = len(study_ids)
+        result["missing_study_ids"] = missing_study_ids
+
+        _cache_set_equity(cache_key, result)
+        return dict(result)
+
     @app.get("/api/analytics/sets")
     def analytics_sets_list() -> object:
         return jsonify({"sets": list_study_sets()})
@@ -307,6 +405,77 @@ def register_routes(app):
     @app.route("/analytics")
     def analytics_page() -> object:
         return render_template("analytics.html")
+
+    @app.post("/api/analytics/equity")
+    def analytics_equity() -> object:
+        payload = request.get_json(silent=True)
+        if not isinstance(payload, dict):
+            return _json_error("Expected JSON payload.", HTTPStatus.BAD_REQUEST)
+
+        try:
+            study_ids = _parse_study_ids_payload(payload.get("study_ids"))
+        except ValueError as exc:
+            return _json_error(str(exc), HTTPStatus.BAD_REQUEST)
+
+        if not study_ids:
+            return _json_error(
+                "study_ids is required and must be a non-empty array.",
+                HTTPStatus.BAD_REQUEST,
+            )
+        if len(study_ids) > analytics_equity_max_study_ids:
+            return _json_error(
+                f"Too many study_ids. Maximum allowed is {analytics_equity_max_study_ids}.",
+                HTTPStatus.BAD_REQUEST,
+            )
+
+        return jsonify(_compute_equity_for_study_ids(study_ids))
+
+    @app.post("/api/analytics/equity/batch")
+    def analytics_equity_batch() -> object:
+        payload = request.get_json(silent=True)
+        if not isinstance(payload, dict):
+            return _json_error("Expected JSON payload.", HTTPStatus.BAD_REQUEST)
+
+        groups_payload = payload.get("groups")
+        if not isinstance(groups_payload, list):
+            return _json_error("groups must be an array.", HTTPStatus.BAD_REQUEST)
+        if not groups_payload:
+            return _json_error("groups must be a non-empty array.", HTTPStatus.BAD_REQUEST)
+
+        group_specs: List[Tuple[str, List[str]]] = []
+        for group in groups_payload:
+            if not isinstance(group, dict):
+                return _json_error("Each group must be an object.", HTTPStatus.BAD_REQUEST)
+            group_id = str(group.get("group_id") or "").strip()
+            if not group_id:
+                return _json_error("Each group must include non-empty group_id.", HTTPStatus.BAD_REQUEST)
+            try:
+                study_ids = _parse_study_ids_payload(group.get("study_ids"))
+            except ValueError as exc:
+                return _json_error(str(exc), HTTPStatus.BAD_REQUEST)
+            if len(study_ids) > analytics_equity_max_study_ids:
+                return _json_error(
+                    f"group '{group_id}' exceeds max study_ids ({analytics_equity_max_study_ids}).",
+                    HTTPStatus.BAD_REQUEST,
+                )
+            group_specs.append((group_id, study_ids))
+
+        results: List[Dict[str, Any]] = []
+        for group_id, study_ids in group_specs:
+            if not study_ids:
+                group_result = aggregate_equity_curves([])
+                group_result["selected_count"] = 0
+                group_result["missing_study_ids"] = []
+            else:
+                group_result = _compute_equity_for_study_ids(study_ids)
+            results.append(
+                {
+                    "group_id": group_id,
+                    **group_result,
+                }
+            )
+
+        return jsonify({"results": results})
 
     @app.get("/api/analytics/summary")
     def analytics_summary() -> object:

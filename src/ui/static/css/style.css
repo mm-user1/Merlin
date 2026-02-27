@@ -1937,6 +1937,31 @@
       gap: 8px;
     }
 
+    .chart-title-indicator {
+      color: #8b6a17;
+      font-size: 12px;
+      font-weight: 700;
+      cursor: default;
+      white-space: nowrap;
+    }
+
+    .chart-card-subtitle {
+      padding: 6px 16px 0 16px;
+      font-size: 12px;
+      color: #6b6b6b;
+    }
+
+    .chart-warning {
+      margin: 6px 16px 0 16px;
+      padding: 8px 10px;
+      border: 1px solid #d6b45d;
+      border-radius: 4px;
+      background: #fff9e6;
+      color: #6f5a1f;
+      font-size: 12px;
+      line-height: 1.35;
+    }
+
     .focus-dismiss {
       border: 1px solid #b8b8b8;
       background: #f4f4f4;
@@ -2208,7 +2233,7 @@
       background: #ffffff;
       border: 1px solid #cccccc;
       border-radius: 4px;
-      padding: 12px;
+      padding: 6px 8px;
       text-align: center;
     }
 
@@ -2218,7 +2243,7 @@
     }
 
     .summary-card .value {
-      font-size: 22px;
+      font-size: 19px;
       font-weight: 600;
       color: #2a2a2a;
     }
@@ -2232,7 +2257,7 @@
     }
 
     .summary-card .label {
-      font-size: 12px;
+      font-size: 11px;
       color: #777;
       text-transform: uppercase;
       margin-top: 4px;

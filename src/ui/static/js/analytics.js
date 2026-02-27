@@ -42,6 +42,12 @@
     setMoveMode: false,
     filterContextEpoch: 0,
     filterContextSignature: null,
+    portfolioData: null,
+    portfolioSelectionKey: null,
+    portfolioPendingKey: null,
+    portfolioDebounceTimer: null,
+    portfolioAbortController: null,
+    portfolioRequestToken: 0,
   };
 
   const EMPTY_FILTERS = {
@@ -131,6 +137,55 @@
 
   function displayValue(value) {
     return isMissingValue(value) ? MISSING_TEXT : String(value);
+  }
+
+  function setChartSubtitle(text) {
+    const subtitleEl = document.getElementById('analyticsChartSubtitle');
+    if (!subtitleEl) return;
+    const content = String(text || '').trim();
+    subtitleEl.textContent = content;
+    subtitleEl.hidden = content.length === 0;
+  }
+
+  function setChartWarning(text) {
+    const warningEl = document.getElementById('analyticsChartWarning');
+    if (!warningEl) return;
+    const content = String(text || '').trim();
+    warningEl.textContent = content;
+    warningEl.hidden = content.length === 0;
+  }
+
+  function clearChartMeta() {
+    setChartSubtitle('');
+    setChartWarning('');
+  }
+
+  function computeAnnualizedProfitDisplay(study) {
+    if (window.AnalyticsTable && typeof window.AnalyticsTable.computeAnnualizedProfitMetrics === 'function') {
+      const metrics = window.AnalyticsTable.computeAnnualizedProfitMetrics(study || {});
+      const ann = toFiniteNumber(metrics?.annProfitPct);
+      const spanDays = toFiniteNumber(metrics?.oosSpanDays);
+      if (ann === null) {
+        if (spanDays !== null && spanDays > 0 && spanDays <= 30) {
+          return {
+            text: 'N/A',
+            className: '',
+            tooltip: `OOS period too short for meaningful annualization (${Math.round(spanDays)} days)`,
+          };
+        }
+        return { text: 'N/A', className: '', tooltip: '' };
+      }
+      const className = ann >= 0 ? 'positive' : 'negative';
+      if (spanDays !== null && spanDays >= 31 && spanDays < 90) {
+        return {
+          text: `${formatSignedPercent(ann, 1)}*`,
+          className,
+          tooltip: `Short OOS period (${Math.round(spanDays)} days) - annualized value may be misleading`,
+        };
+      }
+      return { text: formatSignedPercent(ann, 1), className, tooltip: '' };
+    }
+    return { text: 'N/A', className: '', tooltip: '' };
   }
 
   function showMessage(message) {
@@ -267,6 +322,106 @@
     return Array.from(AnalyticsState.checkedStudyIds)
       .map((studyId) => map.get(studyId))
       .filter(Boolean);
+  }
+
+  function getSelectedStudyIds() {
+    return getSelectedStudies()
+      .map((study) => String(study?.study_id || '').trim())
+      .filter(Boolean)
+      .sort((left, right) => left.localeCompare(right, undefined, { numeric: true, sensitivity: 'base' }));
+  }
+
+  function buildSelectionKey(studyIds) {
+    return Array.isArray(studyIds) && studyIds.length ? studyIds.join('|') : '';
+  }
+
+  function cancelPortfolioFetches() {
+    if (AnalyticsState.portfolioDebounceTimer !== null) {
+      window.clearTimeout(AnalyticsState.portfolioDebounceTimer);
+      AnalyticsState.portfolioDebounceTimer = null;
+    }
+    if (AnalyticsState.portfolioAbortController) {
+      AnalyticsState.portfolioAbortController.abort();
+      AnalyticsState.portfolioAbortController = null;
+    }
+    AnalyticsState.portfolioPendingKey = null;
+    AnalyticsState.portfolioRequestToken += 1;
+  }
+
+  function clearPortfolioState() {
+    cancelPortfolioFetches();
+    AnalyticsState.portfolioData = null;
+    AnalyticsState.portfolioSelectionKey = null;
+  }
+
+  function ensurePortfolioDataForSelection() {
+    const focusedStudy = getFocusedStudy();
+    const studyIds = focusedStudy ? [] : getSelectedStudyIds();
+    if (studyIds.length < 2) {
+      clearPortfolioState();
+      return;
+    }
+
+    const selectionKey = buildSelectionKey(studyIds);
+    if (AnalyticsState.portfolioSelectionKey !== selectionKey) {
+      cancelPortfolioFetches();
+      AnalyticsState.portfolioSelectionKey = selectionKey;
+      AnalyticsState.portfolioData = null;
+    }
+
+    if (AnalyticsState.portfolioData && AnalyticsState.portfolioSelectionKey === selectionKey) {
+      return;
+    }
+    if (AnalyticsState.portfolioPendingKey === selectionKey) {
+      return;
+    }
+
+    cancelPortfolioFetches();
+    AnalyticsState.portfolioPendingKey = selectionKey;
+    AnalyticsState.portfolioDebounceTimer = window.setTimeout(async () => {
+      const requestToken = AnalyticsState.portfolioRequestToken + 1;
+      AnalyticsState.portfolioRequestToken = requestToken;
+      AnalyticsState.portfolioDebounceTimer = null;
+
+      const controller = new AbortController();
+      AnalyticsState.portfolioAbortController = controller;
+      try {
+        const payload = await fetchAnalyticsEquityRequest(studyIds, controller.signal);
+        if (requestToken !== AnalyticsState.portfolioRequestToken) return;
+        if (AnalyticsState.portfolioSelectionKey !== selectionKey) return;
+        AnalyticsState.portfolioPendingKey = null;
+        AnalyticsState.portfolioAbortController = null;
+        AnalyticsState.portfolioData = payload || null;
+      } catch (error) {
+        if (controller.signal.aborted || error?.name === 'AbortError') {
+          return;
+        }
+        if (requestToken !== AnalyticsState.portfolioRequestToken) return;
+        AnalyticsState.portfolioPendingKey = null;
+        AnalyticsState.portfolioAbortController = null;
+        AnalyticsState.portfolioData = {
+          curve: null,
+          timestamps: null,
+          profit_pct: null,
+          max_drawdown_pct: null,
+          ann_profit_pct: null,
+          overlap_days: 0,
+          overlap_days_exact: 0.0,
+          studies_used: 0,
+          studies_excluded: studyIds.length,
+          warning: error?.message || 'Failed to aggregate portfolio equity.',
+        };
+      }
+      updateVisualsForSelection();
+    }, 300);
+  }
+
+  function getCurrentPortfolioData() {
+    const studyIds = getSelectedStudyIds();
+    if (studyIds.length < 2) return null;
+    const currentKey = buildSelectionKey(studyIds);
+    if (AnalyticsState.portfolioSelectionKey !== currentKey) return null;
+    return AnalyticsState.portfolioData;
   }
 
   function formatObjectiveLabel(name) {
@@ -447,6 +602,7 @@
     const container = document.getElementById('analyticsSummaryRow');
     if (!container || !study) return;
 
+    const annDisplay = computeAnnualizedProfitDisplay(study);
     const netProfit = toFiniteNumber(study.profit_pct);
     const maxDrawdown = toFiniteNumber(study.max_dd_pct);
     const totalTradesRaw = toFiniteNumber(study.total_trades);
@@ -482,11 +638,16 @@
 
     const netClass = netProfit === null ? '' : (netProfit >= 0 ? 'positive' : 'negative');
     const medianProfitClass = medianProfit === null ? '' : (medianProfit >= 0 ? 'positive' : 'negative');
+    const annTitle = annDisplay.tooltip ? ` title="${annDisplay.tooltip}"` : '';
 
     container.innerHTML = `
       <div class="summary-card highlight">
         <div class="value ${netClass}">${formatSignedPercent(netProfit, 2)}</div>
         <div class="label">NET PROFIT</div>
+      </div>
+      <div class="summary-card"${annTitle}>
+        <div class="value ${annDisplay.className}">${annDisplay.text}</div>
+        <div class="label">ANN.P%</div>
       </div>
       <div class="summary-card">
         <div class="value negative">${formatNegativePercent(maxDrawdown, 2)}</div>
@@ -515,6 +676,26 @@
     `;
   }
 
+  function computePortfolioTailMetrics(selected) {
+    const totalTrades = selected.reduce(
+      (acc, study) => acc + Math.max(0, Math.round(toFiniteNumber(study?.total_trades) || 0)),
+      0
+    );
+    const profitableCount = selected.reduce((acc, study) => {
+      const profit = toFiniteNumber(study?.profit_pct);
+      return acc + (profit !== null && profit > 0 ? 1 : 0);
+    }, 0);
+    const profitablePct = selected.length > 0 ? Math.round((profitableCount / selected.length) * 100) : 0;
+
+    return {
+      totalTrades,
+      profitableText: `${profitableCount}/${selected.length} (${profitablePct}%)`,
+      avgOosWins: average(selected.map((study) => study?.profitable_windows_pct)),
+      avgWfe: average(selected.map((study) => study?.wfe_pct)),
+      avgOosProfitMed: average(selected.map((study) => study?.median_window_profit)),
+    };
+  }
+
   function renderSummaryCards() {
     const container = document.getElementById('analyticsSummaryRow');
     if (!container) return;
@@ -529,6 +710,7 @@
     if (!selected.length) {
       container.innerHTML = `
         <div class="summary-card highlight"><div class="value">-</div><div class="label">Portfolio Profit</div></div>
+        <div class="summary-card"><div class="value">-</div><div class="label">Portfolio Ann.P%</div></div>
         <div class="summary-card"><div class="value">-</div><div class="label">Portfolio MaxDD</div></div>
         <div class="summary-card"><div class="value">-</div><div class="label">Total Trades</div></div>
         <div class="summary-card"><div class="value">-</div><div class="label">Profitable</div></div>
@@ -539,46 +721,82 @@
       return;
     }
 
-    const portfolioProfit = selected.reduce((acc, study) => acc + (toFiniteNumber(study.profit_pct) || 0), 0);
-    const portfolioMaxDd = selected.reduce((acc, study) => Math.max(acc, toFiniteNumber(study.max_dd_pct) || 0), 0);
-    const totalTrades = selected.reduce((acc, study) => acc + Math.max(0, Math.round(toFiniteNumber(study.total_trades) || 0)), 0);
-    const profitableCount = selected.reduce((acc, study) => acc + ((toFiniteNumber(study.profit_pct) || 0) > 0 ? 1 : 0), 0);
-    const profitablePct = selected.length > 0 ? Math.round((profitableCount / selected.length) * 100) : 0;
+    const tail = computePortfolioTailMetrics(selected);
+    const avgOosProfitClass = tail.avgOosProfitMed === null
+      ? ''
+      : (tail.avgOosProfitMed >= 0 ? 'positive' : 'negative');
 
-    const avgOosWins = average(selected.map((study) => study.profitable_windows_pct));
-    const avgWfe = average(selected.map((study) => study.wfe_pct));
-    const avgOosProfitMed = average(selected.map((study) => study.median_window_profit));
+    let portfolioProfit = null;
+    let portfolioAnn = null;
+    let portfolioMaxDd = null;
+    let portfolioAnnClass = '';
+    let annTooltip = '';
+    let loadingPrimaryMetrics = false;
 
-    const profitClass = portfolioProfit >= 0 ? 'positive' : 'negative';
-    const oosProfitClass = (avgOosProfitMed || 0) >= 0 ? 'positive' : 'negative';
+    if (selected.length === 1) {
+      const study = selected[0];
+      const annDisplay = computeAnnualizedProfitDisplay(study);
+      portfolioProfit = toFiniteNumber(study?.profit_pct);
+      portfolioAnn = annDisplay.text;
+      portfolioAnnClass = annDisplay.className || '';
+      portfolioMaxDd = toFiniteNumber(study?.max_dd_pct);
+      annTooltip = annDisplay.tooltip || '';
+    } else {
+      const key = buildSelectionKey(getSelectedStudyIds());
+      const portfolio = getCurrentPortfolioData();
+      loadingPrimaryMetrics = !portfolio && AnalyticsState.portfolioPendingKey === key;
+      portfolioProfit = toFiniteNumber(portfolio?.profit_pct);
+      portfolioAnn = toFiniteNumber(portfolio?.ann_profit_pct);
+      portfolioMaxDd = toFiniteNumber(portfolio?.max_drawdown_pct);
+
+      const overlapDaysExact = toFiniteNumber(portfolio?.overlap_days_exact);
+      if (portfolioAnn !== null && overlapDaysExact !== null && overlapDaysExact >= 31 && overlapDaysExact < 90) {
+        annTooltip = `Short overlap period (${Math.round(overlapDaysExact)} days) - annualized value may be misleading`;
+      }
+    }
+
+    const profitClass = portfolioProfit === null ? '' : (portfolioProfit >= 0 ? 'positive' : 'negative');
+    const annClass = typeof portfolioAnn === 'number'
+      ? (portfolioAnn >= 0 ? 'positive' : 'negative')
+      : portfolioAnnClass;
+    const annTitleAttr = annTooltip ? ` title="${annTooltip}"` : '';
+    const annText = typeof portfolioAnn === 'number'
+      ? formatSignedPercent(portfolioAnn, 1)
+      : (typeof portfolioAnn === 'string' ? portfolioAnn : (loadingPrimaryMetrics ? '...' : 'N/A'));
+    const profitText = loadingPrimaryMetrics && portfolioProfit === null ? '...' : formatSignedPercent(portfolioProfit, 1);
+    const maxDdText = loadingPrimaryMetrics && portfolioMaxDd === null ? '...' : formatNegativePercent(portfolioMaxDd, 1);
 
     container.innerHTML = `
       <div class="summary-card highlight">
-        <div class="value ${profitClass}">${formatSignedPercent(portfolioProfit, 1)}</div>
+        <div class="value ${profitClass}">${profitText}</div>
         <div class="label">Portfolio Profit</div>
       </div>
+      <div class="summary-card"${annTitleAttr}>
+        <div class="value ${annClass}">${annText}</div>
+        <div class="label">Portfolio Ann.P%</div>
+      </div>
       <div class="summary-card">
-        <div class="value negative">${formatNegativePercent(portfolioMaxDd, 1)}</div>
+        <div class="value negative">${maxDdText}</div>
         <div class="label">Portfolio MaxDD</div>
       </div>
       <div class="summary-card">
-        <div class="value">${formatInteger(totalTrades)}</div>
+        <div class="value">${formatInteger(tail.totalTrades)}</div>
         <div class="label">Total Trades</div>
       </div>
       <div class="summary-card">
-        <div class="value">${profitableCount}/${selected.length} (${profitablePct}%)</div>
+        <div class="value">${tail.profitableText}</div>
         <div class="label">Profitable</div>
       </div>
       <div class="summary-card">
-        <div class="value">${formatUnsignedPercent(avgOosWins, 1)}</div>
+        <div class="value">${formatUnsignedPercent(tail.avgOosWins, 1)}</div>
         <div class="label">Avg OOS Wins</div>
       </div>
       <div class="summary-card">
-        <div class="value">${formatUnsignedPercent(avgWfe, 1)}</div>
+        <div class="value">${formatUnsignedPercent(tail.avgWfe, 1)}</div>
         <div class="label">Avg WFE</div>
       </div>
       <div class="summary-card">
-        <div class="value ${oosProfitClass}">${formatSignedPercent(avgOosProfitMed, 1)}</div>
+        <div class="value ${avgOosProfitClass}">${formatSignedPercent(tail.avgOosProfitMed, 1)}</div>
         <div class="label">Avg OOS P(med)</div>
       </div>
     `;
@@ -616,6 +834,28 @@
     }
   }
 
+  function renderPortfolioChartTitle(selectedCount, portfolioData) {
+    const titleEl = document.getElementById('analyticsChartTitle');
+    if (!titleEl) return;
+    titleEl.textContent = '';
+
+    const overlapDays = Math.max(0, Math.round(toFiniteNumber(portfolioData?.overlap_days) || 0));
+    const overlapText = overlapDays > 0 ? `, ${overlapDays} days` : '';
+    titleEl.appendChild(
+      document.createTextNode(`Portfolio Equity (${selectedCount} studies${overlapText})`)
+    );
+
+    const warning = String(portfolioData?.warning || '').trim();
+    if (warning) {
+      const indicator = document.createElement('span');
+      indicator.className = 'chart-title-indicator';
+      indicator.textContent = ' [!]';
+      indicator.title = warning;
+      indicator.setAttribute('aria-label', warning);
+      titleEl.appendChild(indicator);
+    }
+  }
+
   function getPrimaryCheckedStudy() {
     const map = getStudyMap();
     let selectedId = null;
@@ -633,18 +873,77 @@
 
   function renderSelectedStudyChart() {
     const focusedStudy = getFocusedStudy();
-    const study = focusedStudy || getPrimaryCheckedStudy();
-    renderChartTitle(study);
+    if (focusedStudy) {
+      clearChartMeta();
+      renderChartTitle(focusedStudy);
+      if (!focusedStudy.has_equity_curve) {
+        window.AnalyticsEquity.renderEmpty('No stitched OOS equity data for selected study');
+        return;
+      }
+      window.AnalyticsEquity.renderChart(focusedStudy.equity_curve || [], focusedStudy.equity_timestamps || []);
+      return;
+    }
 
-    if (!study) {
+    const selected = getSelectedStudies();
+    if (!selected.length) {
+      clearChartMeta();
+      renderChartTitle(null);
       window.AnalyticsEquity.renderEmpty('No data to display');
       return;
     }
-    if (!study.has_equity_curve) {
-      window.AnalyticsEquity.renderEmpty('No stitched OOS equity data for selected study');
+
+    if (selected.length === 1) {
+      clearChartMeta();
+      const singleStudy = getPrimaryCheckedStudy() || selected[0];
+      renderChartTitle(singleStudy);
+      if (!singleStudy?.has_equity_curve) {
+        window.AnalyticsEquity.renderEmpty('No stitched OOS equity data for selected study');
+        return;
+      }
+      window.AnalyticsEquity.renderChart(singleStudy.equity_curve || [], singleStudy.equity_timestamps || []);
       return;
     }
-    window.AnalyticsEquity.renderChart(study.equity_curve || [], study.equity_timestamps || []);
+
+    const selectionKey = buildSelectionKey(getSelectedStudyIds());
+    const isLoading = AnalyticsState.portfolioPendingKey === selectionKey && !getCurrentPortfolioData();
+    const portfolio = getCurrentPortfolioData();
+    renderPortfolioChartTitle(selected.length, portfolio);
+
+    if (portfolio?.warning) {
+      setChartWarning(portfolio.warning);
+    } else {
+      setChartWarning('');
+    }
+
+    if (portfolio) {
+      const used = Math.max(0, Math.round(toFiniteNumber(portfolio.studies_used) || 0));
+      if (used >= 0 && used < selected.length) {
+        setChartSubtitle(`${used} of ${selected.length} studies used`);
+      } else {
+        setChartSubtitle('');
+      }
+    } else {
+      setChartSubtitle('');
+    }
+
+    if (isLoading) {
+      window.AnalyticsEquity.renderEmpty('Loading portfolio equity...');
+      return;
+    }
+
+    if (!portfolio) {
+      window.AnalyticsEquity.renderEmpty('No data to display');
+      return;
+    }
+
+    const curve = Array.isArray(portfolio.curve) ? portfolio.curve : [];
+    const timestamps = Array.isArray(portfolio.timestamps) ? portfolio.timestamps : [];
+    if (!curve.length || curve.length !== timestamps.length) {
+      window.AnalyticsEquity.renderEmpty('No overlapping equity data to display');
+      return;
+    }
+
+    window.AnalyticsEquity.renderChart(curve, timestamps);
   }
 
   function updateVisualsForSelection() {
@@ -654,6 +953,7 @@
     } else {
       hideFocusSidebar();
     }
+    ensurePortfolioDataForSelection();
     renderSummaryCards();
     renderSelectedStudyChart();
   }
@@ -749,6 +1049,7 @@
           AnalyticsState.focusedSetId = null;
           AnalyticsState.checkedSetIds = new Set();
           AnalyticsState.setViewMode = 'allStudies';
+          clearPortfolioState();
           await Promise.all([loadDatabases(), loadSummary()]);
         } catch (error) {
           alert(error.message || 'Failed to switch database.');
@@ -907,6 +1208,7 @@
     AnalyticsState.setMoveMode = false;
     AnalyticsState.filterContextEpoch += 1;
     AnalyticsState.filterContextSignature = null;
+    clearPortfolioState();
 
     renderDbName();
     renderResearchInfo();

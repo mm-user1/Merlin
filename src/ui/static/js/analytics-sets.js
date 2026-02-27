@@ -1,5 +1,4 @@
 (function () {
-  const MS_PER_DAY = 24 * 60 * 60 * 1000;
   const VIEW_MODES = {
     ALL: 'allStudies',
     FOCUS: 'setFocus',
@@ -25,6 +24,11 @@
     updateMenuOpen: false,
     onStateChange: null,
     bound: false,
+    metricsByGroupId: new Map(),
+    metricsBatchKey: null,
+    metricsPending: false,
+    metricsRequestToken: 0,
+    metricsAbortController: null,
   };
 
   function escapeHtml(value) {
@@ -38,12 +42,6 @@
 
   function toFiniteNumber(value) {
     const parsed = Number(value);
-    return Number.isFinite(parsed) ? parsed : null;
-  }
-
-  function parseTimestampMs(value) {
-    if (!value) return null;
-    const parsed = Date.parse(value);
     return Number.isFinite(parsed) ? parsed : null;
   }
 
@@ -147,28 +145,6 @@
     return ids;
   }
 
-  function computeAnnualizedProfitPct(study) {
-    if (window.AnalyticsTable && typeof window.AnalyticsTable.computeAnnualizedProfitMetrics === 'function') {
-      const result = window.AnalyticsTable.computeAnnualizedProfitMetrics(study || {});
-      return toFiniteNumber(result?.annProfitPct);
-    }
-
-    const timestamps = Array.isArray(study?.equity_timestamps) ? study.equity_timestamps : [];
-    if (timestamps.length < 2) return null;
-    const first = parseTimestampMs(timestamps[0]);
-    const last = parseTimestampMs(timestamps[timestamps.length - 1]);
-    if (first === null || last === null || last <= first) return null;
-    const oosSpanDays = (last - first) / MS_PER_DAY;
-    if (!Number.isFinite(oosSpanDays) || oosSpanDays <= 30) return null;
-
-    const profitPct = toFiniteNumber(study?.profit_pct);
-    if (profitPct === null) return null;
-    const returnMultiple = 1 + (profitPct / 100);
-    if (returnMultiple <= 0) return null;
-    const annualized = (Math.pow(returnMultiple, 365 / oosSpanDays) - 1) * 100;
-    return Number.isFinite(annualized) ? annualized : null;
-  }
-
   function resolveStudiesForSet(setItem) {
     if (!setItem) return [];
     const studies = [];
@@ -179,31 +155,15 @@
     return studies;
   }
 
-  function computeMetrics(studies) {
+  function computeNonCurveMetrics(studies) {
     const list = Array.isArray(studies) ? studies : [];
     if (!list.length) {
       return {
-        annProfitPct: null,
-        profitPct: null,
-        maxDdPct: null,
         profitableText: '0/0 (0%)',
         wfePct: null,
         oosWinsPct: null,
       };
     }
-
-    const annValues = list
-      .map((study) => computeAnnualizedProfitPct(study))
-      .filter((value) => value !== null);
-    const annProfitPct = annValues.length ? average(annValues) : null;
-
-    const profitPct = list.reduce((acc, study) => acc + (toFiniteNumber(study?.profit_pct) || 0), 0);
-
-    const maxDdAbsValues = list
-      .map((study) => toFiniteNumber(study?.max_dd_pct))
-      .filter((value) => value !== null)
-      .map((value) => Math.abs(value));
-    const maxDdPct = maxDdAbsValues.length ? Math.max(...maxDdAbsValues) : null;
 
     const profitableCount = list.reduce((acc, study) => {
       const profit = toFiniteNumber(study?.profit_pct);
@@ -216,13 +176,111 @@
     const oosWinsPct = average(list.map((study) => study?.profitable_windows_pct));
 
     return {
-      annProfitPct,
-      profitPct,
-      maxDdPct,
       profitableText,
       wfePct,
       oosWinsPct,
     };
+  }
+
+  function computeMetrics(studies, groupId) {
+    const list = Array.isArray(studies) ? studies : [];
+    const nonCurve = computeNonCurveMetrics(list);
+    const curve = state.metricsByGroupId.get(String(groupId || ''));
+
+    return {
+      annProfitPct: toFiniteNumber(curve?.ann_profit_pct),
+      profitPct: toFiniteNumber(curve?.profit_pct),
+      maxDdPct: toFiniteNumber(curve?.max_drawdown_pct),
+      profitableText: nonCurve.profitableText,
+      wfePct: nonCurve.wfePct,
+      oosWinsPct: nonCurve.oosWinsPct,
+    };
+  }
+
+  function buildMetricsGroups() {
+    const groups = [];
+    groups.push({
+      group_id: 'all',
+      study_ids: state.studies
+        .map((study) => String(study?.study_id || '').trim())
+        .filter(Boolean),
+    });
+
+    state.sets.forEach((setItem) => {
+      groups.push({
+        group_id: `set:${setItem.id}`,
+        study_ids: Array.from(new Set(
+          (Array.isArray(setItem?.study_ids) ? setItem.study_ids : [])
+            .map((studyId) => String(studyId || '').trim())
+            .filter(Boolean)
+        )),
+      });
+    });
+    return groups;
+  }
+
+  function buildMetricsBatchKey(groups) {
+    return (Array.isArray(groups) ? groups : [])
+      .map((group) => {
+        const groupId = String(group?.group_id || '').trim();
+        const ids = Array.isArray(group?.study_ids) ? group.study_ids : [];
+        return `${groupId}=${ids.join(',')}`;
+      })
+      .join('|');
+  }
+
+  function cancelMetricsRequest() {
+    if (state.metricsAbortController) {
+      state.metricsAbortController.abort();
+      state.metricsAbortController = null;
+    }
+    state.metricsPending = false;
+    state.metricsRequestToken += 1;
+  }
+
+  function scheduleMetricsAggregation() {
+    if (typeof fetchAnalyticsEquityBatchRequest !== 'function') return;
+    const groups = buildMetricsGroups();
+    const batchKey = buildMetricsBatchKey(groups);
+    if (state.metricsBatchKey === batchKey && state.metricsByGroupId.size) {
+      return;
+    }
+
+    cancelMetricsRequest();
+    state.metricsByGroupId = new Map();
+    state.metricsBatchKey = batchKey;
+
+    const requestToken = state.metricsRequestToken + 1;
+    state.metricsRequestToken = requestToken;
+    state.metricsPending = true;
+    const controller = new AbortController();
+    state.metricsAbortController = controller;
+
+    fetchAnalyticsEquityBatchRequest(groups, controller.signal)
+      .then((payload) => {
+        if (requestToken !== state.metricsRequestToken) return;
+        if (!payload || !Array.isArray(payload.results)) return;
+
+        const nextMap = new Map();
+        payload.results.forEach((item) => {
+          const key = String(item?.group_id || '').trim();
+          if (!key) return;
+          nextMap.set(key, item);
+        });
+        state.metricsByGroupId = nextMap;
+        state.metricsPending = false;
+        state.metricsAbortController = null;
+        renderTable();
+      })
+      .catch((error) => {
+        if (controller.signal.aborted || error?.name === 'AbortError') {
+          return;
+        }
+        if (requestToken !== state.metricsRequestToken) return;
+        state.metricsPending = false;
+        state.metricsAbortController = null;
+        console.warn('Analytics sets metrics aggregation failed:', error);
+      });
   }
 
   function formatSignedPercent(value, digits = 1) {
@@ -661,7 +719,8 @@
     const { tableWrap } = getDom();
     if (!tableWrap) return;
 
-    const allMetrics = computeMetrics(state.studies);
+    scheduleMetricsAggregation();
+    const allMetrics = computeMetrics(state.studies, 'all');
     const rows = [];
     rows.push(`
       <tr class="analytics-set-all-row" data-all-studies="1">
@@ -678,7 +737,7 @@
 
     state.sets.forEach((setItem) => {
       const setStudies = resolveStudiesForSet(setItem);
-      const metrics = computeMetrics(setStudies);
+      const metrics = computeMetrics(setStudies, `set:${setItem.id}`);
       const checked = state.checkedSetIds.has(setItem.id) ? ' checked' : '';
       const focusedClass = state.focusedSetId === setItem.id ? ' analytics-set-focused' : '';
       const movingClass = state.moveMode && state.focusedSetId === setItem.id ? ' analytics-set-moving' : '';
@@ -866,6 +925,9 @@
   }
 
   function updateStudies(studies) {
+    cancelMetricsRequest();
+    state.metricsByGroupId = new Map();
+    state.metricsBatchKey = null;
     state.studies = Array.isArray(studies) ? studies.slice() : [];
     updateStudyMap();
     render();

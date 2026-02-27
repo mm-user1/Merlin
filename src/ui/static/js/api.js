@@ -385,6 +385,36 @@ async function fetchAnalyticsSetsRequest() {
   return response.json();
 }
 
+async function fetchAnalyticsEquityRequest(studyIds, signal = null) {
+  const response = await fetch('/api/analytics/equity', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ study_ids: Array.isArray(studyIds) ? studyIds : [] }),
+    signal: signal || undefined
+  });
+
+  if (!response.ok) {
+    const payload = await response.json().catch(() => ({}));
+    throw new Error(payload.error || 'Failed to aggregate analytics equity.');
+  }
+  return response.json();
+}
+
+async function fetchAnalyticsEquityBatchRequest(groups, signal = null) {
+  const response = await fetch('/api/analytics/equity/batch', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ groups: Array.isArray(groups) ? groups : [] }),
+    signal: signal || undefined
+  });
+
+  if (!response.ok) {
+    const payload = await response.json().catch(() => ({}));
+    throw new Error(payload.error || 'Failed to aggregate analytics equity batch.');
+  }
+  return response.json();
+}
+
 async function createAnalyticsSetRequest(name, studyIds) {
   const response = await fetch('/api/analytics/sets', {
     method: 'POST',

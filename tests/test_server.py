@@ -871,6 +871,153 @@ def test_analytics_page_renders(client):
     assert "Analytics" in response.get_data(as_text=True)
 
 
+def test_analytics_equity_endpoint_success(client):
+    with _temporary_active_db(f"analytics_equity_{uuid.uuid4().hex[:8]}"):
+        _insert_analytics_study(
+            study_id="wfa_eq_1",
+            study_name="WFA_EQ_1",
+            optimization_mode="wfa",
+            stitched_oos_equity_curve=[100.0, 120.0],
+            stitched_oos_timestamps_json=[
+                "2025-01-01T00:00:00+00:00",
+                "2025-02-15T00:00:00+00:00",
+            ],
+        )
+        _insert_analytics_study(
+            study_id="wfa_eq_2",
+            study_name="WFA_EQ_2",
+            optimization_mode="wfa",
+            stitched_oos_equity_curve=[100.0, 80.0],
+            stitched_oos_timestamps_json=[
+                "2025-01-01T00:00:00+00:00",
+                "2025-02-15T00:00:00+00:00",
+            ],
+        )
+
+        response = client.post(
+            "/api/analytics/equity",
+            json={"study_ids": ["wfa_eq_1", "wfa_eq_2"]},
+        )
+        assert response.status_code == 200
+        payload = response.get_json()
+
+        assert isinstance(payload["curve"], list)
+        assert len(payload["curve"]) == len(payload["timestamps"])
+        assert payload["studies_used"] == 2
+        assert payload["selected_count"] == 2
+        assert payload["missing_study_ids"] == []
+        assert payload["profit_pct"] == pytest.approx(0.0, abs=1e-6)
+
+
+def test_analytics_equity_endpoint_rejects_missing_payload(client):
+    response = client.post("/api/analytics/equity")
+    assert response.status_code == 400
+    assert "Expected JSON payload." in response.get_json()["error"]
+
+
+def test_analytics_equity_endpoint_rejects_non_array_study_ids(client):
+    response = client.post(
+        "/api/analytics/equity",
+        json={"study_ids": "not-array"},
+    )
+    assert response.status_code == 400
+    assert "study_ids must be an array." in response.get_json()["error"]
+
+
+def test_analytics_equity_endpoint_rejects_empty_study_ids(client):
+    response = client.post(
+        "/api/analytics/equity",
+        json={"study_ids": []},
+    )
+    assert response.status_code == 400
+    assert "non-empty array" in response.get_json()["error"]
+
+
+def test_analytics_equity_endpoint_rejects_study_ids_over_cap(client):
+    response = client.post(
+        "/api/analytics/equity",
+        json={"study_ids": [f"id_{i}" for i in range(501)]},
+    )
+    assert response.status_code == 400
+    assert "Maximum allowed is 500" in response.get_json()["error"]
+
+
+def test_analytics_equity_endpoint_no_overlap_returns_warning(client):
+    with _temporary_active_db(f"analytics_equity_no_overlap_{uuid.uuid4().hex[:8]}"):
+        _insert_analytics_study(
+            study_id="wfa_eq_no_1",
+            study_name="WFA_EQ_NO_1",
+            optimization_mode="wfa",
+            stitched_oos_equity_curve=[100.0, 110.0],
+            stitched_oos_timestamps_json=[
+                "2025-01-01T00:00:00+00:00",
+                "2025-01-02T00:00:00+00:00",
+            ],
+        )
+        _insert_analytics_study(
+            study_id="wfa_eq_no_2",
+            study_name="WFA_EQ_NO_2",
+            optimization_mode="wfa",
+            stitched_oos_equity_curve=[100.0, 95.0],
+            stitched_oos_timestamps_json=[
+                "2025-01-10T00:00:00+00:00",
+                "2025-01-11T00:00:00+00:00",
+            ],
+        )
+
+        response = client.post(
+            "/api/analytics/equity",
+            json={"study_ids": ["wfa_eq_no_1", "wfa_eq_no_2"]},
+        )
+        assert response.status_code == 200
+        payload = response.get_json()
+        assert payload["curve"] is None
+        assert payload["warning"] == "Selected studies have no overlapping time period."
+
+
+def test_analytics_equity_batch_endpoint_success(client):
+    with _temporary_active_db(f"analytics_equity_batch_{uuid.uuid4().hex[:8]}"):
+        _insert_analytics_study(
+            study_id="wfa_eq_b1",
+            study_name="WFA_EQ_B1",
+            optimization_mode="wfa",
+            stitched_oos_equity_curve=[100.0, 105.0],
+            stitched_oos_timestamps_json=[
+                "2025-01-01T00:00:00+00:00",
+                "2025-02-10T00:00:00+00:00",
+            ],
+        )
+        _insert_analytics_study(
+            study_id="wfa_eq_b2",
+            study_name="WFA_EQ_B2",
+            optimization_mode="wfa",
+            stitched_oos_equity_curve=[100.0, 95.0],
+            stitched_oos_timestamps_json=[
+                "2025-01-01T00:00:00+00:00",
+                "2025-02-10T00:00:00+00:00",
+            ],
+        )
+
+        response = client.post(
+            "/api/analytics/equity/batch",
+            json={
+                "groups": [
+                    {"group_id": "all", "study_ids": ["wfa_eq_b1", "wfa_eq_b2"]},
+                    {"group_id": "subset", "study_ids": ["wfa_eq_b1"]},
+                    {"group_id": "empty", "study_ids": []},
+                ]
+            },
+        )
+        assert response.status_code == 200
+        payload = response.get_json()
+        assert isinstance(payload["results"], list)
+        by_id = {item["group_id"]: item for item in payload["results"]}
+        assert set(by_id.keys()) == {"all", "subset", "empty"}
+        assert by_id["all"]["studies_used"] == 2
+        assert by_id["subset"]["studies_used"] == 1
+        assert by_id["empty"]["curve"] is None
+
+
 def test_analytics_summary_empty_db_returns_expected_message(client):
     with _temporary_active_db(f"analytics_empty_{uuid.uuid4().hex[:8]}"):
         response = client.get("/api/analytics/summary")
