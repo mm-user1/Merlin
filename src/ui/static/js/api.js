@@ -415,6 +415,17 @@ async function fetchAnalyticsEquityBatchRequest(groups, signal = null) {
   return response.json();
 }
 
+async function fetchAnalyticsStudyWindowBoundariesRequest(studyId, signal = null) {
+  const response = await fetch(`/api/analytics/studies/${encodeURIComponent(studyId)}/window-boundaries`, {
+    signal: signal || undefined
+  });
+  if (!response.ok) {
+    const payload = await response.json().catch(() => ({}));
+    throw new Error(payload.error || 'Failed to load analytics window boundaries.');
+  }
+  return response.json();
+}
+
 async function createAnalyticsSetRequest(name, studyIds) {
   const response = await fetch('/api/analytics/sets', {
     method: 'POST',

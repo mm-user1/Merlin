@@ -477,6 +477,79 @@ def register_routes(app):
 
         return jsonify({"results": results})
 
+    @app.get("/api/analytics/studies/<string:study_id>/window-boundaries")
+    def analytics_study_window_boundaries(study_id: str) -> object:
+        normalized_study_id = str(study_id or "").strip()
+        if not normalized_study_id:
+            return _json_error("study_id is required.", HTTPStatus.BAD_REQUEST)
+
+        with get_db_connection() as conn:
+            study_row = conn.execute(
+                """
+                SELECT study_id, optimization_mode
+                FROM studies
+                WHERE study_id = ?
+                """,
+                (normalized_study_id,),
+            ).fetchone()
+
+            if not study_row:
+                return _json_error("Study not found.", HTTPStatus.NOT_FOUND)
+
+            optimization_mode = str(study_row["optimization_mode"] or "").strip().lower()
+            if optimization_mode != "wfa":
+                return _json_error(
+                    "Window boundaries are available only for WFA studies.",
+                    HTTPStatus.BAD_REQUEST,
+                )
+
+            cursor = conn.execute(
+                """
+                SELECT
+                    window_id,
+                    window_number,
+                    oos_start_ts,
+                    oos_start_date,
+                    is_end_ts,
+                    is_end_date
+                FROM wfa_windows
+                WHERE study_id = ?
+                ORDER BY window_number ASC
+                """,
+                (normalized_study_id,),
+            )
+            rows = cursor.fetchall()
+
+        boundaries: List[Dict[str, Any]] = []
+        for row in rows:
+            row_dict = dict(row)
+            boundary_time = (
+                str(row_dict.get("oos_start_ts") or "").strip()
+                or str(row_dict.get("oos_start_date") or "").strip()
+                or str(row_dict.get("is_end_ts") or "").strip()
+                or str(row_dict.get("is_end_date") or "").strip()
+            )
+            if not boundary_time:
+                continue
+
+            window_number = _safe_int(row_dict.get("window_number"))
+            label = f"W{window_number}" if window_number is not None else f"W{len(boundaries) + 1}"
+            boundaries.append(
+                {
+                    "window_id": row_dict.get("window_id"),
+                    "window_number": window_number,
+                    "time": boundary_time,
+                    "label": label,
+                }
+            )
+
+        return jsonify(
+            {
+                "study_id": normalized_study_id,
+                "boundaries": boundaries,
+            }
+        )
+
     @app.get("/api/analytics/summary")
     def analytics_summary() -> object:
         with get_db_connection() as conn:
@@ -494,6 +567,7 @@ def register_routes(app):
                     completed_at,
                     CAST(strftime('%s', created_at) AS INTEGER) AS created_at_epoch,
                     CAST(strftime('%s', completed_at) AS INTEGER) AS completed_at_epoch,
+                    optimization_time_seconds,
                     csv_file_name,
                     adaptive_mode,
                     is_period_days,
@@ -511,6 +585,7 @@ def register_routes(app):
                     objectives_json,
                     primary_objective,
                     constraints_json,
+                    score_config_json,
                     filter_min_profit,
                     min_profit_threshold,
                     sanitize_enabled,
@@ -637,6 +712,21 @@ def register_routes(app):
             if workers_value is None:
                 workers_value = _safe_int(config_payload.get("workerProcesses"))
 
+            score_config = _parse_json_dict(config_payload.get("score_config"))
+            if not score_config:
+                score_config = _parse_json_dict(optuna_config.get("score_config"))
+            if not score_config:
+                score_config = _parse_json_dict(row_dict.get("score_config_json"))
+            score_filter_enabled = _safe_bool(score_config.get("filter_enabled"))
+            if score_filter_enabled is None:
+                score_filter_enabled = False
+
+            created_at_epoch = _safe_int(row_dict.get("created_at_epoch"))
+            completed_at_epoch = _safe_int(row_dict.get("completed_at_epoch"))
+            run_time_seconds = _safe_int(row_dict.get("optimization_time_seconds"))
+            if run_time_seconds is None and created_at_epoch is not None and completed_at_epoch is not None:
+                run_time_seconds = max(0, completed_at_epoch - created_at_epoch)
+
             studies.append(
                 {
                     "study_id": row_dict.get("study_id"),
@@ -646,8 +736,8 @@ def register_routes(app):
                     "strategy_version": row_dict.get("strategy_version"),
                     "created_at": row_dict.get("created_at"),
                     "completed_at": row_dict.get("completed_at"),
-                    "created_at_epoch": _safe_int(row_dict.get("created_at_epoch")),
-                    "completed_at_epoch": _safe_int(row_dict.get("completed_at_epoch")),
+                    "created_at_epoch": created_at_epoch,
+                    "completed_at_epoch": completed_at_epoch,
                     "symbol": symbol,
                     "tf": tf,
                     "wfa_mode": wfa_mode,
@@ -717,6 +807,8 @@ def register_routes(app):
                             if _safe_float(config_payload.get("min_profit_threshold")) is not None
                             else _safe_float(row_dict.get("min_profit_threshold"))
                         ),
+                        "score_filter_enabled": score_filter_enabled,
+                        "score_min_threshold": _safe_float(score_config.get("min_score_threshold")),
                     },
                     "wfa_settings": {
                         "is_period_days": (
@@ -756,6 +848,7 @@ def register_routes(app):
                             if _safe_float(row_dict.get("inactivity_multiplier")) is not None
                             else _safe_float(wfa_config.get("inactivity_multiplier"))
                         ),
+                        "run_time_seconds": run_time_seconds,
                     },
                 }
             )

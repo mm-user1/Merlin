@@ -24,7 +24,7 @@
     }
   }
 
-  function renderChart(equityCurve, timestamps) {
+  function renderChart(equityCurve, timestamps, options = null) {
     const svg = document.getElementById('analyticsChartSvg');
     const axis = document.getElementById('analyticsEquityAxis');
     if (!svg) return;
@@ -69,6 +69,20 @@
       const ratio = (ts - tStart) / (tEnd - tStart);
       return Math.min(1, Math.max(0, ratio));
     };
+    const toXRatioByBoundary = (boundary) => {
+      if (!boundary || typeof boundary !== 'object') return null;
+      if (useTimeScale) {
+        const boundaryTime = parseTimestamp(boundary.time || boundary.timestamp || boundary.date);
+        if (boundaryTime !== null) {
+          const ratio = (boundaryTime - tStart) / (tEnd - tStart);
+          return Math.min(1, Math.max(0, ratio));
+        }
+      }
+      const boundaryIndex = Number(boundary.index);
+      if (!Number.isFinite(boundaryIndex)) return null;
+      const normalizedIndex = Math.max(0, Math.min(curve.length - 1, Math.round(boundaryIndex)));
+      return toXRatioByIndex(normalizedIndex);
+    };
 
     const baseValue = 100.0;
     const minValue = Math.min(baseValue, ...curve);
@@ -97,6 +111,47 @@
     baseLine.setAttribute('stroke-width', '1');
     baseLine.setAttribute('stroke-dasharray', '3 4');
     svg.appendChild(baseLine);
+
+    const windowBoundaries = Array.isArray(options?.windowBoundaries) ? options.windowBoundaries : [];
+    if (windowBoundaries.length) {
+      const boundariesWithX = windowBoundaries
+        .map((boundary, index) => {
+          const ratio = toXRatioByBoundary(boundary);
+          if (ratio === null) return null;
+          const x = ratio * width;
+          const fallbackLabel = Number.isFinite(Number(boundary?.window_number))
+            ? `W${Math.max(1, Math.round(Number(boundary.window_number)))}`
+            : `W${index + 1}`;
+          const label = String(boundary?.label || '').trim() || fallbackLabel;
+          return { x, label };
+        })
+        .filter(Boolean);
+
+      boundariesWithX.forEach((item, index) => {
+        const line = document.createElementNS('http://www.w3.org/2000/svg', 'line');
+        line.setAttribute('x1', String(item.x));
+        line.setAttribute('y1', '0');
+        line.setAttribute('x2', String(item.x));
+        line.setAttribute('y2', String(height));
+        line.setAttribute('stroke', '#a9c9ff');
+        line.setAttribute('stroke-width', '2');
+        line.setAttribute('stroke-dasharray', '6 4');
+        svg.appendChild(line);
+
+        const nextX = boundariesWithX[index + 1]?.x;
+        const labelX = Number.isFinite(nextX) ? (item.x + nextX) / 2 : (item.x + 40);
+        const clampedLabelX = Math.max(12, Math.min(width - 12, labelX));
+
+        const text = document.createElementNS('http://www.w3.org/2000/svg', 'text');
+        text.setAttribute('x', String(clampedLabelX));
+        text.setAttribute('y', '20');
+        text.setAttribute('font-size', '10');
+        text.setAttribute('fill', '#999');
+        text.setAttribute('text-anchor', 'middle');
+        text.textContent = item.label;
+        svg.appendChild(text);
+      });
+    }
 
     if (hasTimestamps && axis) {
       const tickCount = Math.min(5, curve.length);

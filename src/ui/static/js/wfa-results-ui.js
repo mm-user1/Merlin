@@ -670,7 +670,11 @@
         : index + 1;
       const availableModules = window.available_modules || [];
       const actualDaysRaw = window.oos_actual_days;
-      const actualDays = Number.isFinite(Number(actualDaysRaw))
+      const hasActualDays = actualDaysRaw !== null
+        && actualDaysRaw !== undefined
+        && String(actualDaysRaw).trim() !== ''
+        && Number.isFinite(Number(actualDaysRaw));
+      const actualDays = hasActualDays
         ? `${Math.round(Number(actualDaysRaw))}d`
         : null;
       const triggerType = String(window.trigger_type || '').toLowerCase();
@@ -684,8 +688,13 @@
       const triggerBadge = triggerLabel
         ? `<span class="wfa-trigger-badge wfa-trigger-${triggerType}">${triggerLabel}</span>`
         : '';
+      const adaptiveModeRaw = window.ResultsState?.wfa?.adaptiveMode ?? window.ResultsState?.wfa?.adaptive_mode;
+      const adaptiveMode = adaptiveModeRaw === null || adaptiveModeRaw === undefined
+        ? null
+        : Boolean(adaptiveModeRaw);
       const hasAdaptiveMeta = Boolean(triggerLabel || actualDays);
-      const adaptiveSuffix = hasAdaptiveMeta
+      const showAdaptiveMeta = adaptiveMode === true || (adaptiveMode === null && hasAdaptiveMeta);
+      const adaptiveSuffix = showAdaptiveMeta && hasAdaptiveMeta
         ? ` (${actualDays || '-'}) ${triggerBadge}`
         : '';
 

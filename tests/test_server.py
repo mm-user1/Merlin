@@ -144,6 +144,45 @@ def _insert_analytics_study(
         conn.commit()
 
 
+def _insert_analytics_wfa_window(
+    *,
+    study_id: str,
+    window_number: int,
+    window_id: str | None = None,
+    oos_start_ts: str | None = None,
+    oos_start_date: str | None = None,
+    is_end_ts: str | None = None,
+    is_end_date: str | None = None,
+):
+    resolved_window_id = window_id or f"{study_id}_w{window_number}"
+    with get_db_connection() as conn:
+        conn.execute(
+            """
+            INSERT INTO wfa_windows (
+                window_id,
+                study_id,
+                window_number,
+                best_params_json,
+                oos_start_ts,
+                oos_start_date,
+                is_end_ts,
+                is_end_date
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+            """,
+            (
+                resolved_window_id,
+                study_id,
+                int(window_number),
+                json.dumps({}),
+                oos_start_ts,
+                oos_start_date,
+                is_end_ts,
+                is_end_date,
+            ),
+        )
+        conn.commit()
+
+
 def test_csv_import_s01_parameters(client):
     csv_content = "parameter,value\nmaType,ema\nmaLength,45\n"
 
@@ -642,6 +681,8 @@ def test_get_wfa_window_details(client):
     assert response.status_code == 200
     payload = response.get_json()
     assert payload["window"]["window_number"] == 1
+    assert payload["window"]["oos_actual_days"] is None
+    assert payload["window"]["trigger_type"] is None
     assert "optuna_is" in payload["modules"]
 
 
@@ -869,6 +910,81 @@ def test_analytics_page_renders(client):
     response = client.get("/analytics")
     assert response.status_code == 200
     assert "Analytics" in response.get_data(as_text=True)
+
+
+def test_analytics_window_boundaries_endpoint_success(client):
+    with _temporary_active_db(f"analytics_boundaries_{uuid.uuid4().hex[:8]}"):
+        study_id = "wfa_boundaries_1"
+        _insert_analytics_study(
+            study_id=study_id,
+            study_name="WFA_BOUNDARIES_1",
+            optimization_mode="wfa",
+        )
+        _insert_analytics_wfa_window(
+            study_id=study_id,
+            window_number=1,
+            oos_start_date="2025-01-15",
+        )
+        _insert_analytics_wfa_window(
+            study_id=study_id,
+            window_number=2,
+            oos_start_ts="2025-02-01T00:00:00+00:00",
+        )
+        _insert_analytics_wfa_window(
+            study_id=study_id,
+            window_number=3,
+            is_end_date="2025-03-20",
+        )
+        _insert_analytics_wfa_window(
+            study_id=study_id,
+            window_number=4,
+        )
+
+        response = client.get(f"/api/analytics/studies/{study_id}/window-boundaries")
+        assert response.status_code == 200
+        payload = response.get_json()
+
+        assert payload["study_id"] == study_id
+        assert payload["boundaries"] == [
+            {
+                "window_id": f"{study_id}_w1",
+                "window_number": 1,
+                "time": "2025-01-15",
+                "label": "W1",
+            },
+            {
+                "window_id": f"{study_id}_w2",
+                "window_number": 2,
+                "time": "2025-02-01T00:00:00+00:00",
+                "label": "W2",
+            },
+            {
+                "window_id": f"{study_id}_w3",
+                "window_number": 3,
+                "time": "2025-03-20",
+                "label": "W3",
+            },
+        ]
+
+
+def test_analytics_window_boundaries_endpoint_rejects_non_wfa(client):
+    with _temporary_active_db(f"analytics_boundaries_non_wfa_{uuid.uuid4().hex[:8]}"):
+        study_id = "optuna_boundaries_1"
+        _insert_analytics_study(
+            study_id=study_id,
+            study_name="OPTUNA_BOUNDARIES_1",
+            optimization_mode="optuna",
+        )
+
+        response = client.get(f"/api/analytics/studies/{study_id}/window-boundaries")
+        assert response.status_code == 400
+        assert "only for WFA studies" in response.get_json()["error"]
+
+
+def test_analytics_window_boundaries_endpoint_returns_404_for_missing_study(client):
+    response = client.get("/api/analytics/studies/missing_study/window-boundaries")
+    assert response.status_code == 404
+    assert response.get_json()["error"] == "Study not found."
 
 
 def test_analytics_equity_endpoint_success(client):
@@ -1225,6 +1341,7 @@ def test_analytics_summary_includes_study_name_and_timestamps(client):
         assert isinstance(first["completed_at_epoch"], int)
         assert first["created_at_epoch"] > 0
         assert first["completed_at_epoch"] > 0
+        assert first["wfa_settings"]["run_time_seconds"] == 300
 
         second = by_id["wfa_ts_2"]
         assert second["study_name"] == "S03_OKX_ETHUSDT.P, 240 2025.01.01-2025.01.31_WFA"
@@ -1233,6 +1350,7 @@ def test_analytics_summary_includes_study_name_and_timestamps(client):
         assert second["completed_at"] == "2026-02-21 09:30:00"
         assert isinstance(second["completed_at_epoch"], int)
         assert second["completed_at_epoch"] > 0
+        assert second["wfa_settings"]["run_time_seconds"] is None
 
 
 def test_analytics_summary_includes_focus_settings_payload(client):
@@ -1250,6 +1368,10 @@ def test_analytics_summary_includes_focus_settings_payload(client):
                 "worker_processes": 4,
                 "filter_min_profit": True,
                 "min_profit_threshold": 12.5,
+                "score_config": {
+                    "filter_enabled": True,
+                    "min_score_threshold": 77.5,
+                },
                 "optuna_config": {
                     "budget_mode": "trials",
                     "n_trials": 500,
@@ -1292,7 +1414,8 @@ def test_analytics_summary_includes_focus_settings_payload(client):
                     check_interval_trades = 8,
                     cusum_threshold = 4.4,
                     dd_threshold_multiplier = 1.8,
-                    inactivity_multiplier = 7.2
+                    inactivity_multiplier = 7.2,
+                    optimization_time_seconds = 3661
                 WHERE study_id = 'wfa_focus_1'
                 """
             )
@@ -1306,7 +1429,9 @@ def test_analytics_summary_includes_focus_settings_payload(client):
                     sanitize_enabled = 0,
                     sanitize_trades_threshold = 11,
                     filter_min_profit = 1,
-                    min_profit_threshold = 9.0
+                    min_profit_threshold = 9.0,
+                    optimization_time_seconds = 95,
+                    score_config_json = '{"filter_enabled": 1, "min_score_threshold": 73.5}'
                 WHERE study_id = 'wfa_focus_2'
                 """
             )
@@ -1331,6 +1456,8 @@ def test_analytics_summary_includes_focus_settings_payload(client):
         assert first["optuna_settings"]["sanitize_trades_threshold"] == 3
         assert first["optuna_settings"]["filter_min_profit"] is True
         assert first["optuna_settings"]["min_profit_threshold"] == 12.5
+        assert first["optuna_settings"]["score_filter_enabled"] is True
+        assert first["optuna_settings"]["score_min_threshold"] == 77.5
 
         assert first["wfa_settings"]["is_period_days"] == 60
         assert first["wfa_settings"]["oos_period_days"] == 30
@@ -1341,6 +1468,7 @@ def test_analytics_summary_includes_focus_settings_payload(client):
         assert first["wfa_settings"]["cusum_threshold"] == 4.4
         assert first["wfa_settings"]["dd_threshold_multiplier"] == 1.8
         assert first["wfa_settings"]["inactivity_multiplier"] == 7.2
+        assert first["wfa_settings"]["run_time_seconds"] == 3661
 
         second = by_id["wfa_focus_2"]
         assert second["optuna_settings"]["budget_mode"] == "time"
@@ -1350,7 +1478,10 @@ def test_analytics_summary_includes_focus_settings_payload(client):
         assert second["optuna_settings"]["sanitize_trades_threshold"] == 11
         assert second["optuna_settings"]["filter_min_profit"] is True
         assert second["optuna_settings"]["min_profit_threshold"] == 9.0
+        assert second["optuna_settings"]["score_filter_enabled"] is True
+        assert second["optuna_settings"]["score_min_threshold"] == 73.5
         assert second["wfa_settings"]["adaptive_mode"] is None
+        assert second["wfa_settings"]["run_time_seconds"] == 95
 
 
 def test_analytics_sets_crud_and_reorder(client):
@@ -1416,6 +1547,43 @@ def test_analytics_sets_crud_and_reorder(client):
 
         final_payload = client.get("/api/analytics/sets").get_json()
         assert [item["id"] for item in final_payload["sets"]] == [created_second["id"]]
+
+
+def test_analytics_sets_create_auto_suffixes_duplicate_names(client):
+    with _temporary_active_db(f"analytics_sets_duplicates_{uuid.uuid4().hex[:8]}"):
+        _insert_analytics_study(
+            study_id="wfa_dup_1",
+            study_name="WFA_DUP_1",
+            optimization_mode="wfa",
+        )
+
+        first = client.post(
+            "/api/analytics/sets",
+            json={"name": "Duplicate Set", "study_ids": ["wfa_dup_1"]},
+        )
+        assert first.status_code == 201
+        assert first.get_json()["name"] == "Duplicate Set"
+
+        second = client.post(
+            "/api/analytics/sets",
+            json={"name": "Duplicate Set", "study_ids": ["wfa_dup_1"]},
+        )
+        assert second.status_code == 201
+        assert second.get_json()["name"] == "Duplicate Set (1)"
+
+        third = client.post(
+            "/api/analytics/sets",
+            json={"name": "Duplicate Set", "study_ids": ["wfa_dup_1"]},
+        )
+        assert third.status_code == 201
+        assert third.get_json()["name"] == "Duplicate Set (2)"
+
+        payload = client.get("/api/analytics/sets").get_json()
+        assert [item["name"] for item in payload["sets"]] == [
+            "Duplicate Set",
+            "Duplicate Set (1)",
+            "Duplicate Set (2)",
+        ]
 
 
 def test_analytics_sets_reject_non_wfa_study_ids(client):

@@ -48,6 +48,10 @@
     portfolioDebounceTimer: null,
     portfolioAbortController: null,
     portfolioRequestToken: 0,
+    focusedWindowBoundariesByStudyId: new Map(),
+    focusedWindowBoundariesPendingStudyId: null,
+    focusedWindowBoundariesAbortController: null,
+    focusedWindowBoundariesRequestToken: 0,
   };
 
   const EMPTY_FILTERS = {
@@ -354,6 +358,91 @@
     AnalyticsState.portfolioSelectionKey = null;
   }
 
+  function cancelFocusedWindowBoundariesFetch() {
+    if (AnalyticsState.focusedWindowBoundariesAbortController) {
+      AnalyticsState.focusedWindowBoundariesAbortController.abort();
+      AnalyticsState.focusedWindowBoundariesAbortController = null;
+    }
+    AnalyticsState.focusedWindowBoundariesPendingStudyId = null;
+    AnalyticsState.focusedWindowBoundariesRequestToken += 1;
+  }
+
+  function clearFocusedWindowBoundariesState() {
+    cancelFocusedWindowBoundariesFetch();
+    AnalyticsState.focusedWindowBoundariesByStudyId = new Map();
+  }
+
+  function getFocusedWindowBoundaries(studyId) {
+    const normalizedStudyId = String(studyId || '').trim();
+    if (!normalizedStudyId) return null;
+    if (!AnalyticsState.focusedWindowBoundariesByStudyId.has(normalizedStudyId)) return null;
+    const boundaries = AnalyticsState.focusedWindowBoundariesByStudyId.get(normalizedStudyId);
+    return Array.isArray(boundaries) ? boundaries : [];
+  }
+
+  function normalizeWindowBoundaries(boundaries) {
+    if (!Array.isArray(boundaries)) return [];
+    return boundaries
+      .map((item, index) => {
+        const time = String(item?.time || item?.timestamp || item?.date || '').trim();
+        if (!time) return null;
+        const windowNumber = toFiniteNumber(item?.window_number);
+        const normalizedNumber = windowNumber === null ? null : Math.max(1, Math.round(windowNumber));
+        const label = String(item?.label || '').trim()
+          || (normalizedNumber !== null ? `W${normalizedNumber}` : `W${index + 1}`);
+        return {
+          time,
+          window_id: item?.window_id || null,
+          window_number: normalizedNumber,
+          label,
+        };
+      })
+      .filter(Boolean);
+  }
+
+  function ensureFocusedWindowBoundaries(study) {
+    if (!study || typeof fetchAnalyticsStudyWindowBoundariesRequest !== 'function') return;
+    const studyId = String(study.study_id || '').trim();
+    if (!studyId) return;
+    if (AnalyticsState.focusedWindowBoundariesByStudyId.has(studyId)) return;
+    if (AnalyticsState.focusedWindowBoundariesPendingStudyId === studyId) return;
+
+    cancelFocusedWindowBoundariesFetch();
+    AnalyticsState.focusedWindowBoundariesPendingStudyId = studyId;
+
+    const requestToken = AnalyticsState.focusedWindowBoundariesRequestToken + 1;
+    AnalyticsState.focusedWindowBoundariesRequestToken = requestToken;
+
+    const controller = new AbortController();
+    AnalyticsState.focusedWindowBoundariesAbortController = controller;
+
+    fetchAnalyticsStudyWindowBoundariesRequest(studyId, controller.signal)
+      .then((payload) => {
+        if (requestToken !== AnalyticsState.focusedWindowBoundariesRequestToken) return;
+        if (AnalyticsState.focusedWindowBoundariesPendingStudyId !== studyId) return;
+        const boundaries = normalizeWindowBoundaries(payload?.boundaries);
+        AnalyticsState.focusedWindowBoundariesByStudyId.set(studyId, boundaries);
+      })
+      .catch((error) => {
+        if (controller.signal.aborted || error?.name === 'AbortError') {
+          return;
+        }
+        if (requestToken !== AnalyticsState.focusedWindowBoundariesRequestToken) return;
+        if (AnalyticsState.focusedWindowBoundariesPendingStudyId !== studyId) return;
+        AnalyticsState.focusedWindowBoundariesByStudyId.set(studyId, []);
+        console.warn('Failed to load analytics focused window boundaries', error);
+      })
+      .finally(() => {
+        if (requestToken !== AnalyticsState.focusedWindowBoundariesRequestToken) return;
+        if (AnalyticsState.focusedWindowBoundariesPendingStudyId !== studyId) return;
+        AnalyticsState.focusedWindowBoundariesPendingStudyId = null;
+        AnalyticsState.focusedWindowBoundariesAbortController = null;
+        if (String(AnalyticsState.focusedStudyId || '') === studyId) {
+          renderSelectedStudyChart();
+        }
+      });
+  }
+
   function ensurePortfolioDataForSelection() {
     const focusedStudy = getFocusedStudy();
     const studyIds = focusedStudy ? [] : getSelectedStudyIds();
@@ -465,6 +554,82 @@
     return MISSING_TEXT;
   }
 
+  function formatDuration(seconds) {
+    const totalSeconds = toFiniteNumber(seconds);
+    if (totalSeconds === null || totalSeconds < 0) return '';
+    const rounded = Math.round(totalSeconds);
+    const hours = Math.floor(rounded / 3600);
+    const minutes = Math.floor((rounded % 3600) / 60);
+    const secs = rounded % 60;
+    if (hours > 0) return `${hours}h ${minutes}m ${secs}s`;
+    if (minutes > 0) return `${minutes}m ${secs}s`;
+    return `${secs}s`;
+  }
+
+  function formatSanitizeLabel(settings) {
+    const sanitizeEnabledRaw = settings?.sanitize_enabled;
+    const sanitizeEnabled = sanitizeEnabledRaw === undefined || sanitizeEnabledRaw === null
+      ? null
+      : Boolean(sanitizeEnabledRaw);
+    const sanitizeThresholdRaw = settings?.sanitize_trades_threshold;
+    const sanitizeThreshold = toFiniteNumber(sanitizeThresholdRaw) === null
+      ? 0
+      : Math.max(0, Math.round(Number(sanitizeThresholdRaw)));
+    if (sanitizeEnabled === true) return `On (<= ${sanitizeThreshold})`;
+    if (sanitizeEnabled === false) return 'Off';
+    return MISSING_TEXT;
+  }
+
+  function formatFilterLabel(settings) {
+    const filterMinProfitRaw = settings?.filter_min_profit;
+    const filterMinProfit = filterMinProfitRaw === undefined || filterMinProfitRaw === null
+      ? false
+      : Boolean(filterMinProfitRaw);
+    const minProfitThresholdRaw = settings?.min_profit_threshold;
+    const minProfitThreshold = toFiniteNumber(minProfitThresholdRaw) === null
+      ? null
+      : Math.max(0, Math.round(Number(minProfitThresholdRaw)));
+
+    const scoreFilterEnabledRaw = settings?.score_filter_enabled;
+    const scoreFilterEnabled = scoreFilterEnabledRaw === undefined || scoreFilterEnabledRaw === null
+      ? false
+      : Boolean(scoreFilterEnabledRaw);
+    const scoreThresholdRaw = settings?.score_min_threshold;
+    const scoreThreshold = toFiniteNumber(scoreThresholdRaw) === null
+      ? null
+      : Math.max(0, Math.round(Number(scoreThresholdRaw)));
+
+    const filterParts = [];
+    if (filterMinProfit) {
+      filterParts.push(`Net Profit = ${minProfitThreshold !== null ? minProfitThreshold : 0}`);
+    }
+    if (scoreFilterEnabled) {
+      filterParts.push(`Score = ${scoreThreshold !== null ? scoreThreshold : 0}`);
+    }
+    return filterParts.length ? filterParts.join(', ') : 'Off';
+  }
+
+  function computeRunTimeSeconds(study, wfaSettings) {
+    const explicitRuntime = toFiniteNumber(wfaSettings?.run_time_seconds);
+    if (explicitRuntime !== null) {
+      return Math.max(0, Math.round(explicitRuntime));
+    }
+
+    const createdEpoch = toFiniteNumber(study?.created_at_epoch);
+    const completedEpoch = toFiniteNumber(study?.completed_at_epoch);
+    if (createdEpoch !== null && completedEpoch !== null && completedEpoch >= createdEpoch) {
+      return Math.round(completedEpoch - createdEpoch);
+    }
+
+    const createdAt = Date.parse(String(study?.created_at || '').trim());
+    const completedAt = Date.parse(String(study?.completed_at || '').trim());
+    if (Number.isFinite(createdAt) && Number.isFinite(completedAt) && completedAt >= createdAt) {
+      return Math.round((completedAt - createdAt) / 1000);
+    }
+
+    return null;
+  }
+
   function renderSettingsList(container, rows) {
     if (!container) return;
     container.innerHTML = '';
@@ -524,6 +689,8 @@
           : MISSING_TEXT,
       },
       { key: 'Pruner', val: prunerValue },
+      { key: 'Sanitize Trades', val: formatSanitizeLabel(optunaSettings) },
+      { key: 'Filter', val: formatFilterLabel(optunaSettings) },
       {
         key: 'Workers',
         val: toFiniteNumber(optunaSettings.workers) === null
@@ -567,6 +734,12 @@
             : String(Math.max(0, Math.round(Number(wfaSettings.min_oos_trades)))),
         },
         {
+          key: 'Check Interval',
+          val: toFiniteNumber(wfaSettings.check_interval_trades) === null
+            ? MISSING_TEXT
+            : String(Math.max(0, Math.round(Number(wfaSettings.check_interval_trades)))),
+        },
+        {
           key: 'CUSUM Threshold',
           val: toFiniteNumber(wfaSettings.cusum_threshold) === null
             ? MISSING_TEXT
@@ -586,6 +759,11 @@
         }
       );
     }
+    const runTimeSeconds = computeRunTimeSeconds(study, wfaSettings);
+    wfaRows.push({
+      key: 'WFA Run Time',
+      val: formatDuration(runTimeSeconds) || MISSING_TEXT,
+    });
     renderSettingsList(wfaContainer, wfaRows);
 
     optunaSection.style.display = '';
@@ -641,13 +819,13 @@
     const annTitle = annDisplay.tooltip ? ` title="${annDisplay.tooltip}"` : '';
 
     container.innerHTML = `
-      <div class="summary-card highlight">
-        <div class="value ${netClass}">${formatSignedPercent(netProfit, 2)}</div>
-        <div class="label">NET PROFIT</div>
-      </div>
       <div class="summary-card"${annTitle}>
         <div class="value ${annDisplay.className}">${annDisplay.text}</div>
         <div class="label">ANN.P%</div>
+      </div>
+      <div class="summary-card">
+        <div class="value ${netClass}">${formatSignedPercent(netProfit, 2)}</div>
+        <div class="label">NET PROFIT</div>
       </div>
       <div class="summary-card">
         <div class="value negative">${formatNegativePercent(maxDrawdown, 2)}</div>
@@ -709,8 +887,8 @@
     const selected = getSelectedStudies();
     if (!selected.length) {
       container.innerHTML = `
-        <div class="summary-card highlight"><div class="value">-</div><div class="label">Portfolio Profit</div></div>
         <div class="summary-card"><div class="value">-</div><div class="label">Portfolio Ann.P%</div></div>
+        <div class="summary-card"><div class="value">-</div><div class="label">Portfolio Profit</div></div>
         <div class="summary-card"><div class="value">-</div><div class="label">Portfolio MaxDD</div></div>
         <div class="summary-card"><div class="value">-</div><div class="label">Total Trades</div></div>
         <div class="summary-card"><div class="value">-</div><div class="label">Profitable</div></div>
@@ -767,13 +945,13 @@
     const maxDdText = loadingPrimaryMetrics && portfolioMaxDd === null ? '...' : formatNegativePercent(portfolioMaxDd, 1);
 
     container.innerHTML = `
-      <div class="summary-card highlight">
-        <div class="value ${profitClass}">${profitText}</div>
-        <div class="label">Portfolio Profit</div>
-      </div>
       <div class="summary-card"${annTitleAttr}>
         <div class="value ${annClass}">${annText}</div>
         <div class="label">Portfolio Ann.P%</div>
+      </div>
+      <div class="summary-card">
+        <div class="value ${profitClass}">${profitText}</div>
+        <div class="label">Portfolio Profit</div>
       </div>
       <div class="summary-card">
         <div class="value negative">${maxDdText}</div>
@@ -880,8 +1058,17 @@
         window.AnalyticsEquity.renderEmpty('No stitched OOS equity data for selected study');
         return;
       }
-      window.AnalyticsEquity.renderChart(focusedStudy.equity_curve || [], focusedStudy.equity_timestamps || []);
+      const focusedBoundaries = getFocusedWindowBoundaries(focusedStudy.study_id) || [];
+      ensureFocusedWindowBoundaries(focusedStudy);
+      window.AnalyticsEquity.renderChart(
+        focusedStudy.equity_curve || [],
+        focusedStudy.equity_timestamps || [],
+        { windowBoundaries: focusedBoundaries }
+      );
       return;
+    }
+    if (AnalyticsState.focusedWindowBoundariesPendingStudyId) {
+      cancelFocusedWindowBoundariesFetch();
     }
 
     const selected = getSelectedStudies();
@@ -1072,6 +1259,7 @@
   function clearFocus() {
     if (!AnalyticsState.focusedStudyId) return;
     AnalyticsState.focusedStudyId = null;
+    cancelFocusedWindowBoundariesFetch();
     if (window.AnalyticsTable && typeof window.AnalyticsTable.setFocusedStudyId === 'function') {
       window.AnalyticsTable.setFocusedStudyId(null);
     }
@@ -1209,6 +1397,7 @@
     AnalyticsState.filterContextEpoch += 1;
     AnalyticsState.filterContextSignature = null;
     clearPortfolioState();
+    clearFocusedWindowBoundariesState();
 
     renderDbName();
     renderResearchInfo();

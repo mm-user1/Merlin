@@ -1134,7 +1134,7 @@ function displaySummaryCards(stitchedOOS) {
   const medianProfitClass = medianWindowProfit === null ? '' : (medianWindowProfit >= 0 ? 'positive' : 'negative');
 
   container.innerHTML = `
-    <div class="summary-card highlight">
+    <div class="summary-card">
       <div class="value ${netClass}">
         ${formatSignedPercent(netProfit, 2)}
       </div>

@@ -769,6 +769,19 @@ def _normalize_study_set_name(name: Any) -> str:
     return normalized
 
 
+def _study_set_name_with_suffix(base_name: str, suffix: int) -> str:
+    candidate = str(base_name or "").strip()
+    if suffix <= 0:
+        return candidate
+
+    suffix_text = f" ({int(suffix)})"
+    if len(candidate) + len(suffix_text) <= 120:
+        return f"{candidate}{suffix_text}"
+
+    trimmed = candidate[: max(1, 120 - len(suffix_text))].rstrip()
+    return f"{trimmed}{suffix_text}"
+
+
 def _normalize_set_study_ids(study_ids: Any) -> List[str]:
     if study_ids is None:
         return []
@@ -892,17 +905,25 @@ def create_study_set(name: Any, study_ids: Any, db_path: Optional[Path] = None) 
         ).fetchone()
         next_order = int(next_order_row["next_order"] if next_order_row else 0)
 
-        try:
-            cursor = conn.execute(
-                """
-                INSERT INTO study_sets (name, sort_order)
-                VALUES (?, ?)
-                """,
-                (normalized_name, next_order),
-            )
-        except sqlite3.IntegrityError as exc:
-            raise ValueError("Set with this name already exists.") from exc
+        cursor = None
+        max_attempts = 1000
+        for suffix in range(max_attempts + 1):
+            candidate_name = _study_set_name_with_suffix(normalized_name, suffix)
+            try:
+                cursor = conn.execute(
+                    """
+                    INSERT INTO study_sets (name, sort_order)
+                    VALUES (?, ?)
+                    """,
+                    (candidate_name, next_order),
+                )
+                break
+            except sqlite3.IntegrityError:
+                if suffix >= max_attempts:
+                    raise ValueError("Failed to resolve unique set name.") from None
 
+        if cursor is None:
+            raise RuntimeError("Failed to create study set.")
         set_id = int(cursor.lastrowid)
         conn.executemany(
             """
