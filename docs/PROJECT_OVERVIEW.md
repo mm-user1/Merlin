@@ -41,6 +41,7 @@ project-root/
 |   |-- test_dsr.py            # Deflated Sharpe Ratio tests
 |   |-- test_oos_selection.py  # OOS selection tests
 |   |-- test_stress_test.py    # Stress test tests
+|   |-- test_analytics.py          # Analytics equity aggregation tests
 |   |-- test_multiprocess_score.py    # Multi-process scoring tests
 |   |-- test_optuna_sanitization.py   # Optuna sanitization tests
 |   `-- test_score_normalization.py   # Score normalization tests
@@ -51,6 +52,7 @@ project-root/
     |   |-- optuna_engine.py     # Optuna optimization engine
     |   |-- walkforward_engine.py # Walk-forward analysis engine
     |   |-- metrics.py           # Metrics calculation
+    |   |-- analytics.py         # Portfolio equity aggregation for Analytics page
     |   |-- storage.py           # SQLite database functions
     |   |-- export.py            # Trade CSV export functions
     |   |-- post_process.py      # Forward Test and DSR validation
@@ -109,6 +111,7 @@ project-root/
     |       |   |-- analytics-equity.js   # Analytics equity curve rendering
     |       |   |-- analytics-filters.js  # Analytics filter panel management
     |       |   |-- analytics-table.js    # Analytics study table rendering
+    |       |   |-- analytics-sets.js     # Analytics study sets management
     |       |   `-- utils.js              # Shared utility functions
     |       `-- css/
     |           `-- style.css # Light theme styles
@@ -164,7 +167,8 @@ project-root/
 | `optuna_engine.py` | Optuna optimization engine: single/multi-objective, constraints, samplers (TPE/Random/NSGA), pruning (single-objective only), and database persistence |
 | `walkforward_engine.py` | Rolling walk-forward analysis with calendar-based IS/OOS windows, stitched OOS equity, annualized WFE, adaptive re-optimization triggers (CUSUM, drawdown, inactivity), database persistence |
 | `metrics.py` | Calculate BasicMetrics and AdvancedMetrics (Sharpe, RoMaD, Profit Factor, SQN, Ulcer Index, Consistency) |
-| `storage.py` | SQLite database operations: save/load studies, manage trials/windows, handle CSV file references, multi-database management, queue state persistence |
+| `analytics.py` | Portfolio equity aggregation: equal-weight curve merging, forward-fill alignment, annualized profit, max drawdown for aggregated curves |
+| `storage.py` | SQLite database operations: save/load studies, manage trials/windows, handle CSV file references, multi-database management, study sets CRUD, queue state persistence |
 | `export.py` | Export trade history to CSV (TradingView format) |
 | `post_process.py` | Forward Test validation, DSR (Deflated Sharpe Ratio) analysis, profit degradation metrics |
 | `testing.py` | OOS selection utilities, stress test candidate filtering, comparison metrics |
@@ -212,6 +216,7 @@ Strategies auto-discovered by `strategies/__init__.py` if both files exist.
 - `static/js/analytics-equity.js` - Analytics equity curve SVG rendering
 - `static/js/analytics-filters.js` - Analytics filter panel (strategy/symbol/TF/WFA/IS-OOS)
 - `static/js/analytics-table.js` - Analytics sortable study table with checkbox selection
+- `static/js/analytics-sets.js` - Analytics study sets management (save/load/reorder named collections)
 - `static/js/api.js` - API client functions for all pages
 - `static/css/style.css` - Light theme styling for all pages
 
@@ -293,6 +298,15 @@ SQLite database stored in `src/storage/` directory. Multiple `.db` files support
 - Unique constraint: (study_id, window_number)
 - Fields: best parameters (JSON), IS/OOS metrics, IS/OOS equity curves (JSON arrays), WFE, oos_winning_trades
 
+**study_sets** - Named collections of WFA studies for Analytics page
+- Primary key: `id` (autoincrement)
+- Unique constraint: case-insensitive `name`
+- Fields: name, sort_order, created_at
+
+**study_set_members** - Many-to-many link between study sets and studies
+- Unique constraint: (set_id, study_id)
+- Foreign keys: set_id -> study_sets (CASCADE), study_id -> studies (CASCADE)
+
 ### API Endpoints
 
 #### Page Routes
@@ -355,6 +369,18 @@ SQLite database stored in `src/storage/` directory. Multiple `.db` files support
 | Endpoint | Method | Purpose |
 |----------|--------|---------|
 | `/api/analytics/summary` | GET | WFA studies summary with filters and aggregated metrics |
+| `/api/analytics/equity` | POST | Aggregate equity curves for selected study IDs |
+| `/api/analytics/equity/batch` | POST | Batch aggregate equity curves for multiple groups |
+| `/api/analytics/studies/<study_id>/window-boundaries` | GET | Get WFA window boundary timestamps |
+
+#### Study Sets
+| Endpoint | Method | Purpose |
+|----------|--------|---------|
+| `/api/analytics/sets` | GET | List all study sets |
+| `/api/analytics/sets` | POST | Create a new study set |
+| `/api/analytics/sets/<set_id>` | PUT | Update study set (name, study_ids, sort_order) |
+| `/api/analytics/sets/<set_id>` | DELETE | Delete a study set |
+| `/api/analytics/sets/reorder` | PUT | Reorder study sets |
 
 #### Strategy Configuration
 | Endpoint | Method | Purpose |

@@ -53,6 +53,7 @@ src/
 |   |-- optuna_engine.py      # Optimization, OptimizationResult, OptunaConfig
 |   |-- walkforward_engine.py # WFA orchestration
 |   |-- metrics.py            # BasicMetrics, AdvancedMetrics calculation
+|   |-- analytics.py          # Portfolio equity aggregation for Analytics page
 |   |-- storage.py            # SQLite database operations
 |   |-- export.py             # Trade CSV export functions
 |   |-- post_process.py       # Forward Test and DSR validation
@@ -103,6 +104,7 @@ src/
         |   |-- analytics-equity.js   # Analytics equity curve rendering
         |   |-- analytics-filters.js  # Analytics filter panel management
         |   |-- analytics-table.js    # Analytics study table rendering
+        |   |-- analytics-sets.js     # Analytics study sets management
         |   `-- utils.js              # Shared utility functions
         `-- css/
 ```
@@ -115,6 +117,7 @@ src/
 | `BasicMetrics`, `AdvancedMetrics` | `metrics.py` |
 | `OptimizationResult`, `OptunaConfig` | `optuna_engine.py` |
 | `WFConfig`, `WFResult`, `WindowResult` | `walkforward_engine.py` |
+| `aggregate_equity_curves` | `analytics.py` |
 | Strategy params dataclass | Each strategy's `strategy.py` |
 
 ## Parameter Naming Rules
@@ -253,6 +256,7 @@ pytest tests/ -v
 - `test_dsr.py` - Deflated Sharpe Ratio tests
 - `test_oos_selection.py` - OOS selection tests
 - `test_stress_test.py` - Stress test tests
+- `test_analytics.py` - Analytics equity aggregation tests
 - `test_adaptive_wfa.py` - Adaptive WFA trigger detection tests
 - `test_db_management.py` - Multi-database management tests
 
@@ -315,6 +319,9 @@ python tools/generate_baseline_s01.py
 **Analytics Page (`/analytics` - analytics.html):**
 - WFA-focused research and analysis
 - Multi-study equity curve comparison
+- Aggregated (portfolio) equity curve with annualized profit and max drawdown
+- Focused study mode with WFA window boundary overlays on equity chart
+- Study sets: save/load/reorder named collections of studies (persisted in DB)
 - Study summary table with sorting and filtering
 - Filter by strategy, symbol, timeframe, WFA mode, IS/OOS periods
 - Aggregated metrics: profit %, max DD %, win rate, WFE %, profitable windows %
@@ -342,6 +349,7 @@ python tools/generate_baseline_s01.py
 - **analytics-equity.js**: Analytics equity curve SVG rendering
 - **analytics-filters.js**: Analytics filter panel (strategy/symbol/TF/WFA/IS-OOS)
 - **analytics-table.js**: Analytics sortable study table with checkbox selection
+- **analytics-sets.js**: Analytics study sets management (save/load/reorder named collections)
 - **utils.js**: Shared utility functions
 - Forms generated dynamically from `config.json`
 - Strategy dropdown auto-populated from discovered strategies
@@ -404,6 +412,16 @@ python tools/generate_baseline_s01.py
 
 ### Analytics
 - `GET /api/analytics/summary` - WFA studies summary with filters and aggregated metrics
+- `POST /api/analytics/equity` - Aggregate equity curves for selected study IDs
+- `POST /api/analytics/equity/batch` - Batch aggregate equity curves for multiple groups
+- `GET /api/analytics/studies/<study_id>/window-boundaries` - Get WFA window boundary timestamps
+
+### Study Sets
+- `GET /api/analytics/sets` - List all study sets
+- `POST /api/analytics/sets` - Create a new study set
+- `PUT /api/analytics/sets/<set_id>` - Update study set (name, study_ids, sort_order)
+- `DELETE /api/analytics/sets/<set_id>` - Delete a study set
+- `PUT /api/analytics/sets/reorder` - Reorder study sets
 
 ### Strategy & Presets
 - `GET /api/strategies` - List available strategies
@@ -443,6 +461,8 @@ python tools/generate_baseline_s01.py
 | Start page logic | `src/ui/static/js/main.js` |
 | Results page logic | `src/ui/static/js/results-controller.js` (orchestration) |
 | Analytics page logic | `src/ui/static/js/analytics.js` |
+| Analytics study sets | `src/ui/static/js/analytics-sets.js` |
+| Equity aggregation | `src/core/analytics.py` |
 | Queue management | `src/ui/static/js/queue.js` |
 | Flask API entrypoint | `src/ui/server.py` |
 | Flask services/helpers | `src/ui/server_services.py` |

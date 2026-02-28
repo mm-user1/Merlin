@@ -13,7 +13,8 @@ Config-driven backtesting and Optuna optimization platform for cryptocurrency tr
 - **Robust trial handling** - If an objective returns NaN, the trial is marked FAIL (study continues) and failed trials are ignored by samplers.
 - **Walk-forward analysis** - IS/OOS validation with stitched equity curves and WFE metrics, fixed and adaptive modes
 - **Adaptive WFA** - Re-optimization triggers based on CUSUM, drawdown degradation, and inactivity detection
-- **WFA Analytics** - Research-focused analytics page with multi-study comparison, filtering, and equity visualization
+- **WFA Analytics** - Research-focused analytics page with multi-study comparison, filtering, equity visualization, and aggregated portfolio curves
+- **Study sets** - Save named collections of WFA studies for quick recall and comparison on Analytics page
 - **Scheduled run queue** - Queue multiple optimization runs for sequential execution
 - **Three-page UI** - Start page for configuration, Results page for studies management, Analytics page for WFA research
 - **On-demand trade export** - Generate TradingView-compatible CSV for IS, Forward Test, OOS Test, Manual Test, and WFA exports
@@ -37,7 +38,7 @@ Open http://127.0.0.1:5000 in your browser.
 ```
 project-root/
 |-- src/
-|   |-- core/           # Backtest, Optuna, WFA engines + metrics + database + export + post-process + testing
+|   |-- core/           # Backtest, Optuna, WFA engines + metrics + analytics + database + export + post-process + testing
 |   |-- indicators/     # MA (11 types), ATR, RSI, StochRSI
 |   |-- strategies/     # s01_trailing_ma, s03_reversal_v10, s04_stochrsi
 |   |-- storage/        # SQLite databases (multiple .db files) + queue state
@@ -75,7 +76,10 @@ project-root/
 ### Analytics Page (WFA Research)
 1. Filter WFA studies by strategy, symbol, timeframe, WFA mode, IS/OOS periods
 2. Compare multi-study equity curves
-3. Sort and analyze aggregated metrics (profit, drawdown, WFE, win rate)
+3. View aggregated (portfolio) equity curve with annualized profit and max drawdown
+4. Focus on a single study to see WFA window boundary overlays
+5. Save and load study sets for quick recall
+6. Sort and analyze aggregated metrics (profit, drawdown, WFE, win rate)
 
 ## CLI Backtest
 

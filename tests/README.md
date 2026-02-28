@@ -38,6 +38,7 @@ pytest tests/ --cov=src --cov-report=html
 | `test_dsr.py` | Deflated Sharpe Ratio calculation tests |
 | `test_oos_selection.py` | OOS candidate selection tests |
 | `test_stress_test.py` | Stress test module tests |
+| `test_analytics.py` | Analytics equity aggregation tests (portfolio curves, annualized profit) |
 | `test_multiprocess_score.py` | Multi-process scoring tests |
 | `test_optuna_sanitization.py` | Optuna sanitization tests |
 | `test_score_normalization.py` | Score normalization tests |
