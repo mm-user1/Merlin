@@ -1,9 +1,9 @@
 import io
 import json
 import math
+import os
 import re
 import sys
-import tempfile
 import threading
 import time
 from datetime import datetime, timezone
@@ -67,6 +67,337 @@ LAST_OPTIMIZATION_STATE: Dict[str, Any] = {
     "status": "idle",
     "updated_at": None,
 }
+CANCELLED_RUNS_TTL_SECONDS = 24 * 60 * 60
+CANCELLED_RUNS_MAX_SIZE = 2048
+RUN_ID_PATTERN = re.compile(r"^[A-Za-z0-9._:-]{1,128}$")
+CANCELLED_RUNS: Dict[str, float] = {}
+
+
+def _is_path_within_root(path: Path, root: Path) -> bool:
+    path_norm = os.path.normcase(str(path))
+    root_norm = os.path.normcase(str(root))
+    try:
+        return os.path.commonpath([path_norm, root_norm]) == root_norm
+    except ValueError:
+        return False
+
+
+def _collect_allowed_csv_roots(default_root: str) -> List[Path]:
+    env_value = os.getenv("MERLIN_CSV_ALLOWED_ROOTS", "")
+    raw_values = [item.strip() for item in re.split(r"[;\r\n]+", env_value) if item.strip()]
+    if default_root:
+        raw_values.append(default_root)
+
+    roots: List[Path] = []
+    seen: set[str] = set()
+    for raw in raw_values:
+        candidate = Path(raw).expanduser()
+        if not candidate.is_absolute():
+            candidate = Path.cwd() / candidate
+        try:
+            resolved = candidate.resolve(strict=False)
+        except OSError:
+            continue
+        key = os.path.normcase(str(resolved))
+        if key in seen:
+            continue
+        seen.add(key)
+        roots.append(resolved)
+    return roots
+
+
+DEFAULT_CSV_ROOT = (
+    os.getenv("MERLIN_DEFAULT_CSV_ROOT")
+    or r"C:\Users\mt\Desktop\Strategy\S_Python\Market Data_PY"
+).strip()
+CSV_ALLOWED_ROOTS = _collect_allowed_csv_roots(DEFAULT_CSV_ROOT)
+# Kept as a public flag for API metadata, but absolute csvPath is now mandatory.
+STRICT_CSV_PATH_MODE = True
+QUEUE_STATE_PATTERN = re.compile(r"^[A-Za-z]:[\\/]|^\\\\[^\\]|^/")
+QUEUE_STORAGE_FILE = Path(__file__).resolve().parent.parent / "storage" / "queue.json"
+
+
+def _is_csv_path_allowed(path: Path) -> bool:
+    if not CSV_ALLOWED_ROOTS:
+        return True
+    for root in CSV_ALLOWED_ROOTS:
+        if _is_path_within_root(path, root):
+            return True
+    return False
+
+
+def _resolve_csv_directory(raw_path: Optional[str]) -> Path:
+    raw_value = str(raw_path or DEFAULT_CSV_ROOT or "").strip()
+    if not raw_value:
+        raise ValueError("CSV directory path is empty.")
+    candidate = Path(raw_value).expanduser()
+    if not candidate.is_absolute():
+        candidate = Path.cwd() / candidate
+    try:
+        resolved = candidate.resolve(strict=True)
+    except FileNotFoundError as exc:
+        raise FileNotFoundError(str(candidate)) from exc
+    if not resolved.is_dir():
+        raise NotADirectoryError(str(resolved))
+    if not _is_csv_path_allowed(resolved):
+        raise PermissionError("CSV directory is outside allowed roots.")
+    return resolved
+
+
+def _list_csv_directory(raw_path: Optional[str]) -> Dict[str, Any]:
+    directory = _resolve_csv_directory(raw_path)
+    entries: List[Dict[str, Any]] = []
+
+    for child in directory.iterdir():
+        try:
+            stat = child.stat()
+        except OSError:
+            continue
+
+        if child.is_dir():
+            entries.append(
+                {
+                    "name": child.name,
+                    "path": str(child),
+                    "kind": "dir",
+                    "size": None,
+                    "modified": datetime.fromtimestamp(stat.st_mtime, tz=timezone.utc).isoformat(),
+                }
+            )
+            continue
+
+        if not child.is_file() or child.suffix.lower() != ".csv":
+            continue
+
+        entries.append(
+            {
+                "name": child.name,
+                "path": str(child),
+                "kind": "file",
+                "size": int(stat.st_size),
+                "modified": datetime.fromtimestamp(stat.st_mtime, tz=timezone.utc).isoformat(),
+            }
+        )
+
+    entries.sort(key=lambda item: (0 if item["kind"] == "dir" else 1, item["name"].lower()))
+
+    parent_path: Optional[str] = None
+    parent = directory.parent
+    if parent != directory and _is_csv_path_allowed(parent):
+        parent_path = str(parent)
+
+    return {
+        "current_path": str(directory),
+        "parent_path": parent_path,
+        "entries": entries,
+        "default_root": DEFAULT_CSV_ROOT,
+        "strict_path_mode": STRICT_CSV_PATH_MODE,
+        "allowed_roots": [str(root) for root in CSV_ALLOWED_ROOTS],
+    }
+
+
+def _default_queue_state() -> Dict[str, Any]:
+    return {
+        "items": [],
+        "nextIndex": 1,
+        "runtime": {
+            "active": False,
+            "updatedAt": 0,
+        },
+    }
+
+
+def _queue_storage_file_path() -> Path:
+    return QUEUE_STORAGE_FILE
+
+
+def _is_absolute_filesystem_path(raw_path: Any) -> bool:
+    value = str(raw_path or "").strip()
+    if not value:
+        return False
+    return bool(QUEUE_STATE_PATTERN.match(value))
+
+
+def _normalize_queue_source(raw_source: Any) -> Optional[Dict[str, str]]:
+    if isinstance(raw_source, str):
+        path = raw_source
+    elif isinstance(raw_source, dict):
+        path = raw_source.get("path") or raw_source.get("csvPath") or ""
+    else:
+        return None
+
+    normalized_path = str(path or "").strip()
+    if not _is_absolute_filesystem_path(normalized_path):
+        return None
+
+    return {
+        "type": "path",
+        "path": normalized_path,
+    }
+
+
+def _normalize_queue_sources(raw_sources: Any) -> List[Dict[str, str]]:
+    sources: List[Dict[str, str]] = []
+    if not isinstance(raw_sources, list):
+        return sources
+
+    for raw_source in raw_sources:
+        normalized = _normalize_queue_source(raw_source)
+        if normalized:
+            sources.append(normalized)
+    return sources
+
+
+def _normalize_queue_runtime(raw_runtime: Any) -> Dict[str, Any]:
+    if not isinstance(raw_runtime, dict):
+        return {"active": False, "updatedAt": 0}
+
+    try:
+        updated_at = int(raw_runtime.get("updatedAt") or 0)
+    except (TypeError, ValueError):
+        updated_at = 0
+
+    return {
+        "active": bool(raw_runtime.get("active")),
+        "updatedAt": max(0, updated_at),
+    }
+
+
+def _compute_queue_next_index(items: List[Dict[str, Any]], candidate_next_index: Any) -> int:
+    if not items:
+        return 1
+
+    max_index = max(int(item.get("index") or 0) for item in items)
+    try:
+        candidate = int(candidate_next_index)
+    except (TypeError, ValueError):
+        candidate = 0
+    if candidate > max_index:
+        return candidate
+    return max(1, max_index + 1)
+
+
+def _normalize_queue_item(raw_item: Any, fallback_index: int) -> Optional[Dict[str, Any]]:
+    if not isinstance(raw_item, dict):
+        return None
+
+    sources = _normalize_queue_sources(raw_item.get("sources"))
+    if not sources:
+        return None
+
+    try:
+        index = int(raw_item.get("index"))
+    except (TypeError, ValueError):
+        index = fallback_index
+    index = max(1, index)
+
+    item = json.loads(json.dumps(raw_item))
+    item["index"] = index
+    item["sources"] = sources
+
+    try:
+        source_cursor = int(item.get("sourceCursor") or 0)
+    except (TypeError, ValueError):
+        source_cursor = 0
+    item["sourceCursor"] = max(0, min(len(sources), source_cursor))
+
+    try:
+        success_count = int(item.get("successCount") or 0)
+    except (TypeError, ValueError):
+        success_count = 0
+    item["successCount"] = max(0, success_count)
+
+    try:
+        failure_count = int(item.get("failureCount") or 0)
+    except (TypeError, ValueError):
+        failure_count = 0
+    item["failureCount"] = max(0, failure_count)
+
+    label = str(item.get("label") or "").strip()
+    if not label:
+        item["label"] = f"#{index}"
+
+    return item
+
+
+def _normalize_queue_payload(raw_payload: Any) -> Dict[str, Any]:
+    if not isinstance(raw_payload, dict):
+        return _default_queue_state()
+
+    raw_items = raw_payload.get("items")
+    items: List[Dict[str, Any]] = []
+    if isinstance(raw_items, list):
+        for idx, raw_item in enumerate(raw_items):
+            normalized_item = _normalize_queue_item(raw_item, idx + 1)
+            if normalized_item:
+                items.append(normalized_item)
+
+    next_index = _compute_queue_next_index(
+        items,
+        raw_payload.get("nextIndex"),
+    )
+
+    runtime = _normalize_queue_runtime(raw_payload.get("runtime"))
+    if not items:
+        runtime = {"active": False, "updatedAt": 0}
+
+    return {
+        "items": items,
+        "nextIndex": next_index,
+        "runtime": runtime,
+    }
+
+
+def _load_queue_state() -> Dict[str, Any]:
+    path = _queue_storage_file_path()
+    try:
+        raw = path.read_text(encoding="utf-8")
+    except FileNotFoundError:
+        return _default_queue_state()
+
+    try:
+        parsed = json.loads(raw)
+    except json.JSONDecodeError:
+        try:
+            path.unlink()
+        except OSError:
+            pass
+        return _default_queue_state()
+
+    normalized = _normalize_queue_payload(parsed)
+    if not normalized.get("items"):
+        try:
+            path.unlink()
+        except FileNotFoundError:
+            pass
+    return normalized
+
+
+def _save_queue_state(raw_payload: Any) -> Dict[str, Any]:
+    normalized = _normalize_queue_payload(raw_payload)
+    path = _queue_storage_file_path()
+
+    if not normalized.get("items"):
+        try:
+            path.unlink()
+        except FileNotFoundError:
+            pass
+        return _default_queue_state()
+
+    path.parent.mkdir(parents=True, exist_ok=True)
+    tmp_path = path.with_name(path.name + ".tmp")
+    tmp_path.write_text(json.dumps(normalized, ensure_ascii=False), encoding="utf-8")
+    os.replace(tmp_path, path)
+    return normalized
+
+
+def _clear_queue_state() -> Dict[str, Any]:
+    path = _queue_storage_file_path()
+    try:
+        path.unlink()
+    except FileNotFoundError:
+        pass
+    return _default_queue_state()
 
 
 
@@ -91,17 +422,58 @@ def _get_optimization_state() -> Dict[str, Any]:
         return json.loads(json.dumps(LAST_OPTIMIZATION_STATE))
 
 
-def _persist_csv_upload(file_storage) -> str:
-    temp_dir = Path(tempfile.gettempdir()) / "merlin_uploads"
-    temp_dir.mkdir(exist_ok=True)
-    suffix = Path(file_storage.filename or "upload.csv").suffix or ".csv"
-    temp_path = temp_dir / f"upload_{int(time.time())}_{id(file_storage)}{suffix}"
-    file_storage.seek(0)
-    content = file_storage.read()
-    if isinstance(content, str):
-        content = content.encode("utf-8")
-    temp_path.write_bytes(content)
-    return str(temp_path)
+def _normalize_run_id(raw_value: Any) -> str:
+    value = str(raw_value or "").strip()
+    if not value:
+        return ""
+    if RUN_ID_PATTERN.fullmatch(value):
+        return value
+    return ""
+
+
+def _cleanup_cancelled_runs_locked(now_ts: Optional[float] = None) -> None:
+    if not CANCELLED_RUNS:
+        return
+
+    current = float(time.time() if now_ts is None else now_ts)
+    ttl_cutoff = current - CANCELLED_RUNS_TTL_SECONDS
+    stale_keys = [run_id for run_id, timestamp in CANCELLED_RUNS.items() if timestamp < ttl_cutoff]
+    for run_id in stale_keys:
+        CANCELLED_RUNS.pop(run_id, None)
+
+    overflow = len(CANCELLED_RUNS) - CANCELLED_RUNS_MAX_SIZE
+    if overflow <= 0:
+        return
+
+    for run_id, _ in sorted(CANCELLED_RUNS.items(), key=lambda item: item[1])[:overflow]:
+        CANCELLED_RUNS.pop(run_id, None)
+
+
+def _register_cancelled_run(run_id: str) -> None:
+    normalized_run_id = _normalize_run_id(run_id)
+    if not normalized_run_id:
+        return
+    with OPTIMIZATION_STATE_LOCK:
+        _cleanup_cancelled_runs_locked()
+        CANCELLED_RUNS[normalized_run_id] = time.time()
+
+
+def _clear_cancelled_run(run_id: str) -> None:
+    normalized_run_id = _normalize_run_id(run_id)
+    if not normalized_run_id:
+        return
+    with OPTIMIZATION_STATE_LOCK:
+        _cleanup_cancelled_runs_locked()
+        CANCELLED_RUNS.pop(normalized_run_id, None)
+
+
+def _is_run_cancelled(run_id: str) -> bool:
+    normalized_run_id = _normalize_run_id(run_id)
+    if not normalized_run_id:
+        return False
+    with OPTIMIZATION_STATE_LOCK:
+        _cleanup_cancelled_runs_locked()
+        return normalized_run_id in CANCELLED_RUNS
 
 
 def _parse_warmup_bars(raw_value: Any, default: int = 1000) -> int:
@@ -117,7 +489,6 @@ def _execute_backtest_request(strategy_id: str) -> Tuple[Optional[Dict[str, Any]
 
     warmup_bars = _parse_warmup_bars(request.form.get("warmupBars", "1000"))
 
-    csv_file = request.files.get("file")
     csv_path_raw = (request.form.get("csvPath") or "").strip()
     data_source = None
     opened_file = None
@@ -133,28 +504,28 @@ def _execute_backtest_request(strategy_id: str) -> Tuple[Optional[Dict[str, Any]
             pass
         opened_file = None
 
-    if csv_file and csv_file.filename:
-        data_source = csv_file
-        csv_name = csv_file.filename
-    elif csv_path_raw:
-        try:
-            resolved_path = _resolve_csv_path(csv_path_raw)
-        except FileNotFoundError:
-            return None, ("CSV file not found.", HTTPStatus.BAD_REQUEST)
-        except IsADirectoryError:
-            return None, ("CSV path must point to a file.", HTTPStatus.BAD_REQUEST)
-        except ValueError:
-            return None, ("CSV file is required.", HTTPStatus.BAD_REQUEST)
-        except OSError:
-            return None, ("Failed to access CSV file.", HTTPStatus.BAD_REQUEST)
-        try:
-            opened_file = resolved_path.open("rb")
-        except OSError:
-            return None, ("Failed to access CSV file.", HTTPStatus.BAD_REQUEST)
-        data_source = opened_file
-        csv_name = resolved_path.name
-    else:
-        return None, ("CSV file is required.", HTTPStatus.BAD_REQUEST)
+    if not csv_path_raw:
+        return None, ("CSV path is required.", HTTPStatus.BAD_REQUEST)
+
+    try:
+        resolved_path = _resolve_csv_path(csv_path_raw)
+    except FileNotFoundError:
+        return None, ("CSV file not found.", HTTPStatus.BAD_REQUEST)
+    except IsADirectoryError:
+        return None, ("CSV path must point to a file.", HTTPStatus.BAD_REQUEST)
+    except PermissionError as exc:
+        return None, (str(exc), HTTPStatus.FORBIDDEN)
+    except ValueError as exc:
+        message = str(exc).strip() or "CSV path is required."
+        return None, (message, HTTPStatus.BAD_REQUEST)
+    except OSError:
+        return None, ("Failed to access CSV file.", HTTPStatus.BAD_REQUEST)
+    try:
+        opened_file = resolved_path.open("rb")
+    except OSError:
+        return None, ("Failed to access CSV file.", HTTPStatus.BAD_REQUEST)
+    data_source = opened_file
+    csv_name = resolved_path.name
 
     payload_raw = request.form.get("payload", "{}")
     try:
@@ -888,13 +1259,15 @@ def _resolve_csv_path(raw_path: str) -> Path:
         raise ValueError("CSV path is empty.")
     candidate = Path(raw_value).expanduser()
     if not candidate.is_absolute():
-        candidate = Path.cwd() / candidate
+        raise ValueError("CSV path must be absolute.")
     try:
         resolved = candidate.resolve(strict=True)
     except FileNotFoundError as exc:
         raise FileNotFoundError(str(candidate)) from exc
     if not resolved.is_file():
         raise IsADirectoryError(str(resolved))
+    if not _is_csv_path_allowed(resolved):
+        raise PermissionError("CSV path is outside allowed roots.")
     return resolved
 
 
@@ -969,22 +1342,79 @@ def _resolve_wfa_period(
     window: Dict[str, Any],
     period: str,
 ) -> Tuple[Optional[str], Optional[str], Optional[str]]:
+    def _normalize_boundary(value: Any) -> Optional[str]:
+        if value in (None, ""):
+            return None
+        if hasattr(value, "isoformat"):
+            return value.isoformat()
+        return str(value)
+
+    def _resolve_boundary(*, ts_key: str, date_key: str, legacy_key: Optional[str] = None) -> Optional[str]:
+        exact = _normalize_boundary(window.get(ts_key))
+        if exact:
+            return exact
+        date_value = _normalize_boundary(window.get(date_key))
+        if date_value:
+            return date_value
+        if legacy_key:
+            return _normalize_boundary(window.get(legacy_key))
+        return None
+
     period = (period or "").lower()
     if period == "optuna_is":
-        start = window.get("optimization_start_date") or window.get("is_start_date")
-        end = window.get("optimization_end_date") or window.get("is_end_date")
+        start = _resolve_boundary(
+            ts_key="optimization_start_ts",
+            date_key="optimization_start_date",
+        ) or _resolve_boundary(
+            ts_key="is_start_ts",
+            date_key="is_start_date",
+        )
+        end = _resolve_boundary(
+            ts_key="optimization_end_ts",
+            date_key="optimization_end_date",
+        ) or _resolve_boundary(
+            ts_key="is_end_ts",
+            date_key="is_end_date",
+        )
     elif period == "is":
-        start = window.get("is_start_date")
-        end = window.get("is_end_date")
+        start = _resolve_boundary(
+            ts_key="is_start_ts",
+            date_key="is_start_date",
+        )
+        end = _resolve_boundary(
+            ts_key="is_end_ts",
+            date_key="is_end_date",
+        )
     elif period == "ft":
-        start = window.get("ft_start_date")
-        end = window.get("ft_end_date")
+        start = _resolve_boundary(
+            ts_key="ft_start_ts",
+            date_key="ft_start_date",
+        )
+        end = _resolve_boundary(
+            ts_key="ft_end_ts",
+            date_key="ft_end_date",
+        )
     elif period == "oos":
-        start = window.get("oos_start_date")
-        end = window.get("oos_end_date")
+        start = _resolve_boundary(
+            ts_key="oos_start_ts",
+            date_key="oos_start_date",
+            legacy_key="oos_start",
+        )
+        end = _resolve_boundary(
+            ts_key="oos_end_ts",
+            date_key="oos_end_date",
+            legacy_key="oos_end",
+        )
     elif period == "both":
-        start = window.get("is_start_date")
-        end = window.get("oos_end_date")
+        start = _resolve_boundary(
+            ts_key="is_start_ts",
+            date_key="is_start_date",
+        )
+        end = _resolve_boundary(
+            ts_key="oos_end_ts",
+            date_key="oos_end_date",
+            legacy_key="oos_end",
+        )
     else:
         return None, None, "Invalid period."
 

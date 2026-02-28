@@ -1,5 +1,6 @@
 import json
 import sys
+import time
 from pathlib import Path
 
 import pandas as pd
@@ -7,10 +8,14 @@ import pandas as pd
 sys.path.insert(0, str(Path(__file__).parent.parent / "src"))
 
 from core.storage import (
+    create_study_set,
     get_db_connection,
+    list_study_sets,
     load_study_from_db,
     load_wfa_window_trials,
+    reorder_study_sets,
     save_wfa_study_to_db,
+    update_study_set,
 )
 from core.walkforward_engine import OOSStitchedResult, WFConfig, WFResult, WindowResult
 
@@ -33,6 +38,7 @@ def _build_dummy_wfa_result():
         oos_net_profit_pct=2.0,
         oos_max_drawdown_pct=0.7,
         oos_total_trades=2,
+        oos_winning_trades=1,
         oos_equity_curve=[100.0, 102.0],
         oos_timestamps=[
             pd.Timestamp("2025-01-11", tz="UTC"),
@@ -49,7 +55,7 @@ def _build_dummy_wfa_result():
         is_pareto_optimal=True,
         constraints_satisfied=False,
         is_win_rate=50.0,
-        oos_win_rate=60.0,
+        oos_win_rate=50.0,
         optuna_is_trials=[
             {
                 "trial_number": 1,
@@ -69,7 +75,7 @@ def _build_dummy_wfa_result():
         max_drawdown_pct=0.7,
         total_trades=2,
         wfe=100.0,
-        oos_win_rate=60.0,
+        oos_win_rate=100.0,
         equity_curve=[100.0, 102.0],
         timestamps=[
             pd.Timestamp("2025-01-11", tz="UTC"),
@@ -99,6 +105,18 @@ def test_wfa_window_trials_table_created():
         assert cursor.fetchone() is not None
 
 
+def test_study_sets_tables_created():
+    with get_db_connection() as conn:
+        sets_table = conn.execute(
+            "SELECT name FROM sqlite_master WHERE type='table' AND name='study_sets'"
+        ).fetchone()
+        members_table = conn.execute(
+            "SELECT name FROM sqlite_master WHERE type='table' AND name='study_set_members'"
+        ).fetchone()
+        assert sets_table is not None
+        assert members_table is not None
+
+
 def test_wfa_window_new_columns():
     with get_db_connection() as conn:
         cursor = conn.execute("PRAGMA table_info(wfa_windows)")
@@ -106,9 +124,21 @@ def test_wfa_window_new_columns():
     assert "best_params_source" in columns
     assert "available_modules" in columns
     assert "optimization_start_date" in columns
+    assert "optimization_start_ts" in columns
     assert "ft_start_date" in columns
+    assert "ft_start_ts" in columns
     assert "is_pareto_optimal" in columns
     assert "constraints_satisfied" in columns
+    assert "is_start_ts" in columns
+    assert "is_end_ts" in columns
+    assert "oos_start_ts" in columns
+    assert "oos_end_ts" in columns
+    assert "trigger_type" in columns
+    assert "cusum_final" in columns
+    assert "cusum_threshold" in columns
+    assert "dd_threshold" in columns
+    assert "oos_actual_days" in columns
+    assert "oos_winning_trades" in columns
 
 
 def test_studies_stitched_columns():
@@ -121,7 +151,21 @@ def test_studies_stitched_columns():
     assert "stitched_oos_net_profit_pct" in columns
     assert "stitched_oos_max_drawdown_pct" in columns
     assert "stitched_oos_total_trades" in columns
+    assert "stitched_oos_winning_trades" in columns
     assert "stitched_oos_win_rate" in columns
+    assert "profitable_windows" in columns
+    assert "total_windows" in columns
+    assert "median_window_profit" in columns
+    assert "median_window_wr" in columns
+    assert "worst_window_profit" in columns
+    assert "worst_window_dd" in columns
+    assert "adaptive_mode" in columns
+    assert "max_oos_period_days" in columns
+    assert "min_oos_trades" in columns
+    assert "check_interval_trades" in columns
+    assert "cusum_threshold" in columns
+    assert "dd_threshold_multiplier" in columns
+    assert "inactivity_multiplier" in columns
 
 
 def test_save_wfa_study_with_trials():
@@ -143,6 +187,236 @@ def test_save_wfa_study_with_trials():
     assert window.get("best_params_source") == "optuna_is"
     assert window.get("is_pareto_optimal") is True
     assert window.get("constraints_satisfied") is False
+    assert window.get("oos_winning_trades") == 1
+
+    study = study_data["study"]
+    assert study.get("stitched_oos_winning_trades") == 1
+    assert study.get("profitable_windows") == 1
+    assert study.get("total_windows") == 1
+    assert study.get("median_window_profit") == 2.0
+    assert study.get("median_window_wr") == 50.0
+    assert study.get("worst_window_profit") == 2.0
+    assert study.get("worst_window_dd") == 0.7
+
+
+def test_study_sets_storage_roundtrip():
+    wf_result_a = _build_dummy_wfa_result()
+    study_id_a = save_wfa_study_to_db(
+        wf_result=wf_result_a,
+        config={},
+        csv_file_path="",
+        start_time=0.0,
+        score_config=None,
+    )
+
+    wf_result_b = _build_dummy_wfa_result()
+    wf_result_b.windows[0].window_id = 2
+    study_id_b = save_wfa_study_to_db(
+        wf_result=wf_result_b,
+        config={},
+        csv_file_path="",
+        start_time=time.time(),
+        score_config=None,
+    )
+
+    created = create_study_set("Storage Roundtrip Set", [study_id_a, study_id_b])
+    assert created["name"] == "Storage Roundtrip Set"
+    assert created["study_ids"] == [study_id_a, study_id_b]
+
+    updated = update_study_set(created["id"], name="Storage Roundtrip Set v2", study_ids=[study_id_b])
+    assert updated["name"] == "Storage Roundtrip Set v2"
+    assert updated["study_ids"] == [study_id_b]
+
+    second = create_study_set("Storage Roundtrip Set v3", [study_id_a])
+    reorder_study_sets([second["id"], created["id"]])
+
+    sets = list_study_sets()
+    assert [entry["id"] for entry in sets[:2]] == [second["id"], created["id"]]
+
+
+def test_save_wfa_study_layer1_aggregates_multi_window():
+    wf_config = WFConfig(strategy_id="s01_trailing_ma", is_period_days=10, oos_period_days=5)
+    windows = [
+        WindowResult(
+            window_id=1,
+            is_start=pd.Timestamp("2025-01-01", tz="UTC"),
+            is_end=pd.Timestamp("2025-01-10", tz="UTC"),
+            oos_start=pd.Timestamp("2025-01-11", tz="UTC"),
+            oos_end=pd.Timestamp("2025-01-15", tz="UTC"),
+            best_params={"maType": "EMA", "maLength": 50, "closeCountLong": 7},
+            param_id="p1",
+            is_net_profit_pct=1.0,
+            is_max_drawdown_pct=1.0,
+            is_total_trades=2,
+            oos_net_profit_pct=6.0,
+            oos_max_drawdown_pct=12.0,
+            oos_total_trades=4,
+            oos_winning_trades=3,
+            oos_equity_curve=[100.0, 106.0],
+            oos_timestamps=[
+                pd.Timestamp("2025-01-11", tz="UTC"),
+                pd.Timestamp("2025-01-15", tz="UTC"),
+            ],
+            oos_win_rate=75.0,
+        ),
+        WindowResult(
+            window_id=2,
+            is_start=pd.Timestamp("2025-01-06", tz="UTC"),
+            is_end=pd.Timestamp("2025-01-15", tz="UTC"),
+            oos_start=pd.Timestamp("2025-01-16", tz="UTC"),
+            oos_end=pd.Timestamp("2025-01-20", tz="UTC"),
+            best_params={"maType": "EMA", "maLength": 50, "closeCountLong": 7},
+            param_id="p1",
+            is_net_profit_pct=1.0,
+            is_max_drawdown_pct=1.0,
+            is_total_trades=2,
+            oos_net_profit_pct=-2.0,
+            oos_max_drawdown_pct=30.0,
+            oos_total_trades=5,
+            oos_winning_trades=1,
+            oos_equity_curve=[100.0, 98.0],
+            oos_timestamps=[
+                pd.Timestamp("2025-01-16", tz="UTC"),
+                pd.Timestamp("2025-01-20", tz="UTC"),
+            ],
+            oos_win_rate=20.0,
+        ),
+    ]
+    stitched = OOSStitchedResult(
+        final_net_profit_pct=3.88,
+        max_drawdown_pct=8.0,
+        total_trades=9,
+        wfe=10.0,
+        oos_win_rate=50.0,
+        equity_curve=[100.0, 106.0, 103.88],
+        timestamps=[
+            pd.Timestamp("2025-01-11", tz="UTC"),
+            pd.Timestamp("2025-01-15", tz="UTC"),
+            pd.Timestamp("2025-01-20", tz="UTC"),
+        ],
+        window_ids=[1, 1, 2],
+    )
+    wf_result = WFResult(
+        config=wf_config,
+        windows=windows,
+        stitched_oos=stitched,
+        strategy_id="s01_trailing_ma",
+        total_windows=2,
+        trading_start_date=pd.Timestamp("2025-01-01", tz="UTC"),
+        trading_end_date=pd.Timestamp("2025-01-20", tz="UTC"),
+        warmup_bars=wf_config.warmup_bars,
+    )
+
+    study_id = save_wfa_study_to_db(
+        wf_result=wf_result,
+        config={},
+        csv_file_path="",
+        start_time=0.0,
+        score_config=None,
+    )
+    loaded = load_study_from_db(study_id)
+    assert loaded is not None
+    study = loaded["study"]
+
+    assert study.get("stitched_oos_winning_trades") == 4
+    assert study.get("profitable_windows") == 1
+    assert study.get("total_windows") == 2
+    assert study.get("median_window_profit") == 2.0
+    assert study.get("median_window_wr") == 47.5
+    assert study.get("worst_window_profit") == -2.0
+    assert study.get("worst_window_dd") == 30.0
+
+
+def test_save_wfa_study_persists_optuna_and_wfa_metadata():
+    wf_result = _build_dummy_wfa_result()
+    wf_result.config.is_period_days = 12
+    wf_result.config.adaptive_mode = True
+    wf_result.config.max_oos_period_days = 120
+    wf_result.config.min_oos_trades = 7
+    wf_result.config.check_interval_trades = 4
+    wf_result.config.cusum_threshold = 6.5
+    wf_result.config.dd_threshold_multiplier = 1.8
+    wf_result.config.inactivity_multiplier = 6.0
+
+    config = {
+        "sampler_type": "nsga2",
+        "population_size": 64,
+        "crossover_prob": 0.8,
+        "mutation_prob": 0.2,
+        "swapping_prob": 0.4,
+        "optuna_config": {
+            "budget_mode": "trials",
+            "n_trials": 300,
+            "time_limit": 1800,
+            "convergence_patience": 75,
+            "sampler": "nsga2",
+            "sampler_type": "nsga2",
+            "population_size": 64,
+            "crossover_prob": 0.8,
+            "mutation_prob": 0.2,
+            "swapping_prob": 0.4,
+            "pruner": "median",
+        },
+        "wfa": {
+            "is_period_days": 10,
+            "oos_period_days": 5,
+            "adaptive_mode": True,
+        },
+    }
+
+    study_id = save_wfa_study_to_db(
+        wf_result=wf_result,
+        config=config,
+        csv_file_path="",
+        start_time=0.0,
+        score_config=None,
+    )
+
+    loaded = load_study_from_db(study_id)
+    assert loaded is not None
+    study = loaded["study"]
+
+    assert study.get("is_period_days") == 12
+    assert study.get("sampler_type") == "nsga2"
+    assert study.get("population_size") == 64
+    assert study.get("crossover_prob") == 0.8
+    assert study.get("mutation_prob") == 0.2
+    assert study.get("swapping_prob") == 0.4
+    assert study.get("budget_mode") == "trials"
+    assert study.get("n_trials") == 300
+    assert study.get("time_limit") == 1800
+    assert study.get("convergence_patience") == 75
+
+    assert study.get("adaptive_mode") == 1
+    assert study.get("max_oos_period_days") == 120
+    assert study.get("min_oos_trades") == 7
+    assert study.get("check_interval_trades") == 4
+    assert study.get("cusum_threshold") == 6.5
+    assert study.get("dd_threshold_multiplier") == 1.8
+    assert study.get("inactivity_multiplier") == 6.0
+
+    config_json = study.get("config_json") or {}
+    assert config_json.get("optuna_config", {}).get("pruner") == "median"
+    assert config_json.get("wfa", {}).get("oos_period_days") == 5
+
+
+def test_save_wfa_study_persists_runtime_seconds():
+    wf_result = _build_dummy_wfa_result()
+    start_time = time.time() - 2.0
+    study_id = save_wfa_study_to_db(
+        wf_result=wf_result,
+        config={},
+        csv_file_path="",
+        start_time=start_time,
+        score_config=None,
+    )
+
+    loaded = load_study_from_db(study_id)
+    assert loaded is not None
+    runtime = loaded["study"].get("optimization_time_seconds")
+    assert runtime is not None
+    assert runtime >= 0
+    assert runtime < 600
 
 
 def test_load_wfa_window_trials():
@@ -159,3 +433,36 @@ def test_load_wfa_window_trials():
     assert "optuna_is" in modules
     assert modules["optuna_is"]
     assert modules["optuna_is"][0]["trial_number"] == 1
+
+
+def test_wfa_window_timestamp_precision_persisted():
+    wf_result = _build_dummy_wfa_result()
+    window = wf_result.windows[0]
+    window.is_start = pd.Timestamp("2025-01-01 00:00:00", tz="UTC")
+    window.is_end = pd.Timestamp("2025-01-10 09:15:00", tz="UTC")
+    window.oos_start = pd.Timestamp("2025-01-11 06:45:00", tz="UTC")
+    window.oos_end = pd.Timestamp("2025-01-15 12:30:00", tz="UTC")
+    window.optimization_start = pd.Timestamp("2025-01-01 00:00:00", tz="UTC")
+    window.optimization_end = pd.Timestamp("2025-01-09 23:00:00", tz="UTC")
+    window.ft_start = pd.Timestamp("2025-01-09 23:00:00", tz="UTC")
+    window.ft_end = pd.Timestamp("2025-01-10 09:15:00", tz="UTC")
+
+    study_id = save_wfa_study_to_db(
+        wf_result=wf_result,
+        config={},
+        csv_file_path="",
+        start_time=0.0,
+        score_config=None,
+    )
+    loaded = load_study_from_db(study_id)
+    assert loaded is not None
+    stored = loaded["windows"][0]
+
+    assert stored.get("is_start_ts") == "2025-01-01T00:00:00+00:00"
+    assert stored.get("is_end_ts") == "2025-01-10T09:15:00+00:00"
+    assert stored.get("oos_start_ts") == "2025-01-11T06:45:00+00:00"
+    assert stored.get("oos_end_ts") == "2025-01-15T12:30:00+00:00"
+    assert stored.get("optimization_start_ts") == "2025-01-01T00:00:00+00:00"
+    assert stored.get("optimization_end_ts") == "2025-01-09T23:00:00+00:00"
+    assert stored.get("ft_start_ts") == "2025-01-09T23:00:00+00:00"
+    assert stored.get("ft_end_ts") == "2025-01-10T09:15:00+00:00"

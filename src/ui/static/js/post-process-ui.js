@@ -84,7 +84,7 @@
     return {
       enabled,
       ftPeriodDays: normalizeInt(period?.value, 30, 1, 3650),
-      topK: normalizeInt(topK?.value, 20, 1, 10000),
+      topK: normalizeInt(topK?.value, 10, 1, 10000),
       sortMetric: sortMetric?.value || 'profit_degradation',
       dsrEnabled,
       dsrTopK: normalizeInt(dsrTopK?.value, 20, 1, 10000),

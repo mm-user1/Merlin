@@ -1,5 +1,6 @@
 const OPT_STATE_KEY = 'merlinOptimizationState';
 const OPT_CONTROL_KEY = 'merlinOptimizationControl';
+const VOLATILE_RESULTS_KEYS = ['filterActive', 'filterText'];
 
 const ResultsState = {
   status: 'idle',
@@ -68,7 +69,9 @@ const ResultsState = {
   dataPath: '',
   selectedRowId: null,
   multiSelect: false,
-  selectedStudies: []
+  selectedStudies: [],
+  filterActive: false,
+  filterText: ''
 };
 
 if (typeof window !== 'undefined') {
@@ -87,7 +90,11 @@ function readStoredState() {
 
 function applyState(state) {
   if (!state) return;
+  const localFilterActive = ResultsState.filterActive;
+  const localFilterText = ResultsState.filterText;
   Object.assign(ResultsState, state);
+  ResultsState.filterActive = localFilterActive;
+  ResultsState.filterText = localFilterText;
   ResultsState.status = state.status || 'idle';
   ResultsState.mode = state.mode || 'optuna';
   ResultsState.studyId = state.studyId || state.study_id || ResultsState.studyId;
@@ -143,7 +150,14 @@ function setQueryStudyId(studyId) {
 
 function updateStoredState(patch) {
   const current = readStoredState() || {};
-  const updated = { ...current, ...patch };
+  VOLATILE_RESULTS_KEYS.forEach((key) => {
+    delete current[key];
+  });
+  const safePatch = { ...(patch || {}) };
+  VOLATILE_RESULTS_KEYS.forEach((key) => {
+    delete safePatch[key];
+  });
+  const updated = { ...current, ...safePatch };
   try {
     const raw = JSON.stringify(updated);
     sessionStorage.setItem(OPT_STATE_KEY, raw);

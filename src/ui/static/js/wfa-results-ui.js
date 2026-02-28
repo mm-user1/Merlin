@@ -669,12 +669,40 @@
         ? parseInt(windowNumberRaw, 10)
         : index + 1;
       const availableModules = window.available_modules || [];
+      const actualDaysRaw = window.oos_actual_days;
+      const hasActualDays = actualDaysRaw !== null
+        && actualDaysRaw !== undefined
+        && String(actualDaysRaw).trim() !== ''
+        && Number.isFinite(Number(actualDaysRaw));
+      const actualDays = hasActualDays
+        ? `${Math.round(Number(actualDaysRaw))}d`
+        : null;
+      const triggerType = String(window.trigger_type || '').toLowerCase();
+      const triggerLabels = {
+        cusum: 'CUSUM',
+        drawdown: 'DD',
+        inactivity: 'INACTIVE',
+        max_period: 'MAX'
+      };
+      const triggerLabel = triggerLabels[triggerType] || '';
+      const triggerBadge = triggerLabel
+        ? `<span class="wfa-trigger-badge wfa-trigger-${triggerType}">${triggerLabel}</span>`
+        : '';
+      const adaptiveModeRaw = window.ResultsState?.wfa?.adaptiveMode ?? window.ResultsState?.wfa?.adaptive_mode;
+      const adaptiveMode = adaptiveModeRaw === null || adaptiveModeRaw === undefined
+        ? null
+        : Boolean(adaptiveModeRaw);
+      const hasAdaptiveMeta = Boolean(triggerLabel || actualDays);
+      const showAdaptiveMeta = adaptiveMode === true || (adaptiveMode === null && hasAdaptiveMeta);
+      const adaptiveSuffix = showAdaptiveMeta && hasAdaptiveMeta
+        ? ` (${actualDays || '-'}) ${triggerBadge}`
+        : '';
 
       const headerRow = document.createElement('tr');
       headerRow.className = 'wfa-window-header';
       headerRow.innerHTML = `
         <td class="col-expand"><span class="expand-toggle" data-window-number="${windowNumber}">&#9654;</span></td>
-        <td colspan="${Math.max(1, totalColumns - 1)}">Window ${windowNumber} | IS: ${window.is_start_date || '-'} - ${window.is_end_date || '-'} | OOS: ${window.oos_start_date || '-'} - ${window.oos_end_date || '-'}</td>
+        <td colspan="${Math.max(1, totalColumns - 1)}">Window ${windowNumber} | IS: ${window.is_start_date || '-'} - ${window.is_end_date || '-'} | OOS: ${window.oos_start_date || '-'} - ${window.oos_end_date || '-'}${adaptiveSuffix}</td>
       `;
       headerRow.addEventListener('click', () => {
         setWfaSelection({ windowNumber, period: 'both' });

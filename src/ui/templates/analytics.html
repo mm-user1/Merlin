@@ -1,0 +1,192 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Strategy Backtester &amp; Optimizer - Analytics</title>
+  <link rel="stylesheet" href="/static/css/style.css" />
+</head>
+<body class="analytics-page">
+  <nav class="top-nav">
+    <div class="nav-tabs">
+      <a href="/" class="nav-tab" data-nav="start">Start</a>
+      <a href="/results" class="nav-tab" data-nav="results">Results</a>
+      <a href="/analytics" class="nav-tab active" data-nav="analytics">Analytics</a>
+    </div>
+    <div class="nav-spacer"></div>
+  </nav>
+
+  <div class="main-container analytics-layout">
+    <div class="sidebar">
+      <div class="collapsible open" id="analytics-db-section">
+        <div class="collapsible-header">
+          <span class="collapsible-icon">&#9660;</span>
+          <span class="collapsible-title">Database</span>
+        </div>
+        <div class="collapsible-content">
+          <div class="database-list" id="analyticsDbList"></div>
+        </div>
+      </div>
+
+      <div class="collapsible open" id="analytics-research-section">
+        <div class="collapsible-header">
+          <span class="collapsible-icon">&#9660;</span>
+          <span class="collapsible-title">Research Info</span>
+        </div>
+        <div class="collapsible-content">
+          <div class="settings-list" id="analyticsResearchInfo"></div>
+        </div>
+      </div>
+
+      <div class="collapsible open" id="analytics-optuna-section" style="display: none;">
+        <div class="collapsible-header">
+          <span class="collapsible-icon">&#9660;</span>
+          <span class="collapsible-title">Optuna Settings</span>
+        </div>
+        <div class="collapsible-content">
+          <div class="settings-list" id="analyticsOptunaSettings"></div>
+        </div>
+      </div>
+
+      <div class="collapsible open" id="analytics-wfa-section" style="display: none;">
+        <div class="collapsible-header">
+          <span class="collapsible-icon">&#9660;</span>
+          <span class="collapsible-title">WFA Settings</span>
+        </div>
+        <div class="collapsible-content">
+          <div class="settings-list" id="analyticsWfaSettings"></div>
+        </div>
+      </div>
+    </div>
+
+    <div class="main-area">
+      <div class="results-header">
+        <h2>Analytics <span class="db-name" id="analyticsDbName">-</span></h2>
+      </div>
+
+      <div class="analytics-message" id="analyticsMessage" hidden></div>
+
+      <div class="chart-card">
+        <div class="chart-card-header">
+          <h3 id="analyticsChartTitle">Stitched OOS Equity</h3>
+        </div>
+        <div class="chart-card-subtitle" id="analyticsChartSubtitle" hidden></div>
+        <div class="chart-warning" id="analyticsChartWarning" hidden></div>
+        <div class="chart-body">
+          <div class="chart-canvas">
+            <svg class="chart-svg" id="analyticsChartSvg" viewBox="0 0 800 260" preserveAspectRatio="none">
+              <text x="400" y="130" text-anchor="middle" fill="#999" font-size="14">
+                No data to display
+              </text>
+            </svg>
+          </div>
+          <div class="chart-axis" id="analyticsEquityAxis"></div>
+        </div>
+      </div>
+
+      <div class="summary-row" id="analyticsSummaryRow"></div>
+
+      <div class="analytics-sets-section" id="analyticsSetsSection">
+        <div class="collapsible open" id="analytics-sets-collapsible">
+          <div class="collapsible-header analytics-sets-header" id="analyticsSetsHeader">
+            <span class="collapsible-icon">&#9660;</span>
+            <span class="collapsible-title">Study Sets</span>
+            <span class="analytics-sets-summary" id="analyticsSetsSummary"></span>
+            <div class="analytics-sets-header-actions">
+              <div class="analytics-set-update-wrap" id="analyticsSetUpdateWrap" style="display:none;">
+                <button class="sel-btn analytics-update-set-btn" id="analyticsSetUpdateBtn"
+                        type="button" aria-haspopup="menu" aria-expanded="false">Update Set &#9662;</button>
+                <div class="analytics-set-update-menu" id="analyticsSetUpdateMenu" hidden></div>
+              </div>
+              <button class="sel-btn analytics-save-set-btn" id="analyticsSaveSetBtn"
+                      type="button" style="display:none;">+ Save Set</button>
+            </div>
+          </div>
+          <div class="collapsible-content">
+            <div class="analytics-sets-table-wrap" id="analyticsSetsTableWrap"></div>
+            <div class="analytics-sets-actions" id="analyticsSetsActions" style="display:none;"></div>
+            <div class="table-expand analytics-sets-expand" id="analyticsSetsExpand" style="display:none;">
+              <button class="table-expand-toggle" id="analyticsSetsExpandToggle" type="button" aria-label="Expand sets table"></button>
+            </div>
+          </div>
+        </div>
+      </div>
+
+      <div class="selection-buttons">
+        <div class="selection-buttons-left">
+          <button class="sel-btn" id="analyticsSelectAllBtn" type="button">Select All</button>
+          <button class="sel-btn" id="analyticsDeselectAllBtn" type="button">Deselect All</button>
+        </div>
+        <label class="analytics-auto-select">
+          <input type="checkbox" id="analyticsAutoSelect" />
+          <span>Auto-select</span>
+        </label>
+      </div>
+
+      <div class="analytics-filters-section">
+        <div class="analytics-filter-bar" id="analyticsFiltersBar"></div>
+        <div class="analytics-active-filters" id="analyticsActiveFilters" hidden></div>
+      </div>
+
+      <div class="table-card">
+        <div class="table-card-header">
+          <div class="table-header-left">
+            <h3>Summary Table</h3>
+            <span class="subtitle" id="analyticsTableSubtitle">Sorted by date added (newest first)</span>
+          </div>
+        </div>
+        <div class="table-scroll analytics-table-scroll">
+          <table class="data-table" id="analyticsSummaryTable">
+            <thead>
+              <tr>
+                <th class="col-check">
+                  <input type="checkbox" id="analyticsHeaderCheck" title="Toggle all" />
+                </th>
+                <th>#</th>
+                <th>Strategy</th>
+                <th class="analytics-sortable" data-sort-key="study_name">
+                  <span class="sort-label">Study Name</span><span class="sort-arrow"></span>
+                </th>
+                <th>WFA</th>
+                <th>IS/OOS</th>
+                <th class="analytics-sortable" data-sort-key="ann_profit_pct">
+                  <span class="sort-label">Ann.P%</span><span class="sort-arrow"></span>
+                </th>
+                <th class="analytics-sortable" data-sort-key="profit_pct">
+                  <span class="sort-label">Profit%</span><span class="sort-arrow"></span>
+                </th>
+                <th class="analytics-sortable" data-sort-key="max_dd_pct">
+                  <span class="sort-label">MaxDD%</span><span class="sort-arrow"></span>
+                </th>
+                <th class="analytics-sortable" data-sort-key="total_trades">
+                  <span class="sort-label">Trades</span><span class="sort-arrow"></span>
+                </th>
+                <th class="analytics-sortable" data-sort-key="wfe_pct">
+                  <span class="sort-label">WFE%</span><span class="sort-arrow"></span>
+                </th>
+                <th class="analytics-sortable" data-sort-key="profitable_windows_pct">
+                  <span class="sort-label">OOS Wins</span><span class="sort-arrow"></span>
+                </th>
+                <th class="analytics-sortable" data-sort-key="median_window_profit">
+                  <span class="sort-label">OOS P(med)</span><span class="sort-arrow"></span>
+                </th>
+                <th class="analytics-sortable" data-sort-key="median_window_wr">
+                  <span class="sort-label">OOS WR(med)</span><span class="sort-arrow"></span>
+                </th>
+              </tr>
+            </thead>
+            <tbody id="analyticsSummaryTableBody"></tbody>
+          </table>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <script src="/static/js/api.js"></script>
+  <script src="/static/js/analytics-equity.js"></script>
+  <script src="/static/js/analytics-filters.js"></script>
+  <script src="/static/js/analytics-sets.js"></script>
+  <script src="/static/js/analytics-table.js"></script>
+  <script src="/static/js/analytics.js"></script>
+</body>
+</html>

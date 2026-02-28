@@ -2,8 +2,11 @@
 from __future__ import annotations
 
 import json
+import math
+import os
 import re
 import sqlite3
+import statistics
 import threading
 import time
 import uuid
@@ -11,7 +14,7 @@ from datetime import datetime, timezone
 from contextlib import contextmanager
 from dataclasses import asdict
 from pathlib import Path
-from typing import Any, Dict, Iterator, List, Optional
+from typing import Any, Dict, Iterator, List, Optional, Sequence
 
 OBJECTIVE_DIRECTIONS: Dict[str, str] = {
     "net_profit_pct": "maximize",
@@ -28,26 +31,60 @@ OBJECTIVE_DIRECTIONS: Dict[str, str] = {
 }
 
 DB_INIT_LOCK = threading.Lock()
+DB_ACCESS_LOCK = threading.RLock()
 DB_INITIALIZED = False
 
 BASE_DIR = Path(__file__).resolve().parent.parent
 STORAGE_DIR = BASE_DIR / "storage"
 JOURNAL_DIR = STORAGE_DIR / "journals"
-DB_PATH = STORAGE_DIR / "studies.db"
+_active_db_path: Path = STORAGE_DIR / "studies.db"
+
+_INVALID_DB_LABEL_CHARS = re.compile(r'[<>:"/\\|?*]')
+
+
+def _sanitize_db_label(label: str) -> str:
+    return _INVALID_DB_LABEL_CHARS.sub("", str(label or "")).strip().replace(" ", "-")[:50]
+
+
+def _generate_db_filename(label: str) -> str:
+    """Generate a timestamped DB filename with optional sanitized label."""
+    ts = datetime.now().strftime("%Y-%m-%d_%H%M%S")
+    safe_label = _sanitize_db_label(label)
+    if safe_label:
+        return f"{ts}_{safe_label}.db"
+    return f"{ts}.db"
+
+
+def _pick_newest_db() -> Path:
+    """Return newest .db file in STORAGE_DIR by ctime, or generated default path."""
+    STORAGE_DIR.mkdir(parents=True, exist_ok=True)
+    db_files = sorted(
+        STORAGE_DIR.glob("*.db"),
+        key=lambda path: os.path.getctime(path),
+        reverse=True,
+    )
+    if db_files:
+        return db_files[0]
+    return STORAGE_DIR / _generate_db_filename("")
+
+
+_active_db_path = _pick_newest_db()
 
 
 def _utc_now_iso() -> str:
     return datetime.now(timezone.utc).isoformat().replace("+00:00", "Z")
 
 
-def init_database() -> None:
+def init_database(db_path: Optional[Path] = None) -> None:
     """Initialize database schema and ensure storage directories exist."""
     global DB_INITIALIZED
-    if DB_INITIALIZED and not DB_PATH.exists():
+    path = db_path or _active_db_path
+
+    if DB_INITIALIZED and not path.exists():
         DB_INITIALIZED = False
-    if DB_INITIALIZED and DB_PATH.exists():
+    if DB_INITIALIZED and path.exists():
         with sqlite3.connect(
-            str(DB_PATH),
+            str(path),
             check_same_thread=False,
             timeout=30.0,
             isolation_level="DEFERRED",
@@ -66,7 +103,7 @@ def init_database() -> None:
         JOURNAL_DIR.mkdir(parents=True, exist_ok=True)
 
         with sqlite3.connect(
-            str(DB_PATH),
+            str(path),
             check_same_thread=False,
             timeout=30.0,
             isolation_level="DEFERRED",
@@ -138,6 +175,13 @@ def _create_schema(conn: sqlite3.Connection) -> None:
             ft_start_date TEXT,
             ft_end_date TEXT,
             is_period_days INTEGER,
+            adaptive_mode INTEGER DEFAULT 0,
+            max_oos_period_days INTEGER,
+            min_oos_trades INTEGER,
+            check_interval_trades INTEGER,
+            cusum_threshold REAL,
+            dd_threshold_multiplier REAL,
+            inactivity_multiplier REAL,
 
             dsr_enabled INTEGER DEFAULT 0,
             dsr_top_k INTEGER,
@@ -179,7 +223,14 @@ def _create_schema(conn: sqlite3.Connection) -> None:
             stitched_oos_net_profit_pct REAL,
             stitched_oos_max_drawdown_pct REAL,
             stitched_oos_total_trades INTEGER,
-            stitched_oos_win_rate REAL
+            stitched_oos_winning_trades INTEGER,
+            stitched_oos_win_rate REAL,
+            profitable_windows INTEGER,
+            total_windows INTEGER,
+            median_window_profit REAL,
+            median_window_wr REAL,
+            worst_window_profit REAL,
+            worst_window_dd REAL
         );
 
         CREATE INDEX IF NOT EXISTS idx_studies_strategy ON studies(strategy_id);
@@ -326,6 +377,8 @@ def _create_schema(conn: sqlite3.Connection) -> None:
 
             is_start_date TEXT,
             is_end_date TEXT,
+            is_start_ts TEXT,
+            is_end_ts TEXT,
             is_net_profit_pct REAL,
             is_max_drawdown_pct REAL,
             is_total_trades INTEGER,
@@ -334,9 +387,12 @@ def _create_schema(conn: sqlite3.Connection) -> None:
 
             oos_start_date TEXT,
             oos_end_date TEXT,
+            oos_start_ts TEXT,
+            oos_end_ts TEXT,
             oos_net_profit_pct REAL,
             oos_max_drawdown_pct REAL,
             oos_total_trades INTEGER,
+            oos_winning_trades INTEGER,
             oos_equity_curve TEXT,
 
             wfe REAL,
@@ -351,6 +407,7 @@ def _create_schema(conn: sqlite3.Connection) -> None:
     )
     _ensure_columns(conn)
     _ensure_wfa_schema_updated(conn)
+    ensure_study_sets_tables(conn=conn)
 
 
 def _ensure_columns(conn: sqlite3.Connection) -> None:
@@ -389,7 +446,21 @@ def _ensure_columns(conn: sqlite3.Connection) -> None:
     ensure("studies", "stitched_oos_net_profit_pct", "REAL")
     ensure("studies", "stitched_oos_max_drawdown_pct", "REAL")
     ensure("studies", "stitched_oos_total_trades", "INTEGER")
+    ensure("studies", "stitched_oos_winning_trades", "INTEGER")
     ensure("studies", "stitched_oos_win_rate", "REAL")
+    ensure("studies", "profitable_windows", "INTEGER")
+    ensure("studies", "total_windows", "INTEGER")
+    ensure("studies", "median_window_profit", "REAL")
+    ensure("studies", "median_window_wr", "REAL")
+    ensure("studies", "worst_window_profit", "REAL")
+    ensure("studies", "worst_window_dd", "REAL")
+    ensure("studies", "adaptive_mode", "INTEGER DEFAULT 0")
+    ensure("studies", "max_oos_period_days", "INTEGER")
+    ensure("studies", "min_oos_trades", "INTEGER")
+    ensure("studies", "check_interval_trades", "INTEGER")
+    ensure("studies", "cusum_threshold", "REAL")
+    ensure("studies", "dd_threshold_multiplier", "REAL")
+    ensure("studies", "inactivity_multiplier", "REAL")
 
     ensure("trials", "max_consecutive_losses", "INTEGER")
     ensure("trials", "ft_max_consecutive_losses", "INTEGER")
@@ -507,10 +578,18 @@ def _ensure_wfa_schema_updated(conn: sqlite3.Connection) -> None:
 
     add_col("ALTER TABLE wfa_windows ADD COLUMN optimization_start_date TEXT;", "optimization_start_date")
     add_col("ALTER TABLE wfa_windows ADD COLUMN optimization_end_date TEXT;", "optimization_end_date")
+    add_col("ALTER TABLE wfa_windows ADD COLUMN optimization_start_ts TEXT;", "optimization_start_ts")
+    add_col("ALTER TABLE wfa_windows ADD COLUMN optimization_end_ts TEXT;", "optimization_end_ts")
     add_col("ALTER TABLE wfa_windows ADD COLUMN ft_start_date TEXT;", "ft_start_date")
     add_col("ALTER TABLE wfa_windows ADD COLUMN ft_end_date TEXT;", "ft_end_date")
+    add_col("ALTER TABLE wfa_windows ADD COLUMN ft_start_ts TEXT;", "ft_start_ts")
+    add_col("ALTER TABLE wfa_windows ADD COLUMN ft_end_ts TEXT;", "ft_end_ts")
     add_col("ALTER TABLE wfa_windows ADD COLUMN is_timestamps_json TEXT;", "is_timestamps_json")
     add_col("ALTER TABLE wfa_windows ADD COLUMN oos_timestamps_json TEXT;", "oos_timestamps_json")
+    add_col("ALTER TABLE wfa_windows ADD COLUMN is_start_ts TEXT;", "is_start_ts")
+    add_col("ALTER TABLE wfa_windows ADD COLUMN is_end_ts TEXT;", "is_end_ts")
+    add_col("ALTER TABLE wfa_windows ADD COLUMN oos_start_ts TEXT;", "oos_start_ts")
+    add_col("ALTER TABLE wfa_windows ADD COLUMN oos_end_ts TEXT;", "oos_end_ts")
 
     add_col("ALTER TABLE wfa_windows ADD COLUMN is_win_rate REAL;", "is_win_rate")
     add_col("ALTER TABLE wfa_windows ADD COLUMN is_max_consecutive_losses INTEGER;", "is_max_consecutive_losses")
@@ -523,6 +602,7 @@ def _ensure_wfa_schema_updated(conn: sqlite3.Connection) -> None:
     add_col("ALTER TABLE wfa_windows ADD COLUMN is_composite_score REAL;", "is_composite_score")
 
     add_col("ALTER TABLE wfa_windows ADD COLUMN oos_win_rate REAL;", "oos_win_rate")
+    add_col("ALTER TABLE wfa_windows ADD COLUMN oos_winning_trades INTEGER;", "oos_winning_trades")
     add_col("ALTER TABLE wfa_windows ADD COLUMN oos_max_consecutive_losses INTEGER;", "oos_max_consecutive_losses")
     add_col("ALTER TABLE wfa_windows ADD COLUMN oos_romad REAL;", "oos_romad")
     add_col("ALTER TABLE wfa_windows ADD COLUMN oos_sharpe_ratio REAL;", "oos_sharpe_ratio")
@@ -530,15 +610,23 @@ def _ensure_wfa_schema_updated(conn: sqlite3.Connection) -> None:
     add_col("ALTER TABLE wfa_windows ADD COLUMN oos_sqn REAL;", "oos_sqn")
     add_col("ALTER TABLE wfa_windows ADD COLUMN oos_ulcer_index REAL;", "oos_ulcer_index")
     add_col("ALTER TABLE wfa_windows ADD COLUMN oos_consistency_score REAL;", "oos_consistency_score")
+    add_col("ALTER TABLE wfa_windows ADD COLUMN trigger_type TEXT;", "trigger_type")
+    add_col("ALTER TABLE wfa_windows ADD COLUMN cusum_final REAL;", "cusum_final")
+    add_col("ALTER TABLE wfa_windows ADD COLUMN cusum_threshold REAL;", "cusum_threshold")
+    add_col("ALTER TABLE wfa_windows ADD COLUMN dd_threshold REAL;", "dd_threshold")
+    add_col("ALTER TABLE wfa_windows ADD COLUMN oos_actual_days REAL;", "oos_actual_days")
 
     conn.commit()
 
 
 @contextmanager
 def get_db_connection() -> Iterator[sqlite3.Connection]:
-    init_database()
+    with DB_ACCESS_LOCK:
+        path = _active_db_path
+
+    init_database(db_path=path)
     conn = sqlite3.connect(
-        str(DB_PATH),
+        str(path),
         check_same_thread=False,
         timeout=30.0,
         isolation_level="DEFERRED",
@@ -548,6 +636,412 @@ def get_db_connection() -> Iterator[sqlite3.Connection]:
         yield conn
     finally:
         conn.close()
+
+
+def _validate_db_filename(filename: str) -> Path:
+    if not filename:
+        raise ValueError("Invalid database filename")
+    target = STORAGE_DIR / filename
+    if target.parent.resolve() != STORAGE_DIR.resolve():
+        raise ValueError("Invalid database filename")
+    if target.suffix.lower() != ".db":
+        raise ValueError("Invalid database filename")
+    return target
+
+
+def get_active_db_name() -> str:
+    """Return the active database filename."""
+    return _active_db_path.name
+
+
+def _set_active_db_path(filename: str) -> None:
+    """Internal setter that updates active DB path without existence checks."""
+    global _active_db_path, DB_INITIALIZED
+    target = _validate_db_filename(filename)
+    _active_db_path = target
+    DB_INITIALIZED = False
+
+
+def set_active_db(filename: str) -> None:
+    """Set active DB to an existing file in STORAGE_DIR."""
+    with DB_ACCESS_LOCK:
+        target = _validate_db_filename(filename)
+        if not target.exists():
+            raise ValueError(f"Database '{filename}' not found")
+        _set_active_db_path(filename)
+
+
+def create_new_db(label: str = "") -> str:
+    """Create a new timestamped DB file, set it active, and initialize schema."""
+    with DB_ACCESS_LOCK:
+        filename = _generate_db_filename(label)
+        target = STORAGE_DIR / filename
+        _set_active_db_path(filename)
+        init_database(db_path=target)
+        return filename
+
+
+def list_db_files() -> List[Dict[str, Any]]:
+    """List available DB files sorted by creation time with active marker."""
+    with DB_ACCESS_LOCK:
+        STORAGE_DIR.mkdir(parents=True, exist_ok=True)
+        active_name = _active_db_path.name
+        db_files = sorted(
+            STORAGE_DIR.glob("*.db"),
+            key=lambda path: os.path.getctime(path),
+            reverse=True,
+        )
+        return [{"name": path.name, "active": path.name == active_name} for path in db_files]
+
+
+def ensure_study_sets_tables(
+    db_path: Optional[Path] = None,
+    conn: Optional[sqlite3.Connection] = None,
+) -> None:
+    """
+    Ensure Study Sets tables exist and remove legacy orphan members.
+
+    When `conn` is provided, this function uses it directly and does not commit.
+    """
+    if conn is not None:
+        _ensure_study_sets_tables_with_conn(conn)
+        return
+
+    path = db_path or _active_db_path
+    init_database(db_path=path)
+    with sqlite3.connect(
+        str(path),
+        check_same_thread=False,
+        timeout=30.0,
+        isolation_level="DEFERRED",
+    ) as local_conn:
+        _configure_connection(local_conn)
+        _ensure_study_sets_tables_with_conn(local_conn)
+        local_conn.commit()
+
+
+def _ensure_study_sets_tables_with_conn(conn: sqlite3.Connection) -> None:
+    conn.executescript(
+        """
+        CREATE TABLE IF NOT EXISTS study_sets (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            name TEXT NOT NULL,
+            sort_order INTEGER NOT NULL DEFAULT 0,
+            created_at TEXT DEFAULT (datetime('now'))
+        );
+
+        CREATE UNIQUE INDEX IF NOT EXISTS idx_study_sets_name_nocase
+            ON study_sets(LOWER(name));
+        CREATE INDEX IF NOT EXISTS idx_study_sets_sort
+            ON study_sets(sort_order ASC, id ASC);
+
+        CREATE TABLE IF NOT EXISTS study_set_members (
+            set_id INTEGER NOT NULL,
+            study_id TEXT NOT NULL,
+            UNIQUE(set_id, study_id),
+            FOREIGN KEY (set_id) REFERENCES study_sets(id) ON DELETE CASCADE,
+            FOREIGN KEY (study_id) REFERENCES studies(study_id) ON DELETE CASCADE
+        );
+
+        CREATE INDEX IF NOT EXISTS idx_study_set_members_set_id
+            ON study_set_members(set_id);
+        CREATE INDEX IF NOT EXISTS idx_study_set_members_study_id
+            ON study_set_members(study_id);
+        """
+    )
+
+    # Clean legacy orphans from pre-FK setups or manually edited DBs.
+    conn.execute(
+        """
+        DELETE FROM study_set_members
+        WHERE set_id NOT IN (SELECT id FROM study_sets)
+           OR study_id NOT IN (SELECT study_id FROM studies)
+        """
+    )
+
+
+def _normalize_study_set_name(name: Any) -> str:
+    normalized = str(name or "").strip()
+    if not normalized:
+        raise ValueError("Set name cannot be empty.")
+    if len(normalized) > 120:
+        raise ValueError("Set name is too long (max 120 characters).")
+    return normalized
+
+
+def _study_set_name_with_suffix(base_name: str, suffix: int) -> str:
+    candidate = str(base_name or "").strip()
+    if suffix <= 0:
+        return candidate
+
+    suffix_text = f" ({int(suffix)})"
+    if len(candidate) + len(suffix_text) <= 120:
+        return f"{candidate}{suffix_text}"
+
+    trimmed = candidate[: max(1, 120 - len(suffix_text))].rstrip()
+    return f"{trimmed}{suffix_text}"
+
+
+def _normalize_set_study_ids(study_ids: Any) -> List[str]:
+    if study_ids is None:
+        return []
+    if not isinstance(study_ids, (list, tuple, set)):
+        raise ValueError("study_ids must be an array.")
+
+    seen = set()
+    normalized: List[str] = []
+    for raw in study_ids:
+        value = str(raw or "").strip()
+        if not value or value in seen:
+            continue
+        seen.add(value)
+        normalized.append(value)
+    return normalized
+
+
+def _validate_wfa_study_ids(conn: sqlite3.Connection, study_ids: Sequence[str]) -> None:
+    ids = [str(value or "").strip() for value in study_ids if str(value or "").strip()]
+    if not ids:
+        return
+
+    placeholders = ",".join(["?"] * len(ids))
+    rows = conn.execute(
+        f"""
+        SELECT study_id
+        FROM studies
+        WHERE study_id IN ({placeholders})
+          AND LOWER(COALESCE(optimization_mode, '')) = 'wfa'
+        """,
+        tuple(ids),
+    ).fetchall()
+    existing = {str(row["study_id"]) for row in rows}
+    missing = [value for value in ids if value not in existing]
+    if missing:
+        preview = ", ".join(missing[:5])
+        suffix = "..." if len(missing) > 5 else ""
+        raise ValueError(f"Unknown or non-WFA study IDs: {preview}{suffix}")
+
+
+def _load_study_set_by_id(conn: sqlite3.Connection, set_id: int) -> Optional[Dict[str, Any]]:
+    row = conn.execute(
+        """
+        SELECT id, name, sort_order, created_at
+        FROM study_sets
+        WHERE id = ?
+        """,
+        (int(set_id),),
+    ).fetchone()
+    if row is None:
+        return None
+
+    member_rows = conn.execute(
+        """
+        SELECT study_id
+        FROM study_set_members
+        WHERE set_id = ?
+        ORDER BY rowid ASC
+        """,
+        (int(set_id),),
+    ).fetchall()
+    return {
+        "id": int(row["id"]),
+        "name": str(row["name"] or ""),
+        "sort_order": int(row["sort_order"] or 0),
+        "created_at": row["created_at"],
+        "study_ids": [str(member["study_id"] or "") for member in member_rows if member["study_id"]],
+    }
+
+
+def list_study_sets(db_path: Optional[Path] = None) -> List[Dict[str, Any]]:
+    with get_db_connection() as conn:
+        ensure_study_sets_tables(conn=conn)
+        set_rows = conn.execute(
+            """
+            SELECT id, name, sort_order, created_at
+            FROM study_sets
+            ORDER BY sort_order ASC, id ASC
+            """
+        ).fetchall()
+        member_rows = conn.execute(
+            """
+            SELECT set_id, study_id
+            FROM study_set_members
+            ORDER BY set_id ASC, rowid ASC
+            """
+        ).fetchall()
+
+    members_by_set: Dict[int, List[str]] = {}
+    for row in member_rows:
+        set_id = int(row["set_id"])
+        study_id = str(row["study_id"] or "").strip()
+        if not study_id:
+            continue
+        members_by_set.setdefault(set_id, []).append(study_id)
+
+    return [
+        {
+            "id": int(row["id"]),
+            "name": str(row["name"] or ""),
+            "sort_order": int(row["sort_order"] or 0),
+            "created_at": row["created_at"],
+            "study_ids": members_by_set.get(int(row["id"]), []),
+        }
+        for row in set_rows
+    ]
+
+
+def create_study_set(name: Any, study_ids: Any, db_path: Optional[Path] = None) -> Dict[str, Any]:
+    normalized_name = _normalize_study_set_name(name)
+    normalized_ids = _normalize_set_study_ids(study_ids)
+    if not normalized_ids:
+        raise ValueError("Set must contain at least one study_id.")
+
+    with get_db_connection() as conn:
+        ensure_study_sets_tables(conn=conn)
+        _validate_wfa_study_ids(conn, normalized_ids)
+
+        next_order_row = conn.execute(
+            "SELECT COALESCE(MAX(sort_order), -1) + 1 AS next_order FROM study_sets"
+        ).fetchone()
+        next_order = int(next_order_row["next_order"] if next_order_row else 0)
+
+        cursor = None
+        max_attempts = 1000
+        for suffix in range(max_attempts + 1):
+            candidate_name = _study_set_name_with_suffix(normalized_name, suffix)
+            try:
+                cursor = conn.execute(
+                    """
+                    INSERT INTO study_sets (name, sort_order)
+                    VALUES (?, ?)
+                    """,
+                    (candidate_name, next_order),
+                )
+                break
+            except sqlite3.IntegrityError:
+                if suffix >= max_attempts:
+                    raise ValueError("Failed to resolve unique set name.") from None
+
+        if cursor is None:
+            raise RuntimeError("Failed to create study set.")
+        set_id = int(cursor.lastrowid)
+        conn.executemany(
+            """
+            INSERT INTO study_set_members (set_id, study_id)
+            VALUES (?, ?)
+            """,
+            [(set_id, study_id) for study_id in normalized_ids],
+        )
+        conn.commit()
+        created = _load_study_set_by_id(conn, set_id)
+
+    if created is None:
+        raise RuntimeError("Failed to load created study set.")
+    return created
+
+
+def update_study_set(
+    set_id: int,
+    name: Any = None,
+    study_ids: Any = None,
+    sort_order: Any = None,
+    db_path: Optional[Path] = None,
+) -> Dict[str, Any]:
+    set_id_int = int(set_id)
+
+    if name is None and study_ids is None and sort_order is None:
+        raise ValueError("No fields provided to update.")
+
+    with get_db_connection() as conn:
+        ensure_study_sets_tables(conn=conn)
+        current = _load_study_set_by_id(conn, set_id_int)
+        if current is None:
+            raise ValueError("Study set not found.")
+
+        if name is not None:
+            normalized_name = _normalize_study_set_name(name)
+            try:
+                conn.execute(
+                    "UPDATE study_sets SET name = ? WHERE id = ?",
+                    (normalized_name, set_id_int),
+                )
+            except sqlite3.IntegrityError as exc:
+                raise ValueError("Set with this name already exists.") from exc
+
+        if sort_order is not None:
+            try:
+                sort_value = int(sort_order)
+            except (TypeError, ValueError) as exc:
+                raise ValueError("sort_order must be an integer.") from exc
+            if sort_value < 0:
+                raise ValueError("sort_order cannot be negative.")
+            conn.execute(
+                "UPDATE study_sets SET sort_order = ? WHERE id = ?",
+                (sort_value, set_id_int),
+            )
+
+        if study_ids is not None:
+            normalized_ids = _normalize_set_study_ids(study_ids)
+            _validate_wfa_study_ids(conn, normalized_ids)
+            conn.execute("DELETE FROM study_set_members WHERE set_id = ?", (set_id_int,))
+            if normalized_ids:
+                conn.executemany(
+                    """
+                    INSERT INTO study_set_members (set_id, study_id)
+                    VALUES (?, ?)
+                    """,
+                    [(set_id_int, study_id) for study_id in normalized_ids],
+                )
+
+        conn.commit()
+        updated = _load_study_set_by_id(conn, set_id_int)
+
+    if updated is None:
+        raise RuntimeError("Failed to load updated study set.")
+    return updated
+
+
+def delete_study_set(set_id: int, db_path: Optional[Path] = None) -> bool:
+    with get_db_connection() as conn:
+        ensure_study_sets_tables(conn=conn)
+        cursor = conn.execute("DELETE FROM study_sets WHERE id = ?", (int(set_id),))
+        conn.commit()
+        return cursor.rowcount > 0
+
+
+def reorder_study_sets(id_order: Any, db_path: Optional[Path] = None) -> None:
+    if not isinstance(id_order, (list, tuple)):
+        raise ValueError("order must be an array of set IDs.")
+
+    normalized_order: List[int] = []
+    seen = set()
+    for raw in id_order:
+        try:
+            set_id = int(raw)
+        except (TypeError, ValueError) as exc:
+            raise ValueError("order must contain integer set IDs.") from exc
+        if set_id in seen:
+            raise ValueError("order contains duplicate set IDs.")
+        seen.add(set_id)
+        normalized_order.append(set_id)
+
+    with get_db_connection() as conn:
+        ensure_study_sets_tables(conn=conn)
+        rows = conn.execute("SELECT id FROM study_sets ORDER BY id ASC").fetchall()
+        existing_ids = [int(row["id"]) for row in rows]
+
+        if len(existing_ids) != len(normalized_order) or set(existing_ids) != set(normalized_order):
+            raise ValueError("order must contain all existing set IDs exactly once.")
+
+        conn.executemany(
+            """
+            UPDATE study_sets
+            SET sort_order = ?
+            WHERE id = ?
+            """,
+            [(index, set_id) for index, set_id in enumerate(normalized_order)],
+        )
+        conn.commit()
 
 
 def generate_study_id() -> str:
@@ -957,10 +1451,25 @@ def save_wfa_study_to_db(
     objectives = []
     primary_objective = None
     constraints_payload: List[Dict[str, Any]] = []
+    optuna_config: Dict[str, Any] = {}
+    wfa_config: Dict[str, Any] = {}
     if isinstance(config, dict):
         objectives = list(config.get("objectives") or [])
         primary_objective = config.get("primary_objective")
         constraints_payload = list(config.get("constraints") or [])
+        optuna_candidate = config.get("optuna_config")
+        if isinstance(optuna_candidate, dict):
+            optuna_config = dict(optuna_candidate)
+        wfa_candidate = config.get("wfa")
+        if isinstance(wfa_candidate, dict):
+            wfa_config = dict(wfa_candidate)
+
+    optimization_time_seconds = None
+    if start_time:
+        try:
+            optimization_time_seconds = int(round(max(0, time.time() - float(start_time))))
+        except (TypeError, ValueError):
+            optimization_time_seconds = None
 
     with get_db_connection() as conn:
         try:
@@ -987,7 +1496,43 @@ def save_wfa_study_to_db(
             stitched_net_profit_pct = None
             stitched_max_drawdown_pct = None
             stitched_total_trades = None
+            stitched_winning_trades = None
             stitched_win_rate = None
+            profitable_windows = 0
+            total_windows = 0
+            median_window_profit = None
+            median_window_wr = None
+            worst_window_profit = None
+            worst_window_dd = None
+
+            def _finite_float(value: Any) -> Optional[float]:
+                if value is None:
+                    return None
+                try:
+                    parsed = float(value)
+                except (TypeError, ValueError):
+                    return None
+                if not math.isfinite(parsed):
+                    return None
+                return parsed
+
+            def _derive_winning_trades(window_obj: Any) -> Optional[int]:
+                total_raw = _finite_float(getattr(window_obj, "oos_total_trades", None))
+                if total_raw is None:
+                    return None
+                total_int = max(0, int(round(total_raw)))
+
+                wins_raw = _finite_float(getattr(window_obj, "oos_winning_trades", None))
+                if wins_raw is not None:
+                    wins_int = max(0, int(round(wins_raw)))
+                    return min(wins_int, total_int)
+
+                win_rate_raw = _finite_float(getattr(window_obj, "oos_win_rate", None))
+                if win_rate_raw is None:
+                    return None
+
+                derived = int(round(total_int * win_rate_raw / 100.0))
+                return min(max(derived, 0), total_int)
 
             stitched = getattr(wf_result, "stitched_oos", None)
             if stitched:
@@ -1007,72 +1552,195 @@ def save_wfa_study_to_db(
                 stitched_total_trades = getattr(stitched, "total_trades", None)
                 stitched_win_rate = getattr(stitched, "oos_win_rate", None)
 
+            windows = list(getattr(wf_result, "windows", []) or [])
+            total_windows = len(windows)
+
+            window_profits: List[float] = []
+            window_trade_win_rates: List[float] = []
+            window_drawdowns: List[float] = []
+            trade_totals: List[int] = []
+            all_window_totals_known = True
+            all_window_wins_known = True
+            wins_sum = 0
+
+            for window in windows:
+                profit = _finite_float(getattr(window, "oos_net_profit_pct", None))
+                if profit is not None:
+                    window_profits.append(profit)
+                    if profit > 0:
+                        profitable_windows += 1
+
+                trade_win_rate = _finite_float(getattr(window, "oos_win_rate", None))
+                if trade_win_rate is not None:
+                    window_trade_win_rates.append(trade_win_rate)
+
+                drawdown = _finite_float(getattr(window, "oos_max_drawdown_pct", None))
+                if drawdown is not None:
+                    window_drawdowns.append(drawdown)
+
+                total_raw = _finite_float(getattr(window, "oos_total_trades", None))
+                if total_raw is None:
+                    all_window_totals_known = False
+                else:
+                    trade_totals.append(max(0, int(round(total_raw))))
+
+                wins = _derive_winning_trades(window)
+                if wins is None:
+                    all_window_wins_known = False
+                else:
+                    wins_sum += wins
+
+            if stitched_total_trades is None and all_window_totals_known:
+                stitched_total_trades = sum(trade_totals)
+
+            if all_window_wins_known:
+                stitched_winning_trades = wins_sum
+            elif stitched_total_trades == 0:
+                stitched_winning_trades = 0
+
+            if stitched_total_trades is not None and stitched_winning_trades is not None:
+                stitched_total_trades_int = max(0, int(round(float(stitched_total_trades))))
+                stitched_total_trades = stitched_total_trades_int
+                stitched_winning_trades = min(
+                    max(0, int(round(float(stitched_winning_trades)))),
+                    stitched_total_trades_int,
+                )
+
+            if stitched_win_rate is None and total_windows > 0:
+                stitched_win_rate = (profitable_windows / total_windows) * 100.0
+
+            if window_profits:
+                median_window_profit = float(statistics.median(window_profits))
+                worst_window_profit = min(window_profits)
+            if window_trade_win_rates:
+                median_window_wr = float(statistics.median(window_trade_win_rates))
+            if window_drawdowns:
+                worst_window_dd = max(window_drawdowns)
+
+            wf_cfg = getattr(wf_result, "config", None)
+            is_period_days = getattr(wf_cfg, "is_period_days", None)
+            if is_period_days is None:
+                is_period_days = wfa_config.get("is_period_days")
+            adaptive_mode = 1 if bool(getattr(wf_cfg, "adaptive_mode", False)) else 0
+            max_oos_period_days = getattr(wf_cfg, "max_oos_period_days", None)
+            min_oos_trades = getattr(wf_cfg, "min_oos_trades", None)
+            check_interval_trades = getattr(wf_cfg, "check_interval_trades", None)
+            cusum_threshold = getattr(wf_cfg, "cusum_threshold", None)
+            dd_threshold_multiplier = getattr(wf_cfg, "dd_threshold_multiplier", None)
+            inactivity_multiplier = getattr(wf_cfg, "inactivity_multiplier", None)
+            sampler_type = (
+                optuna_config.get("sampler_type")
+                or optuna_config.get("sampler")
+                or (config.get("sampler_type") if isinstance(config, dict) else None)
+            )
+            population_size = optuna_config.get("population_size")
+            if population_size is None and isinstance(config, dict):
+                population_size = config.get("population_size")
+            crossover_prob = optuna_config.get("crossover_prob")
+            if crossover_prob is None and isinstance(config, dict):
+                crossover_prob = config.get("crossover_prob")
+            mutation_prob = optuna_config.get("mutation_prob")
+            if mutation_prob is None and isinstance(config, dict):
+                mutation_prob = config.get("mutation_prob")
+            swapping_prob = optuna_config.get("swapping_prob")
+            if swapping_prob is None and isinstance(config, dict):
+                swapping_prob = config.get("swapping_prob")
+            budget_mode = optuna_config.get("budget_mode")
+            n_trials = optuna_config.get("n_trials")
+            time_limit = optuna_config.get("time_limit")
+            convergence_patience = optuna_config.get("convergence_patience")
+
+            study_columns = (
+                "study_id", "study_name", "strategy_id", "strategy_version",
+                "optimization_mode",
+                "objectives_json", "n_objectives", "directions_json", "primary_objective",
+                "constraints_json",
+                "sampler_type", "population_size", "crossover_prob", "mutation_prob", "swapping_prob",
+                "budget_mode", "n_trials", "time_limit", "convergence_patience",
+                "total_trials", "completed_trials", "pruned_trials", "pareto_front_size",
+                "best_value", "best_values_json",
+                "score_config_json", "config_json",
+                "csv_file_path", "csv_file_name",
+                "dataset_start_date", "dataset_end_date", "warmup_bars",
+                "is_period_days",
+                "adaptive_mode", "max_oos_period_days", "min_oos_trades",
+                "check_interval_trades", "cusum_threshold",
+                "dd_threshold_multiplier", "inactivity_multiplier",
+                "optimization_time_seconds",
+                "completed_at",
+                "filter_min_profit", "min_profit_threshold",
+                "stitched_oos_equity_curve", "stitched_oos_timestamps_json",
+                "stitched_oos_window_ids_json", "stitched_oos_net_profit_pct",
+                "stitched_oos_max_drawdown_pct", "stitched_oos_total_trades",
+                "stitched_oos_winning_trades", "stitched_oos_win_rate",
+                "profitable_windows", "total_windows",
+                "median_window_profit", "median_window_wr",
+                "worst_window_profit", "worst_window_dd",
+            )
+            study_values = (
+                study_id,
+                study_name,
+                wf_result.strategy_id,
+                strategy_version,
+                "wfa",
+                json.dumps(objectives) if objectives else None,
+                len(objectives) if objectives else 1,
+                None,
+                primary_objective,
+                json.dumps(constraints_payload) if constraints_payload else None,
+                sampler_type,
+                population_size,
+                crossover_prob,
+                mutation_prob,
+                swapping_prob,
+                budget_mode,
+                n_trials,
+                time_limit,
+                convergence_patience,
+                wf_result.total_windows,
+                wf_result.total_windows,
+                0,
+                None,
+                getattr(wf_result.stitched_oos, "wfe", None),
+                None,
+                json.dumps(score_config) if score_config else None,
+                json.dumps(_safe_dict(config)),
+                str(Path(csv_file_path).resolve()) if csv_file_path else "",
+                csv_display_name,
+                _format_date(wf_result.trading_start_date),
+                _format_date(wf_result.trading_end_date),
+                wf_result.warmup_bars,
+                is_period_days,
+                adaptive_mode,
+                max_oos_period_days,
+                min_oos_trades,
+                check_interval_trades,
+                cusum_threshold,
+                dd_threshold_multiplier,
+                inactivity_multiplier,
+                optimization_time_seconds,
+                _utc_now_iso(),
+                1 if isinstance(config, dict) and config.get("filter_min_profit") else 0,
+                config.get("min_profit_threshold") if isinstance(config, dict) else None,
+                stitched_equity,
+                stitched_timestamps,
+                stitched_window_ids,
+                stitched_net_profit_pct,
+                stitched_max_drawdown_pct,
+                stitched_total_trades,
+                stitched_winning_trades,
+                stitched_win_rate,
+                profitable_windows,
+                total_windows,
+                median_window_profit,
+                median_window_wr,
+                worst_window_profit,
+                worst_window_dd,
+            )
+            study_placeholders = ", ".join(["?"] * len(study_columns))
             conn.execute(
-                """
-                INSERT INTO studies (
-                    study_id, study_name, strategy_id, strategy_version,
-                    optimization_mode,
-                    objectives_json, n_objectives, directions_json, primary_objective,
-                    constraints_json,
-                    sampler_type, population_size, crossover_prob, mutation_prob, swapping_prob,
-                    budget_mode, n_trials, time_limit, convergence_patience,
-                    total_trials, completed_trials, pruned_trials, pareto_front_size,
-                    best_value, best_values_json,
-                    score_config_json, config_json,
-                    csv_file_path, csv_file_name,
-                    dataset_start_date, dataset_end_date, warmup_bars,
-                    completed_at,
-                    filter_min_profit, min_profit_threshold,
-                    stitched_oos_equity_curve, stitched_oos_timestamps_json,
-                    stitched_oos_window_ids_json, stitched_oos_net_profit_pct,
-                    stitched_oos_max_drawdown_pct, stitched_oos_total_trades,
-                    stitched_oos_win_rate
-                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-                """,
-                (
-                    study_id,
-                    study_name,
-                    wf_result.strategy_id,
-                    strategy_version,
-                    "wfa",
-                    json.dumps(objectives) if objectives else None,
-                    len(objectives) if objectives else 1,
-                    None,
-                    primary_objective,
-                    json.dumps(constraints_payload) if constraints_payload else None,
-                    None,
-                    None,
-                    None,
-                    None,
-                    None,
-                    None,
-                    None,
-                    None,
-                    None,
-                    wf_result.total_windows,
-                    wf_result.total_windows,
-                    0,
-                    None,
-                    getattr(wf_result.stitched_oos, "wfe", None),
-                    None,
-                    json.dumps(score_config) if score_config else None,
-                    json.dumps(_safe_dict(config)),
-                    str(Path(csv_file_path).resolve()) if csv_file_path else "",
-                    csv_display_name,
-                    _format_date(wf_result.trading_start_date),
-                    _format_date(wf_result.trading_end_date),
-                    wf_result.warmup_bars,
-                    _utc_now_iso(),
-                    1 if isinstance(config, dict) and config.get("filter_min_profit") else 0,
-                    config.get("min_profit_threshold") if isinstance(config, dict) else None,
-                    stitched_equity,
-                    stitched_timestamps,
-                    stitched_window_ids,
-                    stitched_net_profit_pct,
-                    stitched_max_drawdown_pct,
-                    stitched_total_trades,
-                    stitched_win_rate,
-                ),
+                f"INSERT INTO studies ({', '.join(study_columns)}) VALUES ({study_placeholders})",
+                study_values,
             )
 
             window_rows = []
@@ -1102,11 +1770,17 @@ def save_wfa_study_to_db(
                         else None,
                         _format_date(getattr(window, "optimization_start", None)),
                         _format_date(getattr(window, "optimization_end", None)),
+                        _format_timestamp(getattr(window, "optimization_start", None)),
+                        _format_timestamp(getattr(window, "optimization_end", None)),
                         _format_date(getattr(window, "ft_start", None)),
                         _format_date(getattr(window, "ft_end", None)),
+                        _format_timestamp(getattr(window, "ft_start", None)),
+                        _format_timestamp(getattr(window, "ft_end", None)),
                         is_timestamps,
                         _format_date(window.is_start),
                         _format_date(window.is_end),
+                        _format_timestamp(window.is_start),
+                        _format_timestamp(window.is_end),
                         window.is_net_profit_pct,
                         window.is_max_drawdown_pct,
                         window.is_total_trades,
@@ -1123,9 +1797,12 @@ def save_wfa_study_to_db(
                         getattr(window, "is_composite_score", None),
                         _format_date(window.oos_start),
                         _format_date(window.oos_end),
+                        _format_timestamp(window.oos_start),
+                        _format_timestamp(window.oos_end),
                         window.oos_net_profit_pct,
                         window.oos_max_drawdown_pct,
                         window.oos_total_trades,
+                        getattr(window, "oos_winning_trades", None),
                         oos_equity,
                         oos_timestamps,
                         getattr(window, "oos_win_rate", None),
@@ -1136,34 +1813,48 @@ def save_wfa_study_to_db(
                         getattr(window, "oos_sqn", None),
                         getattr(window, "oos_ulcer_index", None),
                         getattr(window, "oos_consistency_score", None),
+                        getattr(window, "trigger_type", None),
+                        getattr(window, "cusum_final", None),
+                        getattr(window, "cusum_threshold", None),
+                        getattr(window, "dd_threshold", None),
+                        getattr(window, "oos_actual_days", None),
                         getattr(window, "wfe", None),
                     )
                 )
 
             if window_rows:
+                window_columns = (
+                    "window_id", "study_id", "window_number",
+                    "best_params_json", "param_id", "best_params_source",
+                    "is_pareto_optimal", "constraints_satisfied",
+                    "available_modules", "store_top_n_trials",
+                    "module_status_json", "selection_chain_json",
+                    "optimization_start_date", "optimization_end_date",
+                    "optimization_start_ts", "optimization_end_ts",
+                    "ft_start_date", "ft_end_date",
+                    "ft_start_ts", "ft_end_ts",
+                    "is_timestamps_json",
+                    "is_start_date", "is_end_date",
+                    "is_start_ts", "is_end_ts",
+                    "is_net_profit_pct", "is_max_drawdown_pct", "is_total_trades", "is_best_trial_number",
+                    "is_equity_curve",
+                    "is_win_rate", "is_max_consecutive_losses", "is_romad", "is_sharpe_ratio",
+                    "is_profit_factor", "is_sqn", "is_ulcer_index", "is_consistency_score", "is_composite_score",
+                    "oos_start_date", "oos_end_date",
+                    "oos_start_ts", "oos_end_ts",
+                    "oos_net_profit_pct", "oos_max_drawdown_pct", "oos_total_trades",
+                    "oos_winning_trades",
+                    "oos_equity_curve", "oos_timestamps_json",
+                    "oos_win_rate", "oos_max_consecutive_losses", "oos_romad", "oos_sharpe_ratio",
+                    "oos_profit_factor", "oos_sqn", "oos_ulcer_index", "oos_consistency_score",
+                    "trigger_type", "cusum_final", "cusum_threshold", "dd_threshold", "oos_actual_days",
+                    "wfe",
+                )
+                placeholders = ", ".join(["?"] * len(window_columns))
                 conn.executemany(
-                    """
-                    INSERT INTO wfa_windows (
-                        window_id, study_id, window_number,
-                        best_params_json, param_id, best_params_source,
-                        is_pareto_optimal, constraints_satisfied,
-                        available_modules, store_top_n_trials,
-                        module_status_json, selection_chain_json,
-                        optimization_start_date, optimization_end_date,
-                        ft_start_date, ft_end_date,
-                        is_timestamps_json,
-                        is_start_date, is_end_date,
-                        is_net_profit_pct, is_max_drawdown_pct, is_total_trades, is_best_trial_number,
-                        is_equity_curve,
-                        is_win_rate, is_max_consecutive_losses, is_romad, is_sharpe_ratio,
-                        is_profit_factor, is_sqn, is_ulcer_index, is_consistency_score, is_composite_score,
-                        oos_start_date, oos_end_date,
-                        oos_net_profit_pct, oos_max_drawdown_pct, oos_total_trades,
-                        oos_equity_curve, oos_timestamps_json,
-                        oos_win_rate, oos_max_consecutive_losses, oos_romad, oos_sharpe_ratio,
-                        oos_profit_factor, oos_sqn, oos_ulcer_index, oos_consistency_score,
-                        wfe
-                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    f"""
+                    INSERT INTO wfa_windows ({", ".join(window_columns)})
+                    VALUES ({placeholders})
                     """,
                     window_rows,
                 )
@@ -1399,8 +2090,15 @@ def load_study_from_db(study_id: str) -> Optional[Dict]:
                 "final_net_profit_pct": study.get("stitched_oos_net_profit_pct"),
                 "max_drawdown_pct": study.get("stitched_oos_max_drawdown_pct"),
                 "total_trades": study.get("stitched_oos_total_trades"),
+                "winning_trades": study.get("stitched_oos_winning_trades"),
                 "wfe": study.get("best_value"),
                 "oos_win_rate": study.get("stitched_oos_win_rate"),
+                "profitable_windows": study.get("profitable_windows"),
+                "total_windows": study.get("total_windows"),
+                "median_window_profit": study.get("median_window_profit"),
+                "median_window_wr": study.get("median_window_wr"),
+                "worst_window_profit": study.get("worst_window_profit"),
+                "worst_window_dd": study.get("worst_window_dd"),
             }
 
         trials: List[Dict] = []
@@ -2195,4 +2893,12 @@ def _format_date(value: Any) -> str:
         return value.strftime("%Y-%m-%d")
     if value:
         return str(value)[:10]
+    return ""
+
+
+def _format_timestamp(value: Any) -> str:
+    if hasattr(value, "isoformat"):
+        return value.isoformat()
+    if value:
+        return str(value)
     return ""

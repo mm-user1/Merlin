@@ -11,6 +11,7 @@
     <div class="nav-tabs">
       <a href="/" class="nav-tab" data-nav="start">Start</a>
       <a href="/results" class="nav-tab active" data-nav="results">Results</a>
+      <a href="/analytics" class="nav-tab" data-nav="analytics">Analytics</a>
     </div>
     <div class="nav-spacer"></div>
   </nav>
@@ -28,12 +29,27 @@
 
           <div class="manager-buttons">
             <button class="manager-btn" id="studySelectBtn">Select</button>
+            <button class="manager-btn" id="studyFilterBtn">Filter</button>
             <button class="manager-btn delete-btn" id="studyDeleteBtn">Delete</button>
+          </div>
+          <div class="manager-filter-row" id="studyFilterRow" hidden>
+            <button class="manager-btn manager-filter-sort-btn" id="studySortNameBtn" type="button">Sort Name</button>
+            <input type="text" id="studyFilterInput" class="manager-filter-input" />
           </div>
         </div>
       </div>
 
-      <div class="collapsible open">
+      <div class="collapsible" id="database-section">
+        <div class="collapsible-header">
+          <span class="collapsible-icon">&#9660;</span>
+          <span class="collapsible-title">Database</span>
+        </div>
+        <div class="collapsible-content">
+          <div class="database-list"></div>
+        </div>
+      </div>
+
+      <div class="collapsible open future-hidden">
         <div class="collapsible-header">
           <span class="collapsible-icon">&#9660;</span>
           <span class="collapsible-title">Status &amp; Controls</span>
@@ -60,7 +76,7 @@
         </div>
       </div>
 
-      <div class="collapsible open" id="wfa-progress-section" style="display: none;">
+      <div class="collapsible open future-hidden" id="wfa-progress-section" style="display: none;">
         <div class="collapsible-header">
           <span class="collapsible-icon">&#9660;</span>
           <span class="collapsible-title">Walk-Forward Progress</span>
@@ -131,7 +147,7 @@
         </div>
       </div>
 
-      <div class="collapsible" id="wfa-settings-section" style="display: none;">
+      <div class="collapsible open" id="wfa-settings-section" style="display: none;">
         <div class="collapsible-header">
           <span class="collapsible-icon">&#9660;</span>
           <span class="collapsible-title">WFA Settings</span>
@@ -145,6 +161,38 @@
             <div class="setting-item">
               <span class="key">OOS (days)</span>
               <span class="val" id="wfa-oos-days">-</span>
+            </div>
+            <div class="setting-item">
+              <span class="key">Adaptive</span>
+              <span class="val" id="wfa-adaptive-mode">-</span>
+            </div>
+            <div class="setting-item" id="wfa-max-oos-row">
+              <span class="key">Max OOS (days)</span>
+              <span class="val" id="wfa-max-oos-days">-</span>
+            </div>
+            <div class="setting-item" id="wfa-min-trades-row">
+              <span class="key">Min OOS Trades</span>
+              <span class="val" id="wfa-min-trades">-</span>
+            </div>
+            <div class="setting-item" id="wfa-check-interval-row">
+              <span class="key">Check Interval</span>
+              <span class="val" id="wfa-check-interval">-</span>
+            </div>
+            <div class="setting-item" id="wfa-cusum-row">
+              <span class="key">CUSUM Threshold</span>
+              <span class="val" id="wfa-cusum-h">-</span>
+            </div>
+            <div class="setting-item" id="wfa-dd-mult-row">
+              <span class="key">DD Multiplier</span>
+              <span class="val" id="wfa-dd-mult">-</span>
+            </div>
+            <div class="setting-item" id="wfa-inactivity-row">
+              <span class="key">Inactivity Mult.</span>
+              <span class="val" id="wfa-inactivity-mult">-</span>
+            </div>
+            <div class="setting-item">
+              <span class="key">WFA Run Time</span>
+              <span class="val" id="wfa-run-time">-</span>
             </div>
           </div>
         </div>
@@ -281,9 +329,8 @@
       <div class="modal-body">
         <p><strong>File:</strong> <span id="missingCsvName">Unknown</span></p>
         <p><strong>Original path:</strong> <span id="missingCsvPath">Unknown</span></p>
-        <p class="modal-note">Select the CSV file or paste a new path to continue.</p>
-        <input type="file" id="missingCsvFile" accept=".csv" />
-        <input type="text" id="missingCsvInput" placeholder="Or paste CSV path" />
+        <p class="modal-note">Provide an absolute CSV path to continue.</p>
+        <input type="text" id="missingCsvInput" placeholder="C:\\path\\to\\dataset.csv" />
       </div>
       <div class="modal-actions">
         <button class="btn btn-primary" id="missingCsvUpdate">Update</button>
@@ -310,7 +357,7 @@
               New CSV
             </label>
           </div>
-          <input type="file" id="manualDataFile" accept=".csv" />
+          <input type="text" id="manualDataPath" placeholder="Absolute path: C:\\path\\to\\dataset.csv" />
         </div>
 
         <div class="modal-section">

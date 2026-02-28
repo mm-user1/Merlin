@@ -66,6 +66,29 @@ function updateOptimizationState(patch) {
   return updated;
 }
 
+function generateOptimizationRunId(prefix = 'run') {
+  const normalizedPrefix = String(prefix || 'run').replace(/[^A-Za-z0-9_-]+/g, '') || 'run';
+  return normalizedPrefix + '_' + Date.now() + '_' + Math.random().toString(36).slice(2, 10);
+}
+
+function setCurrentOptimizationRunId(runId) {
+  const normalizedRunId = String(runId || '').trim();
+  window.activeOptimizationRunId = normalizedRunId;
+  updateOptimizationState({ run_id: normalizedRunId });
+}
+
+async function cancelCurrentRunBestEffort(runId) {
+  const normalizedRunId = String(runId || '').trim();
+  if (!normalizedRunId || typeof cancelOptimizationRequest !== 'function') {
+    return;
+  }
+  try {
+    await cancelOptimizationRequest(normalizedRunId);
+  } catch (error) {
+    console.warn('Cancel request failed', error);
+  }
+}
+
 function openResultsPage() {
   try {
     window.open('/results', '_blank', 'noopener');
@@ -84,11 +107,224 @@ function getStrategySummary() {
   };
 }
 
+function isAbsoluteFilesystemPath(path) {
+  const value = String(path || '').trim();
+  if (!value) return false;
+  if (/^[A-Za-z]:[\\/]/.test(value)) return true; // Windows drive path
+  if (/^\\\\[^\\]/.test(value)) return true; // UNC path
+  if (value.startsWith('/')) return true; // POSIX path
+  return false;
+}
+
+function normalizeSelectedCsvPaths(paths) {
+  const items = Array.isArray(paths) ? paths : [];
+  const unique = [];
+  const seen = new Set();
+  items.forEach((item) => {
+    const value = String(item || '').trim();
+    if (!value) return;
+    const key = value.toLowerCase();
+    if (seen.has(key)) return;
+    seen.add(key);
+    unique.push(value);
+  });
+  return unique;
+}
+
+function getSelectedCsvPaths() {
+  if (Array.isArray(window.selectedCsvPaths) && window.selectedCsvPaths.length) {
+    return normalizeSelectedCsvPaths(window.selectedCsvPaths);
+  }
+  const fallback = String(window.selectedCsvPath || '').trim();
+  return fallback ? [fallback] : [];
+}
+
+function setSelectedCsvPaths(paths) {
+  const normalized = normalizeSelectedCsvPaths(paths);
+  window.selectedCsvPaths = normalized;
+  window.selectedCsvPath = normalized[0] || '';
+  if (!window.uiState || typeof window.uiState !== 'object') {
+    window.uiState = {};
+  }
+  window.uiState.csvPath = window.selectedCsvPath;
+  renderSelectedFiles([]);
+}
+
+const csvBrowserState = {
+  currentPath: '',
+  entries: []
+};
+
+function csvBrowserElements() {
+  return {
+    modal: document.getElementById('csvBrowserModal'),
+    pathInput: document.getElementById('csvBrowserPath'),
+    list: document.getElementById('csvBrowserList'),
+    error: document.getElementById('csvBrowserError'),
+    rootInput: document.getElementById('csvDirectory'),
+    upBtn: document.getElementById('csvBrowserUpBtn'),
+    openBtn: document.getElementById('csvBrowserOpenBtn'),
+    refreshBtn: document.getElementById('csvBrowserRefreshBtn'),
+    cancelBtn: document.getElementById('csvBrowserCancelBtn'),
+    addBtn: document.getElementById('csvBrowserAddBtn')
+  };
+}
+
+function showCsvBrowserError(message) {
+  const { error } = csvBrowserElements();
+  if (!error) return;
+  const text = String(message || '').trim();
+  if (!text) {
+    error.textContent = '';
+    error.style.display = 'none';
+    return;
+  }
+  error.textContent = text;
+  error.style.display = 'block';
+}
+
+function renderCsvBrowserEntries(entries) {
+  const { list } = csvBrowserElements();
+  if (!list) return;
+  list.innerHTML = '';
+  const fragment = document.createDocumentFragment();
+  entries.forEach((entry) => {
+    const option = document.createElement('option');
+    option.value = entry.path;
+    option.dataset.kind = entry.kind;
+    option.textContent = entry.kind === 'dir'
+      ? `[DIR] ${entry.name}`
+      : `      ${entry.name}`;
+    fragment.appendChild(option);
+  });
+  list.appendChild(fragment);
+}
+
+async function loadCsvBrowserDirectory(path) {
+  const { pathInput } = csvBrowserElements();
+  const targetPath = String(path || '').trim();
+  showCsvBrowserError('');
+  try {
+    const payload = await browseCsvDirectoryRequest(targetPath);
+    csvBrowserState.currentPath = payload.current_path || '';
+    csvBrowserState.entries = Array.isArray(payload.entries) ? payload.entries : [];
+    if (pathInput) {
+      pathInput.value = csvBrowserState.currentPath;
+    }
+    renderCsvBrowserEntries(csvBrowserState.entries);
+  } catch (error) {
+    showCsvBrowserError(error.message || 'Failed to load directory.');
+  }
+}
+
+function closeCsvBrowserModal() {
+  const { modal } = csvBrowserElements();
+  if (!modal) return;
+  modal.classList.remove('show');
+  modal.setAttribute('aria-hidden', 'true');
+}
+
+async function openCsvBrowserModal() {
+  const { modal, rootInput } = csvBrowserElements();
+  if (!modal) return;
+  const rootPath = String(rootInput?.value || '').trim();
+  await loadCsvBrowserDirectory(rootPath);
+  modal.classList.add('show');
+  modal.setAttribute('aria-hidden', 'false');
+}
+
+async function openSelectedCsvBrowserDirectory() {
+  const { list } = csvBrowserElements();
+  if (!list) return;
+  const selected = Array.from(list.selectedOptions || []);
+  if (selected.length !== 1) {
+    showCsvBrowserError('Select exactly one folder to open.');
+    return;
+  }
+  const option = selected[0];
+  if (option.dataset.kind !== 'dir') {
+    showCsvBrowserError('Selected entry is not a folder.');
+    return;
+  }
+  await loadCsvBrowserDirectory(option.value);
+}
+
+async function moveCsvBrowserUp() {
+  const current = csvBrowserState.currentPath;
+  if (!current) return;
+  const lastSlash = Math.max(current.lastIndexOf('\\'), current.lastIndexOf('/'));
+  if (lastSlash <= 2) {
+    await loadCsvBrowserDirectory(current);
+    return;
+  }
+  const parent = current.slice(0, lastSlash);
+  await loadCsvBrowserDirectory(parent);
+}
+
+function addSelectedCsvFilesFromBrowser() {
+  const { list, rootInput } = csvBrowserElements();
+  if (!list) return;
+  const selected = Array.from(list.selectedOptions || []);
+  const filePaths = selected
+    .filter((item) => item.dataset.kind === 'file')
+    .map((item) => String(item.value || '').trim())
+    .filter(Boolean);
+
+  if (!filePaths.length) {
+    showCsvBrowserError('Select at least one CSV file.');
+    return;
+  }
+
+  const merged = normalizeSelectedCsvPaths([...getSelectedCsvPaths(), ...filePaths]);
+  setSelectedCsvPaths(merged);
+  if (rootInput && csvBrowserState.currentPath) {
+    rootInput.value = csvBrowserState.currentPath;
+  }
+  closeCsvBrowserModal();
+}
+
+function bindCsvBrowserControls() {
+  const { modal, list, upBtn, openBtn, refreshBtn, cancelBtn, addBtn } = csvBrowserElements();
+  if (!modal || !list || !upBtn || !openBtn || !refreshBtn || !cancelBtn || !addBtn) {
+    return;
+  }
+
+  if (modal.dataset.bound === '1') {
+    return;
+  }
+  modal.dataset.bound = '1';
+
+  upBtn.addEventListener('click', moveCsvBrowserUp);
+  openBtn.addEventListener('click', openSelectedCsvBrowserDirectory);
+  refreshBtn.addEventListener('click', () => loadCsvBrowserDirectory(csvBrowserState.currentPath));
+  cancelBtn.addEventListener('click', closeCsvBrowserModal);
+  addBtn.addEventListener('click', addSelectedCsvFilesFromBrowser);
+
+  list.addEventListener('dblclick', (event) => {
+    const target = event.target;
+    if (!target || target.tagName !== 'OPTION') return;
+    if (target.dataset.kind === 'dir') {
+      loadCsvBrowserDirectory(target.value);
+    }
+  });
+
+  modal.addEventListener('click', (event) => {
+    if (event.target === modal) {
+      closeCsvBrowserModal();
+    }
+  });
+
+  document.addEventListener('keydown', (event) => {
+    if (event.key === 'Escape' && modal.classList.contains('show')) {
+      closeCsvBrowserModal();
+    }
+  });
+}
+
 function getDatasetLabel() {
-  const fileInput = document.getElementById('csvFile');
-  const file = fileInput && fileInput.files && fileInput.files[0];
-  if (file && file.name) return file.name;
-  if (window.selectedCsvPath) return window.selectedCsvPath;
+  const selectedPaths = getSelectedCsvPaths();
+  if (selectedPaths.length === 1) return selectedPaths[0];
+  if (selectedPaths.length > 1) return `${selectedPaths.length} CSV files selected`;
   return '';
 }
 
@@ -209,17 +445,52 @@ async function refreshOptimizationStateFromServer() {
 function toggleWFSettings() {
   const wfToggle = document.getElementById('enableWF');
   const wfSettings = document.getElementById('wfSettings');
+  const adaptiveToggle = document.getElementById('enableAdaptiveWF');
   if (!wfToggle || !wfSettings) {
     return;
   }
   if (wfToggle.disabled) {
     wfSettings.style.display = 'none';
+    if (adaptiveToggle) {
+      adaptiveToggle.disabled = true;
+      adaptiveToggle.checked = false;
+    }
+    toggleAdaptiveWFSettings();
     return;
   }
   wfSettings.style.display = wfToggle.checked ? 'block' : 'none';
+  if (adaptiveToggle) {
+    adaptiveToggle.disabled = !wfToggle.checked;
+    if (!wfToggle.checked) {
+      adaptiveToggle.checked = false;
+    }
+  }
+  toggleAdaptiveWFSettings();
 }
 
 window.toggleWFSettings = toggleWFSettings;
+
+function toggleAdaptiveWFSettings() {
+  const wfToggle = document.getElementById('enableWF');
+  const adaptiveToggle = document.getElementById('enableAdaptiveWF');
+  const adaptiveSettings = document.getElementById('adaptiveWFSettings');
+  const oosInput = document.getElementById('wfOosPeriodDays');
+  if (!adaptiveToggle || !adaptiveSettings || !oosInput) {
+    return;
+  }
+
+  const enabled = Boolean(
+    wfToggle
+    && wfToggle.checked
+    && !wfToggle.disabled
+    && adaptiveToggle.checked
+    && !adaptiveToggle.disabled
+  );
+  adaptiveSettings.style.display = enabled ? 'block' : 'none';
+  oosInput.disabled = enabled;
+}
+
+window.toggleAdaptiveWFSettings = toggleAdaptiveWFSettings;
 
 function syncBudgetInputs() {
   const budgetModeRadios = document.querySelectorAll('input[name="budgetMode"]');
@@ -836,7 +1107,7 @@ function buildOptunaConfig(state) {
   const selectedObjectives = objectiveConfig.objectives || [];
   const postProcessConfig = window.PostProcessUI
     ? window.PostProcessUI.collectConfig()
-    : { enabled: false, ftPeriodDays: 30, topK: 20, sortMetric: 'profit_degradation' };
+    : { enabled: false, ftPeriodDays: 30, topK: 10, sortMetric: 'profit_degradation' };
   const oosTestConfig = window.OosTestUI
     ? window.OosTestUI.collectConfig()
     : { enabled: false, periodDays: 30, topK: 20 };
@@ -873,6 +1144,20 @@ function clearWFResults() {
   }
 }
 
+function appendDatabaseTargetToFormData(formData) {
+  const dbTarget = document.getElementById('dbTarget')?.value || '';
+  if (!dbTarget) return;
+  formData.append('dbTarget', dbTarget);
+}
+
+function getDatabaseTargetValidationError() {
+  const dbTarget = document.getElementById('dbTarget')?.value || '';
+  if (dbTarget === 'new') {
+    return 'Please create and select a database in "Database Target" before running optimization or Walk-Forward.';
+  }
+  return '';
+}
+
 async function runWalkForward({ sources, state }) {
   const wfStatusEl = document.getElementById('wfStatus');
 
@@ -898,6 +1183,14 @@ async function runWalkForward({ sources, state }) {
     return;
   }
 
+  const dbTargetError = getDatabaseTargetValidationError();
+  if (dbTargetError) {
+    if (wfStatusEl) {
+      wfStatusEl.textContent = dbTargetError;
+    }
+    return;
+  }
+
   const totalSources = sources.length;
   const config = buildOptunaConfig(state);
   const hasEnabledParams = Object.values(config.enabled_params || {}).some(Boolean);
@@ -911,6 +1204,13 @@ async function runWalkForward({ sources, state }) {
   const wfIsPeriodDays = document.getElementById('wfIsPeriodDays').value;
   const wfOosPeriodDays = document.getElementById('wfOosPeriodDays').value;
   const wfStoreTopNTrials = document.getElementById('wfStoreTopNTrials')?.value || '50';
+  const wfAdaptiveMode = Boolean(document.getElementById('enableAdaptiveWF')?.checked);
+  const wfMaxOosPeriodDays = document.getElementById('wfMaxOosPeriodDays')?.value || '90';
+  const wfMinOosTrades = document.getElementById('wfMinOosTrades')?.value || '5';
+  const wfCheckIntervalTrades = document.getElementById('wfCheckIntervalTrades')?.value || '3';
+  const wfCusumThreshold = document.getElementById('wfCusumThreshold')?.value || '5.0';
+  const wfDdThresholdMultiplier = document.getElementById('wfDdThresholdMultiplier')?.value || '1.5';
+  const wfInactivityMultiplier = document.getElementById('wfInactivityMultiplier')?.value || '5.0';
   const warmupValue = document.getElementById('warmupBars')?.value || '1000';
   const strategySummary = getStrategySummary();
 
@@ -919,6 +1219,7 @@ async function runWalkForward({ sources, state }) {
   saveOptimizationState({
     status: 'running',
     mode: 'wfa',
+    run_id: '',
     strategy: strategySummary,
     dataset: {
       label: getDatasetLabel()
@@ -941,7 +1242,14 @@ async function runWalkForward({ sources, state }) {
     wfa: {
       isPeriodDays: Number(wfIsPeriodDays),
       oosPeriodDays: Number(wfOosPeriodDays),
-      storeTopNTrials: Number(wfStoreTopNTrials)
+      storeTopNTrials: Number(wfStoreTopNTrials),
+      adaptiveMode: wfAdaptiveMode,
+      maxOosPeriodDays: Number(wfMaxOosPeriodDays),
+      minOosTrades: Number(wfMinOosTrades),
+      checkIntervalTrades: Number(wfCheckIntervalTrades),
+      cusumThreshold: Number(wfCusumThreshold),
+      ddThresholdMultiplier: Number(wfDdThresholdMultiplier),
+      inactivityMultiplier: Number(wfInactivityMultiplier)
     },
     fixedParams: clonePreset(config.fixed_params || {}),
     strategyConfig: clonePreset(window.currentStrategyConfig || {})
@@ -963,46 +1271,67 @@ async function runWalkForward({ sources, state }) {
   const errors = [];
   let successCount = 0;
   let lastSuccessfulData = null;
+  let inFlightRunId = '';
 
   for (let index = 0; index < totalSources; index += 1) {
     const source = sources[index];
-    const isFileObject = typeof File !== 'undefined' && source instanceof File;
-    const rawSourceName = isFileObject ? source.name : source && source.path;
-    const sourceName = rawSourceName || (isFileObject ? 'Unnamed file' : 'Saved path');
+    const sourcePath = String(source?.path || '').trim();
+    const sourceName = sourcePath || ('source_' + (index + 1));
     const sourceNumber = index + 1;
     const fileLabel = `Processing source ${sourceNumber} of ${totalSources}: ${sourceName}`;
 
     updateStatus(index, `${fileLabel} - running Walk-Forward...`);
 
+    if (!isAbsoluteFilesystemPath(sourcePath)) {
+      const message = 'CSV path must be absolute.';
+      errors.push({ file: sourceName, message });
+      updateStatus(index, `Error: Source ${sourceNumber} of ${totalSources} (${sourceName}) failed: ${message}`);
+      continue;
+    }
+
     const formData = new FormData();
     formData.append('strategy', window.currentStrategyId);
     formData.append('warmupBars', warmupValue);
-    if (isFileObject) {
-      formData.append('file', source, source.name);
-    } else if (source && source.path) {
-      formData.append('csvPath', source.path);
-    }
+    formData.append('csvPath', sourcePath);
 
     formData.append('config', JSON.stringify(config));
     formData.append('wf_is_period_days', wfIsPeriodDays);
     formData.append('wf_oos_period_days', wfOosPeriodDays);
     formData.append('wf_store_top_n_trials', wfStoreTopNTrials);
+    formData.append('wf_adaptive_mode', wfAdaptiveMode ? 'true' : 'false');
+    formData.append('wf_max_oos_period_days', wfMaxOosPeriodDays);
+    formData.append('wf_min_oos_trades', wfMinOosTrades);
+    formData.append('wf_check_interval_trades', wfCheckIntervalTrades);
+    formData.append('wf_cusum_threshold', wfCusumThreshold);
+    formData.append('wf_dd_threshold_multiplier', wfDdThresholdMultiplier);
+    formData.append('wf_inactivity_multiplier', wfInactivityMultiplier);
+    inFlightRunId = generateOptimizationRunId('wfa');
+    formData.append('runId', inFlightRunId);
+    setCurrentOptimizationRunId(inFlightRunId);
+    appendDatabaseTargetToFormData(formData);
     try {
       const data = await runWalkForwardRequest(formData, optimizationAbortController.signal);
 
       updateStatus(index, `Success: Source ${sourceNumber} of ${totalSources} (${sourceName}) completed successfully.`);
       successCount += 1;
       lastSuccessfulData = data;
+      inFlightRunId = '';
+      setCurrentOptimizationRunId('');
     } catch (err) {
       if (err && err.name === 'AbortError') {
+        await cancelCurrentRunBestEffort(inFlightRunId);
+        inFlightRunId = '';
+        setCurrentOptimizationRunId('');
         updateStatus(index, `Cancelled: Source ${sourceNumber} of ${totalSources} (${sourceName}).`);
-        updateOptimizationState({ status: 'cancelled', mode: 'wfa' });
+        updateOptimizationState({ status: 'cancelled', mode: 'wfa', run_id: '' });
         break;
       }
       const message = err && err.message ? err.message : 'Walk-Forward failed.';
       console.error(`Walk-Forward failed for source ${sourceName}`, err);
       errors.push({ file: sourceName, message });
       updateStatus(index, `Error: Source ${sourceNumber} of ${totalSources} (${sourceName}) failed: ${message}`);
+      inFlightRunId = '';
+      setCurrentOptimizationRunId('');
     }
   }
 
@@ -1023,6 +1352,7 @@ async function runWalkForward({ sources, state }) {
       updateOptimizationState({
         status: 'completed',
         mode: 'wfa',
+        run_id: '',
         study_id: lastSuccessfulData.study_id || '',
         summary: lastSuccessfulData.summary || {},
         dataPath: lastSuccessfulData.data_path || '',
@@ -1039,6 +1369,7 @@ async function runWalkForward({ sources, state }) {
       updateOptimizationState({
         status: 'completed',
         mode: 'wfa',
+        run_id: '',
         study_id: lastSuccessfulData.study_id || '',
         summary: lastSuccessfulData.summary || {},
         dataPath: lastSuccessfulData.data_path || '',
@@ -1053,21 +1384,20 @@ async function runWalkForward({ sources, state }) {
     updateOptimizationState({
       status: 'error',
       mode: 'wfa',
+      run_id: '',
       error: 'All walk-forward runs failed.'
     });
   }
+  setCurrentOptimizationRunId('');
 }
 
-function buildBacktestRequestFormData(primaryFile, payload) {
+function buildBacktestRequestFormData(csvPath, payload) {
   const formData = new FormData();
   formData.append('strategy', window.currentStrategyId);
   const warmupInput = document.getElementById('warmupBars');
   formData.append('warmupBars', warmupInput ? warmupInput.value : '1000');
-  if (primaryFile) {
-    formData.append('file', primaryFile, primaryFile.name);
-  }
-  if (window.selectedCsvPath) {
-    formData.append('csvPath', window.selectedCsvPath);
+  if (csvPath) {
+    formData.append('csvPath', csvPath);
   }
   formData.append('payload', JSON.stringify(payload));
   return formData;
@@ -1101,19 +1431,24 @@ async function executeBacktestRun({ event = null, downloadTrades = false } = {})
   }
   const resultsEl = document.getElementById('results');
   const errorEl = document.getElementById('error');
-  const fileInput = document.getElementById('csvFile');
-  if (!resultsEl || !errorEl || !fileInput) {
+  if (!resultsEl || !errorEl) {
     return;
   }
 
   errorEl.style.display = 'none';
   resultsEl.classList.remove('ready');
 
-  const selectedFiles = Array.from(fileInput.files || []);
-  const primaryFile = selectedFiles.length ? selectedFiles[0] : null;
+  const selectedPaths = getSelectedCsvPaths();
+  const primaryPath = selectedPaths.length ? selectedPaths[0] : '';
 
-  if (!primaryFile && !window.selectedCsvPath) {
-    errorEl.textContent = 'Please select a CSV data file or use a saved path.';
+  if (!primaryPath) {
+    errorEl.textContent = 'Please select a CSV file before running.';
+    errorEl.style.display = 'block';
+    return;
+  }
+
+  if (!isAbsoluteFilesystemPath(primaryPath)) {
+    errorEl.textContent = 'CSV path must be absolute.';
     errorEl.style.display = 'block';
     return;
   }
@@ -1142,17 +1477,13 @@ async function executeBacktestRun({ event = null, downloadTrades = false } = {})
   resultsEl.classList.add('loading');
 
   const aggregatedResults = [];
-  if (primaryFile) {
-    renderSelectedFiles(selectedFiles);
-  } else {
-    renderSelectedFiles([]);
-  }
+  renderSelectedFiles([]);
 
   for (let index = 0; index < combinations.length; index += 1) {
     const combo = combinations[index];
     const payload = { ...state.payload, ...combo };
 
-    const formData = buildBacktestRequestFormData(primaryFile, payload);
+    const formData = buildBacktestRequestFormData(primaryPath, payload);
 
     resultsEl.textContent = `Running calculation... (${index + 1}/${combinations.length})`;
 
@@ -1170,7 +1501,7 @@ async function executeBacktestRun({ event = null, downloadTrades = false } = {})
     if (downloadTrades) {
       try {
         const tradesResponse = await downloadBacktestTradesRequest(
-          buildBacktestRequestFormData(primaryFile, payload)
+          buildBacktestRequestFormData(primaryPath, payload)
         );
         await triggerDownloadFromResponse(
           tradesResponse,
@@ -1203,6 +1534,26 @@ async function runBacktestAndDownloadTrades(event) {
 async function submitOptimization(event) {
 
   event.preventDefault();
+
+  if (typeof isQueueRunning === 'function' && isQueueRunning()) {
+    if (typeof requestQueueStopAfterCurrent === 'function') {
+      requestQueueStopAfterCurrent();
+    } else if (window.optimizationAbortController) {
+      window.optimizationAbortController.abort();
+    }
+    return;
+  }
+
+  const queueLoaded = typeof isQueueLoaded === 'function' ? isQueueLoaded() : true;
+  const queue = queueLoaded && typeof loadQueue === 'function' ? loadQueue() : { items: [] };
+  const queuePendingCount = queueLoaded && typeof getQueuePendingCount === 'function'
+    ? getQueuePendingCount()
+    : queue.items.length;
+  if (queueLoaded && queuePendingCount > 0 && typeof runQueue === 'function') {
+    await runQueue();
+    return;
+  }
+
   const optimizerResultsEl = document.getElementById('optimizerResults');
   const progressContainer = document.getElementById('optimizerProgress');
   const optunaProgress = document.getElementById('optunaProgress');
@@ -1212,11 +1563,17 @@ async function submitOptimization(event) {
   const optunaCurrentTrial = document.getElementById('optunaCurrentTrial');
   const optunaEta = document.getElementById('optunaEta');
 
-  const fileInput = document.getElementById('csvFile');
-  const fileList = fileInput ? Array.from(fileInput.files || []) : [];
-  const sources = fileList.length ? fileList : (window.selectedCsvPath ? [{ path: window.selectedCsvPath }] : []);
+  const selectedPaths = getSelectedCsvPaths();
+  const invalidPath = selectedPaths.find((path) => !isAbsoluteFilesystemPath(path));
+  if (invalidPath) {
+    optimizerResultsEl.textContent = `CSV path must be absolute: ${invalidPath}`;
+    optimizerResultsEl.classList.remove('ready');
+    optimizerResultsEl.style.display = 'block';
+    return;
+  }
+  const sources = selectedPaths.map((path) => ({ path }));
   if (!sources.length) {
-    optimizerResultsEl.textContent = 'Please select at least one CSV file or saved path before running optimization.';
+    optimizerResultsEl.textContent = 'Please select at least one CSV file before running optimization.';
     optimizerResultsEl.classList.remove('ready');
     optimizerResultsEl.style.display = 'block';
     return;
@@ -1255,11 +1612,16 @@ async function submitOptimization(event) {
     return;
   }
 
-  if (fileList.length) {
-    renderSelectedFiles(fileList);
-  } else {
-    renderSelectedFiles([]);
+  const dbTargetError = getDatabaseTargetValidationError();
+  if (dbTargetError) {
+    optimizerResultsEl.textContent = dbTargetError;
+    optimizerResultsEl.classList.remove('ready');
+    optimizerResultsEl.classList.remove('loading');
+    optimizerResultsEl.style.display = 'block';
+    return;
   }
+
+  renderSelectedFiles([]);
 
   const config = buildOptunaConfig(state);
   const hasEnabledParams = Object.values(config.enabled_params || {}).some(Boolean);
@@ -1279,6 +1641,7 @@ async function submitOptimization(event) {
   saveOptimizationState({
     status: 'running',
     mode: 'optuna',
+    run_id: '',
     strategy: strategySummary,
     dataset: {
       label: getDatasetLabel()
@@ -1348,14 +1711,14 @@ async function submitOptimization(event) {
   let lastStudyId = '';
   let lastSummary = null;
   let lastDataPath = '';
+  let inFlightRunId = '';
   const optunaBudgetMode = config.optuna_budget_mode;
   const plannedTrials = optunaBudgetMode === 'trials' ? config.optuna_n_trials : null;
 
   for (let index = 0; index < totalSources; index += 1) {
     const source = sources[index];
-    const isFileObject = typeof File !== 'undefined' && source instanceof File;
-    const rawSourceName = isFileObject ? source.name : source && source.path;
-    const sourceName = rawSourceName || (isFileObject ? 'Unnamed file' : 'Saved path');
+    const sourcePath = String(source?.path || '').trim();
+    const sourceName = sourcePath || ('source_' + (index + 1));
     const sourceNumber = index + 1;
     const fileLabel = `Processing source ${sourceNumber} of ${totalSources}: ${sourceName}`;
 
@@ -1377,12 +1740,18 @@ async function submitOptimization(event) {
     const formData = new FormData();
     formData.append('strategy', window.currentStrategyId);
     formData.append('warmupBars', warmupValue);
-    if (isFileObject) {
-      formData.append('file', source, source.name);
-    } else if (source && source.path) {
-      formData.append('csvPath', source.path);
+    if (!isAbsoluteFilesystemPath(sourcePath)) {
+      const message = 'CSV path must be absolute.';
+      errors.push({ file: sourceName, message });
+      updateStatus(index, `Error: Source ${sourceNumber} of ${totalSources} (${sourceName}) failed: ${message}`);
+      continue;
     }
+    formData.append('csvPath', sourcePath);
     formData.append('config', JSON.stringify(config));
+    inFlightRunId = generateOptimizationRunId('opt');
+    formData.append('runId', inFlightRunId);
+    setCurrentOptimizationRunId(inFlightRunId);
+    appendDatabaseTargetToFormData(formData);
 
     try {
       const data = await runOptimizationRequest(formData, optimizationAbortController.signal);
@@ -1406,10 +1775,15 @@ async function submitOptimization(event) {
 
       updateStatus(index, `Success: Source ${sourceNumber} of ${totalSources} (${sourceName}) processed successfully.`);
       successCount += 1;
+      inFlightRunId = '';
+      setCurrentOptimizationRunId('');
     } catch (err) {
       if (err && err.name === 'AbortError') {
+        await cancelCurrentRunBestEffort(inFlightRunId);
+        inFlightRunId = '';
+        setCurrentOptimizationRunId('');
         updateStatus(index, `Cancelled: Source ${sourceNumber} of ${totalSources} (${sourceName}).`);
-        updateOptimizationState({ status: 'cancelled', mode: 'optuna' });
+        updateOptimizationState({ status: 'cancelled', mode: 'optuna', run_id: '' });
         break;
       }
       const message = err && err.message ? err.message : 'Optimization failed.';
@@ -1424,6 +1798,8 @@ async function submitOptimization(event) {
       }
 
       updateStatus(index, `Error: Source ${sourceNumber} of ${totalSources} (${sourceName}) failed: ${message}`);
+      inFlightRunId = '';
+      setCurrentOptimizationRunId('');
     }
   }
 
@@ -1442,6 +1818,7 @@ async function submitOptimization(event) {
       updateOptimizationState({
         status: 'completed',
         mode: 'optuna',
+        run_id: '',
         study_id: lastStudyId,
         summary: lastSummary || {},
         dataPath: lastDataPath,
@@ -1457,6 +1834,7 @@ async function submitOptimization(event) {
       updateOptimizationState({
         status: 'completed',
         mode: 'optuna',
+        run_id: '',
         study_id: lastStudyId,
         summary: lastSummary || {},
         dataPath: lastDataPath,
@@ -1468,9 +1846,11 @@ async function submitOptimization(event) {
     updateOptimizationState({
       status: 'error',
       mode: 'optuna',
+      run_id: '',
       error: 'Optimization failed for all selected data sources.'
     });
   }
+  setCurrentOptimizationRunId('');
   optimizerResultsEl.textContent = summaryMessages.join('\n');
 }
 

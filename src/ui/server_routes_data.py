@@ -1,11 +1,9 @@
 import io
-import json
-import math
 import re
 import tempfile
 import threading
 import time
-from datetime import datetime, timezone
+from datetime import timezone
 from http import HTTPStatus
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
@@ -40,9 +38,13 @@ from core.post_process import (
 )
 from core.testing import run_period_test_for_trials, select_oos_source_candidates
 from core.storage import (
+    create_new_db,
     delete_manual_test,
     delete_study,
+    get_active_db_name,
+    get_db_connection,
     get_study_trial,
+    list_db_files,
     list_manual_tests,
     list_studies,
     load_manual_test_results,
@@ -53,6 +55,7 @@ from core.storage import (
     save_stress_test_results,
     save_manual_test_to_db,
     save_oos_test_results,
+    set_active_db,
     update_csv_path,
     update_study_config_json,
 )
@@ -60,18 +63,22 @@ from core.storage import (
 try:
     from .server_services import (
         DEFAULT_PRESET_NAME,
+        DEFAULT_CSV_ROOT,
         _build_optimization_config,
         _build_trial_metrics,
+        _clear_queue_state,
         _find_wfa_window,
         _get_optimization_state,
         _get_parameter_types,
         _json_safe,
+        _load_queue_state,
+        _list_csv_directory,
         _list_presets,
         _load_preset,
         _normalize_preset_payload,
         _parse_csv_parameter_block,
-        _persist_csv_upload,
         _preset_path,
+        _save_queue_state,
         _resolve_csv_path,
         _resolve_strategy_id_from_request,
         _resolve_wfa_period,
@@ -90,18 +97,22 @@ try:
 except ImportError:
     from server_services import (
         DEFAULT_PRESET_NAME,
+        DEFAULT_CSV_ROOT,
         _build_optimization_config,
         _build_trial_metrics,
+        _clear_queue_state,
         _find_wfa_window,
         _get_optimization_state,
         _get_parameter_types,
         _json_safe,
+        _load_queue_state,
+        _list_csv_directory,
         _list_presets,
         _load_preset,
         _normalize_preset_payload,
         _parse_csv_parameter_block,
-        _persist_csv_upload,
         _preset_path,
+        _save_queue_state,
         _resolve_csv_path,
         _resolve_strategy_id_from_request,
         _resolve_wfa_period,
@@ -120,6 +131,79 @@ except ImportError:
 
 
 def register_routes(app):
+    def _trade_time_ns(value: Any) -> int:
+        if value is None:
+            return -1
+        try:
+            return int(value.value)
+        except Exception:
+            return -1
+
+    def _normalize_wfa_oos_trades(
+        trades: List[Any],
+        *,
+        start: Any,
+        end: Any,
+        expected_total: Optional[Any] = None,
+    ) -> List[Any]:
+        """Normalize adaptive OOS trades to match stored window semantics."""
+        start_ts = parse_timestamp_utc(start)
+        end_ts = parse_timestamp_utc(end)
+
+        normalized: List[Any] = []
+        for trade in list(trades or []):
+            entry_time = getattr(trade, "entry_time", None)
+            exit_time = getattr(trade, "exit_time", None)
+            if entry_time is None or exit_time is None:
+                continue
+            if start_ts is not None and entry_time < start_ts:
+                continue
+            if end_ts is not None and entry_time > end_ts:
+                continue
+            if end_ts is not None and exit_time > end_ts:
+                continue
+            normalized.append(trade)
+
+        normalized.sort(
+            key=lambda trade: (
+                _trade_time_ns(getattr(trade, "exit_time", None)),
+                _trade_time_ns(getattr(trade, "entry_time", None)),
+            )
+        )
+
+        try:
+            limit = max(0, int(expected_total)) if expected_total is not None else None
+        except (TypeError, ValueError):
+            limit = None
+
+        if limit is not None and len(normalized) > limit:
+            normalized = normalized[:limit]
+
+        return normalized
+
+    def _resolve_csv_path_for_response(
+        raw_path: Any,
+        *,
+        missing_error: str = "CSV file is required.",
+        not_found_error: str = "CSV file not found.",
+    ) -> Tuple[Optional[str], Optional[Tuple[object, HTTPStatus]]]:
+        raw_value = str(raw_path or "").strip()
+        if not raw_value:
+            return None, (jsonify({"error": missing_error}), HTTPStatus.BAD_REQUEST)
+        try:
+            resolved = _resolve_csv_path(raw_value)
+        except FileNotFoundError:
+            return None, (jsonify({"error": not_found_error}), HTTPStatus.BAD_REQUEST)
+        except IsADirectoryError:
+            return None, (jsonify({"error": "CSV path must point to a file."}), HTTPStatus.BAD_REQUEST)
+        except PermissionError as exc:
+            return None, (jsonify({"error": str(exc)}), HTTPStatus.FORBIDDEN)
+        except ValueError as exc:
+            message = str(exc).strip() or missing_error
+            return None, (jsonify({"error": message}), HTTPStatus.BAD_REQUEST)
+        except OSError:
+            return None, (jsonify({"error": "Failed to access CSV file."}), HTTPStatus.BAD_REQUEST)
+        return str(resolved), None
 
     @app.route("/")
     def index() -> object:
@@ -130,6 +214,107 @@ def register_routes(app):
     @app.route("/results")
     def results_page() -> object:
         return render_template("results.html")
+
+    @app.get("/api/csv/browse")
+    def browse_csv_directory() -> object:
+        raw_path = (request.args.get("path") or "").strip()
+        target_path = raw_path or DEFAULT_CSV_ROOT
+        try:
+            payload = _list_csv_directory(target_path)
+        except FileNotFoundError:
+            return jsonify({"error": f"Directory not found: {target_path}"}), HTTPStatus.BAD_REQUEST
+        except NotADirectoryError:
+            return jsonify({"error": f"Path is not a directory: {target_path}"}), HTTPStatus.BAD_REQUEST
+        except PermissionError:
+            return jsonify({"error": "Directory is outside allowed roots."}), HTTPStatus.FORBIDDEN
+        except ValueError as exc:
+            return jsonify({"error": str(exc)}), HTTPStatus.BAD_REQUEST
+        except OSError:
+            return jsonify({"error": "Failed to access CSV directory."}), HTTPStatus.BAD_REQUEST
+        return jsonify(payload)
+
+
+    @app.get("/api/databases")
+    def list_databases() -> object:
+        return jsonify({
+            "databases": list_db_files(),
+            "active": get_active_db_name(),
+        })
+
+
+    @app.post("/api/databases/active")
+    def switch_database() -> object:
+        state = _get_optimization_state()
+        if state.get("status") == "running":
+            return (
+                jsonify({"error": "Cannot switch database while optimization is running."}),
+                HTTPStatus.CONFLICT,
+            )
+
+        body = request.get_json(silent=True) or {}
+        filename = (body.get("filename") or "").strip()
+        if not filename:
+            return jsonify({"error": "Missing filename."}), HTTPStatus.BAD_REQUEST
+        if not filename.endswith(".db"):
+            return jsonify({"error": "Invalid filename."}), HTTPStatus.BAD_REQUEST
+
+        try:
+            set_active_db(filename)
+        except ValueError as exc:
+            return jsonify({"error": str(exc)}), HTTPStatus.BAD_REQUEST
+
+        return jsonify({"active": get_active_db_name()})
+
+
+    @app.post("/api/databases")
+    def create_database() -> object:
+        state = _get_optimization_state()
+        if state.get("status") == "running":
+            return (
+                jsonify({"error": "Cannot create database while optimization is running."}),
+                HTTPStatus.CONFLICT,
+            )
+
+        body = request.get_json(silent=True) or {}
+        label = (body.get("label") or "").strip()
+
+        try:
+            filename = create_new_db(label)
+        except ValueError as exc:
+            return jsonify({"error": str(exc)}), HTTPStatus.BAD_REQUEST
+
+        return jsonify({"filename": filename, "active": filename})
+
+
+    @app.get("/api/queue")
+    def get_queue_state_endpoint() -> object:
+        try:
+            payload = _load_queue_state()
+        except OSError:
+            return jsonify({"error": "Failed to load queue state."}), HTTPStatus.INTERNAL_SERVER_ERROR
+        return jsonify(payload)
+
+
+    @app.put("/api/queue")
+    def save_queue_state_endpoint() -> object:
+        payload = request.get_json(silent=True)
+        if not isinstance(payload, dict):
+            return jsonify({"error": "Queue payload must be a JSON object."}), HTTPStatus.BAD_REQUEST
+
+        try:
+            normalized = _save_queue_state(payload)
+        except OSError:
+            return jsonify({"error": "Failed to save queue state."}), HTTPStatus.INTERNAL_SERVER_ERROR
+        return jsonify(normalized)
+
+
+    @app.delete("/api/queue")
+    def clear_queue_state_endpoint() -> object:
+        try:
+            normalized = _clear_queue_state()
+        except OSError:
+            return jsonify({"error": "Failed to clear queue state."}), HTTPStatus.INTERNAL_SERVER_ERROR
+        return jsonify(normalized)
 
 
 
@@ -163,7 +348,6 @@ def register_routes(app):
         if not study_data:
             return jsonify({"error": "Study not found."}), HTTPStatus.NOT_FOUND
 
-        csv_file = request.files.get("file")
         csv_path_raw = None
         if request.is_json:
             payload = request.get_json(silent=True) or {}
@@ -172,15 +356,13 @@ def register_routes(app):
         if csv_path_raw is None:
             csv_path_raw = request.form.get("csvPath")
 
-        if csv_file and csv_file.filename:
-            new_path = _persist_csv_upload(csv_file)
-        elif csv_path_raw:
-            try:
-                new_path = str(_resolve_csv_path(csv_path_raw))
-            except (FileNotFoundError, IsADirectoryError, ValueError, OSError) as exc:
-                return jsonify({"error": str(exc)}), HTTPStatus.BAD_REQUEST
-        else:
-            return jsonify({"error": "CSV file or path is required."}), HTTPStatus.BAD_REQUEST
+        new_path, error_response = _resolve_csv_path_for_response(
+            csv_path_raw,
+            missing_error="csvPath is required.",
+            not_found_error="CSV file not found.",
+        )
+        if error_response:
+            return error_response
 
         is_valid, warnings, error = _validate_csv_for_study(new_path, study_data["study"])
         if not is_valid:
@@ -233,8 +415,13 @@ def register_routes(app):
         elif not csv_path:
             return jsonify({"error": "csvPath is required when dataSource is 'new_csv'."}), HTTPStatus.BAD_REQUEST
 
-        if not csv_path or not Path(csv_path).exists():
-            return jsonify({"error": "CSV file not found."}), HTTPStatus.BAD_REQUEST
+        csv_path, error_response = _resolve_csv_path_for_response(
+            csv_path,
+            missing_error="CSV file not found.",
+            not_found_error="CSV file not found.",
+        )
+        if error_response:
+            return error_response
 
         start_ts = parse_timestamp_utc(start_date)
         end_ts = parse_timestamp_utc(end_date)
@@ -421,8 +608,13 @@ def register_routes(app):
             return jsonify({"error": "Trade export is only supported for Optuna studies."}), HTTPStatus.BAD_REQUEST
 
         csv_path = study.get("csv_file_path")
-        if not csv_path or not Path(csv_path).exists():
-            return jsonify({"error": "CSV file is missing for this study."}), HTTPStatus.BAD_REQUEST
+        csv_path, error_response = _resolve_csv_path_for_response(
+            csv_path,
+            missing_error="CSV file is missing for this study.",
+            not_found_error="CSV file is missing for this study.",
+        )
+        if error_response:
+            return error_response
 
         trial = get_study_trial(study_id, trial_number)
         if not trial:
@@ -466,8 +658,13 @@ def register_routes(app):
             return jsonify({"error": "Forward test is not enabled for this study."}), HTTPStatus.BAD_REQUEST
 
         csv_path = study.get("csv_file_path")
-        if not csv_path or not Path(csv_path).exists():
-            return jsonify({"error": "CSV file is missing for this study."}), HTTPStatus.BAD_REQUEST
+        csv_path, error_response = _resolve_csv_path_for_response(
+            csv_path,
+            missing_error="CSV file is missing for this study.",
+            not_found_error="CSV file is missing for this study.",
+        )
+        if error_response:
+            return error_response
 
         trial = get_study_trial(study_id, trial_number)
         if not trial:
@@ -519,8 +716,13 @@ def register_routes(app):
             return jsonify({"error": "OOS Test is not enabled for this study."}), HTTPStatus.BAD_REQUEST
 
         csv_path = study.get("csv_file_path")
-        if not csv_path or not Path(csv_path).exists():
-            return jsonify({"error": "CSV file is missing for this study."}), HTTPStatus.BAD_REQUEST
+        csv_path, error_response = _resolve_csv_path_for_response(
+            csv_path,
+            missing_error="CSV file is missing for this study.",
+            not_found_error="CSV file is missing for this study.",
+        )
+        if error_response:
+            return error_response
 
         trial = get_study_trial(study_id, trial_number)
         if not trial:
@@ -576,8 +778,13 @@ def register_routes(app):
         csv_path = test.get("csv_path")
         if not csv_path and test.get("data_source") == "original_csv":
             csv_path = study.get("csv_file_path")
-        if not csv_path or not Path(csv_path).exists():
-            return jsonify({"error": "CSV file is missing for this manual test."}), HTTPStatus.BAD_REQUEST
+        csv_path, error_response = _resolve_csv_path_for_response(
+            csv_path,
+            missing_error="CSV file is missing for this manual test.",
+            not_found_error="CSV file is missing for this manual test.",
+        )
+        if error_response:
+            return error_response
 
         trial = get_study_trial(study_id, trial_number)
         if not trial:
@@ -666,6 +873,11 @@ def register_routes(app):
             "selection_chain": window.get("selection_chain") or {},
             "is_metrics": _build_trial_metrics(window, "is_"),
             "oos_metrics": _build_trial_metrics(window, "oos_"),
+            "trigger_type": window.get("trigger_type"),
+            "cusum_final": window.get("cusum_final"),
+            "cusum_threshold": window.get("cusum_threshold"),
+            "dd_threshold": window.get("dd_threshold"),
+            "oos_actual_days": window.get("oos_actual_days"),
         }
 
         return jsonify({"window": _json_safe(window_payload), "modules": _json_safe(modules)})
@@ -716,8 +928,13 @@ def register_routes(app):
             return jsonify({"error": error}), HTTPStatus.BAD_REQUEST
 
         csv_path = study.get("csv_file_path")
-        if not csv_path or not Path(csv_path).exists():
-            return jsonify({"error": "CSV file is missing for this study."}), HTTPStatus.BAD_REQUEST
+        csv_path, error_response = _resolve_csv_path_for_response(
+            csv_path,
+            missing_error="CSV file is missing for this study.",
+            not_found_error="CSV file is missing for this study.",
+        )
+        if error_response:
+            return error_response
 
         warmup_bars = study.get("warmup_bars") or (study.get("config_json") or {}).get("warmup_bars") or 1000
 
@@ -783,8 +1000,13 @@ def register_routes(app):
             return jsonify({"error": error}), HTTPStatus.BAD_REQUEST
 
         csv_path = study.get("csv_file_path")
-        if not csv_path or not Path(csv_path).exists():
-            return jsonify({"error": "CSV file is missing for this study."}), HTTPStatus.BAD_REQUEST
+        csv_path, error_response = _resolve_csv_path_for_response(
+            csv_path,
+            missing_error="CSV file is missing for this study.",
+            not_found_error="CSV file is missing for this study.",
+        )
+        if error_response:
+            return error_response
 
         warmup_bars = study.get("warmup_bars") or (study.get("config_json") or {}).get("warmup_bars") or 1000
 
@@ -801,6 +1023,18 @@ def register_routes(app):
         )
         if error:
             return jsonify({"error": error}), HTTPStatus.BAD_REQUEST
+
+        if (
+            bool(study.get("adaptive_mode"))
+            and (period or "").lower() == "oos"
+            and (not module_type or module_type == "oos_result")
+        ):
+            trades = _normalize_wfa_oos_trades(
+                trades or [],
+                start=start,
+                end=end,
+                expected_total=window.get("oos_total_trades"),
+            )
 
         module_label = module_type or "window"
         filename = (
@@ -827,8 +1061,13 @@ def register_routes(app):
             return jsonify({"error": "Trade export is only supported for WFA studies."}), HTTPStatus.BAD_REQUEST
 
         csv_path = study.get("csv_file_path")
-        if not csv_path or not Path(csv_path).exists():
-            return jsonify({"error": "CSV file is missing for this study."}), HTTPStatus.BAD_REQUEST
+        csv_path, error_response = _resolve_csv_path_for_response(
+            csv_path,
+            missing_error="CSV file is missing for this study.",
+            not_found_error="CSV file is missing for this study.",
+        )
+        if error_response:
+            return error_response
 
         windows = study_data.get("windows") or []
         if not windows:
@@ -850,10 +1089,12 @@ def register_routes(app):
         except Exception as exc:
             return jsonify({"error": str(exc)}), HTTPStatus.BAD_REQUEST
 
+        adaptive_mode = bool(study.get("adaptive_mode"))
         all_trades = []
         for window in windows:
-            start_raw = window.get("oos_start_date") or window.get("oos_start")
-            end_raw = window.get("oos_end_date") or window.get("oos_end")
+            start_raw, end_raw, error = _resolve_wfa_period(window, "oos")
+            if error:
+                continue
             start, end = align_date_bounds(df.index, start_raw, end_raw)
             if start is None or end is None:
                 continue
@@ -875,15 +1116,24 @@ def register_routes(app):
             except Exception as exc:
                 return jsonify({"error": str(exc)}), HTTPStatus.BAD_REQUEST
 
-            window_trades = [
-                trade
-                for trade in result.trades
-                if trade.entry_time and start <= trade.entry_time <= end
-            ]
+            if adaptive_mode:
+                window_trades = _normalize_wfa_oos_trades(
+                    result.trades or [],
+                    start=start,
+                    end=end,
+                    expected_total=window.get("oos_total_trades"),
+                )
+            else:
+                window_trades = [
+                    trade
+                    for trade in result.trades
+                    if trade.entry_time and start <= trade.entry_time <= end
+                ]
             all_trades.extend(window_trades)
 
 
-        all_trades.sort(key=lambda t: t.entry_time or pd.Timestamp.min)
+        if not adaptive_mode:
+            all_trades.sort(key=lambda t: t.entry_time or pd.Timestamp.min)
 
         from core.export import _extract_symbol_from_csv_filename
 

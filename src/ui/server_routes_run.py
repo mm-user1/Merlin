@@ -42,12 +42,14 @@ from core.testing import run_period_test_for_trials, select_oos_source_candidate
 from core.storage import (
     delete_manual_test,
     delete_study,
+    get_active_db_name,
     get_study_trial,
     list_manual_tests,
     list_studies,
     load_manual_test_results,
     load_study_from_db,
     load_wfa_window_trials,
+    set_active_db,
     save_dsr_results,
     save_forward_test_results,
     save_stress_test_results,
@@ -62,17 +64,20 @@ try:
         DEFAULT_PRESET_NAME,
         _build_optimization_config,
         _build_trial_metrics,
+        _clear_cancelled_run,
         _execute_backtest_request,
         _find_wfa_window,
         _get_optimization_state,
         _get_parameter_types,
+        _is_run_cancelled,
         _json_safe,
         _list_presets,
         _load_preset,
+        _normalize_run_id,
         _normalize_preset_payload,
         _parse_csv_parameter_block,
-        _persist_csv_upload,
         _preset_path,
+        _register_cancelled_run,
         _resolve_csv_path,
         _resolve_strategy_id_from_request,
         _resolve_wfa_period,
@@ -92,17 +97,20 @@ except ImportError:
         DEFAULT_PRESET_NAME,
         _build_optimization_config,
         _build_trial_metrics,
+        _clear_cancelled_run,
         _execute_backtest_request,
         _find_wfa_window,
         _get_optimization_state,
         _get_parameter_types,
+        _is_run_cancelled,
         _json_safe,
         _list_presets,
         _load_preset,
+        _normalize_run_id,
         _normalize_preset_payload,
         _parse_csv_parameter_block,
-        _persist_csv_upload,
         _preset_path,
+        _register_cancelled_run,
         _resolve_csv_path,
         _resolve_strategy_id_from_request,
         _resolve_wfa_period,
@@ -129,10 +137,62 @@ def register_routes(app):
 
     @app.post("/api/optimization/cancel")
     def optimization_cancel() -> object:
+        requested_run_id = _normalize_run_id(
+            request.form.get("runId")
+            or request.form.get("run_id")
+            or request.args.get("run_id")
+        )
         state = _get_optimization_state()
+        active_run_id = _normalize_run_id(state.get("run_id") or state.get("runId"))
+        run_id = requested_run_id or active_run_id
+        if run_id:
+            _register_cancelled_run(run_id)
+            state["cancelled_run_id"] = run_id
         state["status"] = "cancelled"
         _set_optimization_state(state)
-        return jsonify({"status": "cancelled"})
+        payload: Dict[str, Any] = {"status": "cancelled"}
+        if run_id:
+            payload["run_id"] = run_id
+        return jsonify(payload)
+
+    def _resolve_request_run_id(form_data: Any) -> str:
+        raw_run_id = ""
+        if form_data is not None:
+            raw_run_id = (
+                form_data.get("runId")
+                or form_data.get("run_id")
+                or ""
+            )
+        if not raw_run_id:
+            raw_run_id = request.args.get("run_id") or ""
+
+        normalized = _normalize_run_id(raw_run_id)
+        if normalized:
+            return normalized
+        return f"run_{time.time_ns()}"
+
+    def _apply_db_target_from_form(form_data) -> Optional[object]:
+        db_target = (form_data.get("dbTarget") or "").strip()
+        if not db_target:
+            return None
+        try:
+            if db_target == "new":
+                return (
+                    jsonify(
+                        {
+                            "error": (
+                                "Please create and select a database in Database Target "
+                                "before running optimization or Walk-Forward."
+                            )
+                        }
+                    ),
+                    HTTPStatus.BAD_REQUEST,
+                )
+            elif db_target != get_active_db_name():
+                set_active_db(db_target)
+        except ValueError as exc:
+            return jsonify({"error": str(exc)}), HTTPStatus.BAD_REQUEST
+        return None
 
 
 
@@ -140,26 +200,30 @@ def register_routes(app):
     def run_walkforward_optimization() -> object:
         """Run Walk-Forward Analysis"""
         data = request.form
-        csv_file = request.files.get("file")
+        run_id = _resolve_request_run_id(data)
+        _clear_cancelled_run(run_id)
         csv_path_raw = (data.get("csvPath") or "").strip()
         data_source = None
         data_path = ""
         original_csv_name = ""
 
+        if not csv_path_raw:
+            return jsonify({"error": "CSV path is required."}), HTTPStatus.BAD_REQUEST
+
         try:
-            if csv_file and csv_file.filename:
-                data_path = _persist_csv_upload(csv_file)
-                data_source = data_path
-                original_csv_name = csv_file.filename
-            elif csv_path_raw:
-                resolved_path = _resolve_csv_path(csv_path_raw)
-                data_source = str(resolved_path)
-                data_path = str(resolved_path)
-                original_csv_name = Path(resolved_path).name
-            else:
-                return jsonify({"error": "CSV file is required."}), HTTPStatus.BAD_REQUEST
-        except (FileNotFoundError, IsADirectoryError, ValueError):
-            return jsonify({"error": "CSV file is required."}), HTTPStatus.BAD_REQUEST
+            resolved_path = _resolve_csv_path(csv_path_raw)
+            data_source = str(resolved_path)
+            data_path = str(resolved_path)
+            original_csv_name = Path(resolved_path).name
+        except FileNotFoundError:
+            return jsonify({"error": "CSV file not found."}), HTTPStatus.BAD_REQUEST
+        except IsADirectoryError:
+            return jsonify({"error": "CSV path must point to a file."}), HTTPStatus.BAD_REQUEST
+        except PermissionError as exc:
+            return jsonify({"error": str(exc)}), HTTPStatus.FORBIDDEN
+        except ValueError as exc:
+            message = str(exc).strip() or "CSV path is required."
+            return jsonify({"error": message}), HTTPStatus.BAD_REQUEST
         except OSError:
             return jsonify({"error": "Failed to access CSV file."}), HTTPStatus.BAD_REQUEST
 
@@ -337,6 +401,7 @@ def register_routes(app):
             "warmup_trials": int(getattr(optimization_config, "n_startup_trials", 20)),
             "save_study": bool(getattr(optimization_config, "optuna_save_study", False)),
         }
+        base_template["optuna_config"] = json.loads(json.dumps(optuna_settings))
 
         try:
             is_period_days = int(data.get("wf_is_period_days", 90))
@@ -346,6 +411,48 @@ def register_routes(app):
 
         is_period_days = max(1, min(3650, is_period_days))
         oos_period_days = max(1, min(3650, oos_period_days))
+
+        adaptive_raw = data.get("wf_adaptive_mode", False)
+        if isinstance(adaptive_raw, str):
+            adaptive_mode = adaptive_raw.strip().lower() in {"true", "1", "yes", "on"}
+        else:
+            adaptive_mode = bool(adaptive_raw)
+
+        try:
+            max_oos_period_days = int(data.get("wf_max_oos_period_days", 90))
+        except (TypeError, ValueError):
+            max_oos_period_days = 90
+        max_oos_period_days = max(30, min(365, max_oos_period_days))
+
+        try:
+            min_oos_trades = int(data.get("wf_min_oos_trades", 5))
+        except (TypeError, ValueError):
+            min_oos_trades = 5
+        min_oos_trades = max(2, min(50, min_oos_trades))
+
+        try:
+            check_interval_trades = int(data.get("wf_check_interval_trades", 3))
+        except (TypeError, ValueError):
+            check_interval_trades = 3
+        check_interval_trades = max(1, min(20, check_interval_trades))
+
+        try:
+            cusum_threshold = float(data.get("wf_cusum_threshold", 5.0))
+        except (TypeError, ValueError):
+            cusum_threshold = 5.0
+        cusum_threshold = max(1.0, min(20.0, cusum_threshold))
+
+        try:
+            dd_threshold_multiplier = float(data.get("wf_dd_threshold_multiplier", 1.5))
+        except (TypeError, ValueError):
+            dd_threshold_multiplier = 1.5
+        dd_threshold_multiplier = max(1.0, min(5.0, dd_threshold_multiplier))
+
+        try:
+            inactivity_multiplier = float(data.get("wf_inactivity_multiplier", 5.0))
+        except (TypeError, ValueError):
+            inactivity_multiplier = 5.0
+        inactivity_multiplier = max(2.0, min(20.0, inactivity_multiplier))
 
         try:
             store_top_n_trials = int(data.get("wf_store_top_n_trials", 50))
@@ -360,7 +467,7 @@ def register_routes(app):
             post_process_config = PostProcessConfig(
                 enabled=True,
                 ft_period_days=int(post_process_payload.get("ftPeriodDays", 15)),
-                top_k=int(post_process_payload.get("topK", 5)),
+                top_k=int(post_process_payload.get("topK", 10)),
                 sort_metric=str(post_process_payload.get("sortMetric", "profit_degradation")),
                 warmup_bars=warmup_bars,
             )
@@ -406,13 +513,46 @@ def register_routes(app):
             dsr_config=dsr_config,
             stress_test_config=st_config,
             store_top_n_trials=store_top_n_trials,
+            adaptive_mode=adaptive_mode,
+            max_oos_period_days=max_oos_period_days,
+            min_oos_trades=min_oos_trades,
+            check_interval_trades=check_interval_trades,
+            cusum_threshold=cusum_threshold,
+            dd_threshold_multiplier=dd_threshold_multiplier,
+            inactivity_multiplier=inactivity_multiplier,
         )
+
+        base_template["adaptive_mode"] = adaptive_mode
+        base_template["max_oos_period_days"] = max_oos_period_days
+        base_template["min_oos_trades"] = min_oos_trades
+        base_template["check_interval_trades"] = check_interval_trades
+        base_template["cusum_threshold"] = cusum_threshold
+        base_template["dd_threshold_multiplier"] = dd_threshold_multiplier
+        base_template["inactivity_multiplier"] = inactivity_multiplier
+
+        base_template["wfa"] = {
+            "is_period_days": is_period_days,
+            "oos_period_days": oos_period_days,
+            "store_top_n_trials": store_top_n_trials,
+            "adaptive_mode": adaptive_mode,
+            "max_oos_period_days": max_oos_period_days,
+            "min_oos_trades": min_oos_trades,
+            "check_interval_trades": check_interval_trades,
+            "cusum_threshold": cusum_threshold,
+            "dd_threshold_multiplier": dd_threshold_multiplier,
+            "inactivity_multiplier": inactivity_multiplier,
+        }
         engine = WalkForwardEngine(wf_config, base_template, optuna_settings, csv_file_path=data_path)
+
+        db_apply_error = _apply_db_target_from_form(data)
+        if db_apply_error:
+            return db_apply_error
 
         _set_optimization_state(
             {
                 "status": "running",
                 "mode": "wfa",
+                "run_id": run_id,
                 "strategy_id": strategy_id,
                 "data_path": data_path,
                 "config": config_payload,
@@ -420,6 +560,13 @@ def register_routes(app):
                     "is_period_days": is_period_days,
                     "oos_period_days": oos_period_days,
                     "store_top_n_trials": store_top_n_trials,
+                    "adaptive_mode": adaptive_mode,
+                    "max_oos_period_days": max_oos_period_days,
+                    "min_oos_trades": min_oos_trades,
+                    "check_interval_trades": check_interval_trades,
+                    "cusum_threshold": cusum_threshold,
+                    "dd_threshold_multiplier": dd_threshold_multiplier,
+                    "inactivity_multiplier": inactivity_multiplier,
                 },
             }
         )
@@ -431,6 +578,7 @@ def register_routes(app):
                 {
                     "status": "error",
                     "mode": "wfa",
+                    "run_id": run_id,
                     "strategy_id": strategy_id,
                     "error": str(exc),
                 }
@@ -441,12 +589,42 @@ def register_routes(app):
                 {
                     "status": "error",
                     "mode": "wfa",
+                    "run_id": run_id,
                     "strategy_id": strategy_id,
                     "error": "Walk-forward optimization failed.",
                 }
             )
             app.logger.exception("Walk-forward optimization failed")
             return jsonify({"error": "Walk-forward optimization failed."}), HTTPStatus.INTERNAL_SERVER_ERROR
+
+        if _is_run_cancelled(run_id):
+            if study_id:
+                try:
+                    delete_study(study_id)
+                except Exception:  # pragma: no cover - defensive
+                    app.logger.exception("Failed to cleanup cancelled WFA study %s", study_id)
+            _clear_cancelled_run(run_id)
+            _set_optimization_state(
+                {
+                    "status": "cancelled",
+                    "mode": "wfa",
+                    "run_id": run_id,
+                    "strategy_id": strategy_id,
+                    "data_path": data_path,
+                    "study_id": None,
+                }
+            )
+            return jsonify(
+                {
+                    "status": "cancelled",
+                    "mode": "wfa",
+                    "run_id": run_id,
+                    "strategy_id": strategy_id,
+                    "data_path": data_path,
+                    "study_id": None,
+                    "active_db": get_active_db_name(),
+                }
+            )
 
         stitched_oos = result.stitched_oos
 
@@ -461,21 +639,25 @@ def register_routes(app):
                 "oos_win_rate": round(result.stitched_oos.oos_win_rate, 1),
             },
             "mode": "wfa",
+            "run_id": run_id,
             "strategy_id": strategy_id,
             "data_path": data_path,
             "study_id": study_id,
+            "active_db": get_active_db_name(),
         }
 
         _set_optimization_state(
             {
                 "status": "completed",
                 "mode": "wfa",
+                "run_id": run_id,
                 "strategy_id": strategy_id,
                 "data_path": data_path,
                 "summary": response_payload.get("summary", {}),
                 "study_id": study_id,
             }
         )
+        _clear_cancelled_run(run_id)
 
         return jsonify(response_payload)
 
@@ -526,31 +708,29 @@ def register_routes(app):
 
     @app.post("/api/optimize")
     def run_optimization_endpoint() -> object:
-        csv_file = request.files.get("file")
         csv_path_raw = (request.form.get("csvPath") or "").strip()
         data_path = ""
         source_name = ""
 
-        if csv_file and csv_file.filename:
-            data_path = _persist_csv_upload(csv_file)
-            data_source = data_path
-            source_name = csv_file.filename
-        elif csv_path_raw:
-            try:
-                resolved_path = _resolve_csv_path(csv_path_raw)
-            except FileNotFoundError:
-                return ("CSV file not found.", HTTPStatus.BAD_REQUEST)
-            except IsADirectoryError:
-                return ("CSV path must point to a file.", HTTPStatus.BAD_REQUEST)
-            except ValueError:
-                return ("CSV file is required.", HTTPStatus.BAD_REQUEST)
-            except OSError:
-                return ("Failed to access CSV file.", HTTPStatus.BAD_REQUEST)
-            data_source = str(resolved_path)
-            data_path = str(resolved_path)
-            source_name = Path(resolved_path).name
-        else:
-            return ("CSV file is required.", HTTPStatus.BAD_REQUEST)
+        if not csv_path_raw:
+            return ("CSV path is required.", HTTPStatus.BAD_REQUEST)
+
+        try:
+            resolved_path = _resolve_csv_path(csv_path_raw)
+        except FileNotFoundError:
+            return ("CSV file not found.", HTTPStatus.BAD_REQUEST)
+        except IsADirectoryError:
+            return ("CSV path must point to a file.", HTTPStatus.BAD_REQUEST)
+        except PermissionError as exc:
+            return (str(exc), HTTPStatus.FORBIDDEN)
+        except ValueError as exc:
+            message = str(exc).strip() or "CSV path is required."
+            return (message, HTTPStatus.BAD_REQUEST)
+        except OSError:
+            return ("Failed to access CSV file.", HTTPStatus.BAD_REQUEST)
+        data_source = str(resolved_path)
+        data_path = str(resolved_path)
+        source_name = Path(resolved_path).name
 
         config_raw = request.form.get("config")
         if not config_raw:
@@ -601,6 +781,8 @@ def register_routes(app):
             warmup_bars = max(100, min(5000, warmup_bars))
         except (TypeError, ValueError):
             warmup_bars = 1000
+        run_id = _resolve_request_run_id(request.form)
+        _clear_cancelled_run(run_id)
 
         oos_payload = config_payload.get("oosTest")
         if not isinstance(oos_payload, dict):
@@ -722,6 +904,7 @@ def register_routes(app):
             _set_optimization_state({
                 "status": "error",
                 "mode": "optuna",
+                "run_id": run_id,
                 "error": str(exc),
             })
             return (str(exc), HTTPStatus.BAD_REQUEST)
@@ -729,6 +912,7 @@ def register_routes(app):
             _set_optimization_state({
                 "status": "error",
                 "mode": "optuna",
+                "run_id": run_id,
                 "error": "Failed to prepare optimization config.",
             })
             app.logger.exception("Failed to construct optimization config")
@@ -738,16 +922,21 @@ def register_routes(app):
         optimization_config.ft_enabled = ft_enabled
         if ft_enabled:
             optimization_config.ft_period_days = ft_days
-            optimization_config.ft_top_k = int(post_process_payload.get("topK", 20))
+            optimization_config.ft_top_k = int(post_process_payload.get("topK", 10))
             optimization_config.ft_sort_metric = post_process_payload.get("sortMetric", "profit_degradation")
             optimization_config.ft_start_date = ft_start.strftime("%Y-%m-%d") if ft_start else None
             optimization_config.ft_end_date = ft_end.strftime("%Y-%m-%d") if ft_end else None
         if ft_enabled or oos_enabled:
             optimization_config.is_period_days = is_days
 
+        db_apply_error = _apply_db_target_from_form(request.form)
+        if db_apply_error:
+            return db_apply_error
+
         _set_optimization_state({
             "status": "running",
             "mode": "optuna",
+            "run_id": run_id,
             "strategy_id": optimization_config.strategy_id,
             "data_path": data_path,
             "source_name": source_name,
@@ -759,9 +948,44 @@ def register_routes(app):
         optimization_metadata: Optional[Dict[str, Any]] = None
         study_id: Optional[str] = None
         all_results: List[OptimizationResult] = []
+
+        def _finalize_cancelled_optuna_run(study_to_cleanup: Optional[str]) -> object:
+            if study_to_cleanup:
+                try:
+                    delete_study(study_to_cleanup)
+                except Exception:  # pragma: no cover - defensive
+                    app.logger.exception("Failed to cleanup cancelled study %s", study_to_cleanup)
+            _clear_cancelled_run(run_id)
+            _set_optimization_state(
+                {
+                    "status": "cancelled",
+                    "mode": "optuna",
+                    "run_id": run_id,
+                    "strategy_id": optimization_config.strategy_id,
+                    "data_path": data_path,
+                    "source_name": source_name,
+                    "warmup_bars": optimization_config.warmup_bars,
+                    "config": config_payload,
+                    "study_id": None,
+                }
+            )
+            return jsonify(
+                {
+                    "status": "cancelled",
+                    "mode": "optuna",
+                    "run_id": run_id,
+                    "study_id": None,
+                    "strategy_id": optimization_config.strategy_id,
+                    "data_path": data_path,
+                    "active_db": get_active_db_name(),
+                }
+            )
+
         try:
             start_time = time.time()
             results, study_id = run_optimization(optimization_config)
+            if _is_run_cancelled(run_id):
+                return _finalize_cancelled_optuna_run(study_id)
             all_results = list(getattr(optimization_config, "optuna_all_results", []))
             end_time = time.time()
 
@@ -832,6 +1056,7 @@ def register_routes(app):
             _set_optimization_state({
                 "status": "error",
                 "mode": "optuna",
+                "run_id": run_id,
                 "strategy_id": optimization_config.strategy_id,
                 "error": str(exc),
             })
@@ -840,11 +1065,15 @@ def register_routes(app):
             _set_optimization_state({
                 "status": "error",
                 "mode": "optuna",
+                "run_id": run_id,
                 "strategy_id": optimization_config.strategy_id,
                 "error": "Optimization execution failed.",
             })
             app.logger.exception("Optimization run failed")
             return ("Optimization execution failed.", HTTPStatus.INTERNAL_SERVER_ERROR)
+
+        if _is_run_cancelled(run_id):
+            return _finalize_cancelled_optuna_run(study_id)
 
         if study_id:
             study_data = load_study_from_db(study_id) or {}
@@ -857,6 +1086,8 @@ def register_routes(app):
                 update_study_config_json(study_id, config_json)
 
         dsr_results: List[Any] = []
+        if _is_run_cancelled(run_id):
+            return _finalize_cancelled_optuna_run(study_id)
         if dsr_enabled and study_id:
             dsr_config = DSRConfig(
                 enabled=True,
@@ -887,6 +1118,8 @@ def register_routes(app):
             )
 
         ft_results: List[Any] = []
+        if _is_run_cancelled(run_id):
+            return _finalize_cancelled_optuna_run(study_id)
         if ft_enabled and study_id:
             ft_candidates = results
             if dsr_results:
@@ -896,7 +1129,7 @@ def register_routes(app):
             pp_config = PostProcessConfig(
                 enabled=True,
                 ft_period_days=int(ft_days or 0),
-                top_k=int(post_process_payload.get("topK", 20)),
+                top_k=int(post_process_payload.get("topK", 10)),
                 sort_metric=str(post_process_payload.get("sortMetric", "profit_degradation")),
                 warmup_bars=warmup_bars,
             )
@@ -916,7 +1149,7 @@ def register_routes(app):
                 ft_results,
                 ft_enabled=True,
                 ft_period_days=int(ft_days or 0),
-                ft_top_k=int(post_process_payload.get("topK", 20)),
+                ft_top_k=int(post_process_payload.get("topK", 10)),
                 ft_sort_metric=str(post_process_payload.get("sortMetric", "profit_degradation")),
                 ft_start_date=ft_start.strftime("%Y-%m-%d") if ft_start else None,
                 ft_end_date=ft_end.strftime("%Y-%m-%d") if ft_end else None,
@@ -925,6 +1158,8 @@ def register_routes(app):
             )
 
         st_results: List[Any] = []
+        if _is_run_cancelled(run_id):
+            return _finalize_cancelled_optuna_run(study_id)
         if st_enabled and study_id:
             try:
                 from strategies import get_strategy_config
@@ -981,6 +1216,8 @@ def register_routes(app):
             )
 
         oos_results_payload: List[Dict[str, Any]] = []
+        if _is_run_cancelled(run_id):
+            return _finalize_cancelled_optuna_run(study_id)
         if oos_enabled and study_id:
             if not oos_start or not oos_end:
                 raise ValueError("OOS Test enabled but OOS period could not be determined.")
@@ -988,6 +1225,7 @@ def register_routes(app):
             _set_optimization_state({
                 "status": "running",
                 "mode": "optuna",
+                "run_id": run_id,
                 "study_id": study_id,
                 "stage": "oos_test",
                 "message": "Running OOS Test...",
@@ -1085,10 +1323,15 @@ def register_routes(app):
                 oos_source_module=source_module,
             )
 
+        if _is_run_cancelled(run_id):
+            return _finalize_cancelled_optuna_run(study_id)
+
+        _clear_cancelled_run(run_id)
         _set_optimization_state(
             {
                 "status": "completed",
                 "mode": "optuna",
+                "run_id": run_id,
                 "strategy_id": optimization_config.strategy_id,
                 "data_path": data_path,
                 "source_name": source_name,
@@ -1103,10 +1346,12 @@ def register_routes(app):
             {
                 "status": "success",
                 "mode": "optuna",
+                "run_id": run_id,
                 "study_id": study_id,
                 "summary": optimization_metadata or {},
                 "strategy_id": optimization_config.strategy_id,
                 "data_path": data_path,
+                "active_db": get_active_db_name(),
             }
         )
 

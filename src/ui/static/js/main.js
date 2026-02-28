@@ -2,8 +2,99 @@
  * Main entry: binds DOM events and initializes UI state.
  */
 
+async function loadDatabasesList({ preserveSelection = false } = {}) {
+  const select = document.getElementById('dbTarget');
+  if (!select || typeof fetchDatabasesList !== 'function') return;
+
+  const refreshBtn = document.getElementById('dbTargetRefreshBtn');
+  const previousValue = preserveSelection ? select.value : '';
+
+  try {
+    if (refreshBtn) {
+      refreshBtn.disabled = true;
+    }
+
+    const data = await fetchDatabasesList();
+    const databases = Array.isArray(data.databases) ? data.databases : [];
+    select.querySelectorAll('option:not([value="new"])').forEach((opt) => opt.remove());
+
+    databases.forEach((db) => {
+      const option = document.createElement('option');
+      option.value = db.name;
+      option.textContent = db.name;
+      select.appendChild(option);
+    });
+
+    let nextValue = 'new';
+    const hasPrevious = preserveSelection
+      && previousValue
+      && databases.some((db) => db.name === previousValue);
+    if (hasPrevious) {
+      nextValue = previousValue;
+    } else if (databases.length) {
+      const activeDb = databases.find((db) => db.active);
+      nextValue = activeDb ? activeDb.name : databases[0].name;
+    }
+    select.value = nextValue;
+  } catch (error) {
+    console.warn('Failed to load database list', error);
+  } finally {
+    if (refreshBtn) {
+      refreshBtn.disabled = false;
+    }
+  }
+
+  toggleDbLabelVisibility();
+}
+
+function toggleDbLabelVisibility() {
+  const select = document.getElementById('dbTarget');
+  const labelGroup = document.getElementById('dbLabelGroup');
+  if (!select || !labelGroup) return;
+  labelGroup.style.display = select.value === 'new' ? 'flex' : 'none';
+}
+
+async function createAndSelectDatabase() {
+  const select = document.getElementById('dbTarget');
+  const labelInput = document.getElementById('dbLabel');
+  const createBtn = document.getElementById('dbCreateBtn');
+  const refreshBtn = document.getElementById('dbTargetRefreshBtn');
+  if (!select || !labelInput || !createBtn || typeof createDatabaseRequest !== 'function') return;
+
+  select.value = 'new';
+  toggleDbLabelVisibility();
+  const label = labelInput.value.trim();
+
+  try {
+    createBtn.disabled = true;
+    if (refreshBtn) refreshBtn.disabled = true;
+
+    const payload = await createDatabaseRequest(label);
+    await loadDatabasesList({ preserveSelection: false });
+
+    const createdName = payload && payload.filename ? String(payload.filename) : '';
+    if (createdName) {
+      select.value = createdName;
+      toggleDbLabelVisibility();
+      if (typeof showResultsMessage === 'function') {
+        showResultsMessage(`Database selected: ${createdName}`);
+      }
+    }
+  } catch (error) {
+    if (typeof showErrorMessage === 'function') {
+      showErrorMessage(error?.message || 'Failed to create database.');
+    } else {
+      alert(error?.message || 'Failed to create database.');
+    }
+  } finally {
+    createBtn.disabled = false;
+    if (refreshBtn) refreshBtn.disabled = false;
+  }
+}
+
 document.addEventListener('DOMContentLoaded', async () => {
   await loadStrategiesList();
+  await loadDatabasesList();
 
   const resultsNav = document.querySelector('.nav-tab[data-nav="results"]');
   if (resultsNav) {
@@ -54,20 +145,124 @@ document.addEventListener('DOMContentLoaded', async () => {
   });
   syncBudgetInputs();
   toggleWFSettings();
+  if (typeof toggleAdaptiveWFSettings === 'function') {
+    toggleAdaptiveWFSettings();
+  }
 
-  const csvFileInputEl = document.getElementById('csvFile');
-  if (csvFileInputEl) {
-    csvFileInputEl.addEventListener('change', () => {
-      const files = Array.from(csvFileInputEl.files || []);
-      if (files.length) {
-        const firstFile = files[0];
-        const derivedPath = (firstFile && (firstFile.path || firstFile.webkitRelativePath)) || '';
-        const fallbackName = firstFile && firstFile.name ? firstFile.name : '';
-        window.selectedCsvPath = (derivedPath || fallbackName || '').trim();
-      } else {
-        window.selectedCsvPath = '';
+  const dbTargetSelect = document.getElementById('dbTarget');
+  if (dbTargetSelect) {
+    dbTargetSelect.addEventListener('change', toggleDbLabelVisibility);
+  }
+
+  const dbTargetRefreshBtn = document.getElementById('dbTargetRefreshBtn');
+  if (dbTargetRefreshBtn) {
+    dbTargetRefreshBtn.addEventListener('click', async () => {
+      await loadDatabasesList({ preserveSelection: true });
+    });
+  }
+
+  const dbCreateBtn = document.getElementById('dbCreateBtn');
+  if (dbCreateBtn) {
+    dbCreateBtn.addEventListener('click', createAndSelectDatabase);
+  }
+
+  const dbLabelInput = document.getElementById('dbLabel');
+  if (dbLabelInput) {
+    dbLabelInput.addEventListener('keydown', async (event) => {
+      if (event.key !== 'Enter') return;
+      event.preventDefault();
+      await createAndSelectDatabase();
+    });
+  }
+
+  if (typeof initQueue === 'function') {
+    try {
+      await initQueue();
+    } catch (error) {
+      if (typeof showQueueError === 'function') {
+        showQueueError(error?.message || 'Failed to initialize queue.');
       }
-      renderSelectedFiles(files);
+    }
+  }
+
+  const loadQueueBtn = document.getElementById('loadQueueBtn');
+  if (loadQueueBtn) {
+    loadQueueBtn.addEventListener('click', async () => {
+      try {
+        if (typeof loadQueueUi === 'function') {
+          await loadQueueUi();
+        } else if (typeof attachQueueUiIfNeeded === 'function') {
+          await attachQueueUiIfNeeded();
+        }
+      } catch (error) {
+        if (typeof showQueueError === 'function') {
+          showQueueError(error?.message || 'Failed to load queue.');
+        }
+      }
+    });
+  }
+
+  const addToQueueBtn = document.getElementById('addToQueueBtn');
+  if (addToQueueBtn && typeof collectQueueItem === 'function' && typeof addToQueue === 'function') {
+    addToQueueBtn.addEventListener('click', async () => {
+      try {
+        if (typeof loadQueueUi === 'function') {
+          await loadQueueUi();
+        } else if (typeof attachQueueUiIfNeeded === 'function') {
+          await attachQueueUiIfNeeded();
+        }
+        const item = collectQueueItem();
+        if (item) {
+          await addToQueue(item);
+        }
+      } catch (error) {
+        if (typeof showQueueError === 'function') {
+          showQueueError(error?.message || 'Failed to add item to queue.');
+        }
+      }
+    });
+  }
+
+  const clearQueueBtn = document.getElementById('clearQueueBtn');
+  if (clearQueueBtn && typeof clearQueue === 'function') {
+    clearQueueBtn.addEventListener('click', async () => {
+      if (window.confirm('Clear all items from the queue?')) {
+        try {
+          await clearQueue();
+        } catch (error) {
+          if (typeof showQueueError === 'function') {
+            showQueueError(error?.message || 'Failed to clear queue.');
+          }
+        }
+      }
+    });
+  }
+
+  if (typeof bindCsvBrowserControls === 'function') {
+    bindCsvBrowserControls();
+  }
+
+  const chooseCsvBtnEl = document.getElementById('chooseCsvBtn');
+  if (chooseCsvBtnEl && typeof openCsvBrowserModal === 'function') {
+    chooseCsvBtnEl.addEventListener('click', () => {
+      openCsvBrowserModal();
+    });
+  }
+
+  const csvDirectoryEl = document.getElementById('csvDirectory');
+  if (csvDirectoryEl && typeof openCsvBrowserModal === 'function') {
+    csvDirectoryEl.addEventListener('keydown', (event) => {
+      if (event.key === 'Enter') {
+        event.preventDefault();
+        openCsvBrowserModal();
+      }
+    });
+  }
+
+  const clearSelectedCsvBtnEl = document.getElementById('clearSelectedCsvBtn');
+  if (clearSelectedCsvBtnEl && typeof setSelectedCsvPaths === 'function') {
+    clearSelectedCsvBtnEl.addEventListener('click', () => {
+      setSelectedCsvPaths([]);
     });
   }
 
@@ -171,6 +366,35 @@ document.addEventListener('DOMContentLoaded', async () => {
   }
   if (window.OosTestUI && typeof window.OosTestUI.bind === 'function') {
     window.OosTestUI.bind();
+  }
+
+  // Dataset Timeline Preview - bind listeners and initial render.
+  if (typeof window.updateDatasetPreview === 'function') {
+    const triggerDatasetPreviewUpdate = () => {
+      if (typeof window.requestAnimationFrame === 'function') {
+        window.requestAnimationFrame(() => window.updateDatasetPreview());
+      } else {
+        window.setTimeout(() => window.updateDatasetPreview(), 0);
+      }
+    };
+
+    const previewTriggerIds = [
+      'dateFilter', 'startDate', 'endDate',
+      'enableWF', 'enableAdaptiveWF', 'wfIsPeriodDays', 'wfOosPeriodDays',
+      'enablePostProcess', 'ftPeriodDays',
+      'enableOosTest', 'oosPeriodDays'
+    ];
+
+    previewTriggerIds.forEach((id) => {
+      const element = document.getElementById(id);
+      if (!element) return;
+      const eventType = element.type === 'checkbox'
+        ? 'change'
+        : (element.type === 'number' ? 'input' : 'change');
+      element.addEventListener(eventType, triggerDatasetPreviewUpdate);
+    });
+
+    triggerDatasetPreviewUpdate();
   }
 
   await initializePresets();

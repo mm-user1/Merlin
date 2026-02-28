@@ -11,6 +11,7 @@
     <div class="nav-tabs">
       <a href="/" class="nav-tab active" data-nav="start">Start</a>
       <a href="/results" class="nav-tab" data-nav="results">Results</a>
+      <a href="/analytics" class="nav-tab" data-nav="analytics">Analytics</a>
     </div>
     <div class="nav-spacer"></div>
   </nav>
@@ -96,11 +97,30 @@
                   </span>
                 </div>
 
+                <div id="datasetPreview" class="dataset-preview"></div>
+
                 <div class="form-group vertical">
-                  <label for="csvFile">CSV файл (OHLCV)</label>
-                  <input type="file" id="csvFile" accept=".csv" multiple />
+                  <label for="csvDirectory">CSV data directory</label>
+                  <div class="csv-directory-row">
+                    <input
+                      type="text"
+                      id="csvDirectory"
+                      value="C:\Users\mt\Desktop\Strategy\S_Python\Market Data_PY\base_pack_1"
+                      autocomplete="off"
+                    />
+                    <button type="button" id="chooseCsvBtn" class="btn-secondary">Choose Files</button>
+                  </div>
+                  <div class="csv-directory-note">
+                    Select files from the directory browser. Use Ctrl/Shift-click for multi-select.
+                  </div>
                   <div id="selectedFilesWrapper" class="selected-files">
-                    <div class="selected-files-title">Выбранные файлы</div>
+                    <div class="selected-files-header">
+                      <div class="selected-files-title-wrap">
+                        <div class="selected-files-title">Selected CSV files</div>
+                        <div id="selectedCsvCount" class="selected-files-count">· 0 selected</div>
+                      </div>
+                      <button type="button" id="clearSelectedCsvBtn" class="selected-files-clear-btn" disabled>Remove All</button>
+                    </div>
                     <ul id="selectedFilesList" class="selected-files-list"></ul>
                   </div>
                 </div>
@@ -684,7 +704,7 @@
 
                 <div class="form-group">
                   <label for="ftTopK">Top Candidates:</label>
-                  <input type="number" id="ftTopK" value="20" min="1" max="10000" style="width: 100px;" />
+                  <input type="number" id="ftTopK" value="10" min="1" max="10000" style="width: 100px;" />
                 </div>
 
                 <div class="form-group">
@@ -787,6 +807,45 @@
                   <span style="font-size: 12px; color: #666; margin-left: 10px;">(Per module per window)</span>
                 </div>
 
+                <div style="margin-top: 16px; padding: 14px; border: 1px solid #3498db40; border-radius: 6px; background-color: #f0f6ff;">
+                  <div class="form-group vertical" style="align-items: flex-start; margin-bottom: 0;">
+                    <label>
+                      <input type="checkbox" id="enableAdaptiveWF" onchange="toggleAdaptiveWFSettings()" />
+                      <strong>Adaptive Re-Optimization</strong>
+                    </label>
+                    <p style="font-size: 12px; color: #666; margin: 6px 0 0 0;">
+                      Extends OOS while performance is stable and re-optimizes early on degradation.
+                    </p>
+                  </div>
+
+                  <div id="adaptiveWFSettings" style="display: none; margin-top: 12px;">
+                    <div class="form-group" style="margin-bottom: 10px;">
+                      <label style="min-width: 170px;">Max OOS (days):</label>
+                      <input type="number" id="wfMaxOosPeriodDays" value="90" min="30" max="365" style="width: 100px;" />
+                    </div>
+                    <div class="form-group" style="margin-bottom: 10px;">
+                      <label style="min-width: 170px;">Min OOS Trades:</label>
+                      <input type="number" id="wfMinOosTrades" value="5" min="2" max="50" style="width: 100px;" />
+                    </div>
+                    <div class="form-group" style="margin-bottom: 10px;">
+                      <label style="min-width: 170px;">Check Every N Trades:</label>
+                      <input type="number" id="wfCheckIntervalTrades" value="3" min="1" max="20" style="width: 100px;" />
+                    </div>
+                    <div class="form-group" style="margin-bottom: 10px;">
+                      <label style="min-width: 170px;">CUSUM Threshold:</label>
+                      <input type="number" id="wfCusumThreshold" value="5.0" min="1.0" max="20.0" step="0.1" style="width: 100px;" />
+                    </div>
+                    <div class="form-group" style="margin-bottom: 10px;">
+                      <label style="min-width: 170px;">Max DD Multiplier:</label>
+                      <input type="number" id="wfDdThresholdMultiplier" value="1.5" min="1.0" max="5.0" step="0.1" style="width: 100px;" />
+                    </div>
+                    <div class="form-group" style="margin-bottom: 0;">
+                      <label style="min-width: 170px;">Inactivity Multiplier:</label>
+                      <input type="number" id="wfInactivityMultiplier" value="5.0" min="2.0" max="20.0" step="0.1" style="width: 100px;" />
+                    </div>
+                  </div>
+                </div>
+
                 <div style="background-color: #e8f4f8; padding: 15px; border-radius: 5px;">
                   <strong>Behavior (Phase 2):</strong>
                   <ul style="margin-top: 10px; font-size: 13px; color: #555; padding-left: 18px;">
@@ -796,6 +855,58 @@
                     <li>Stitched OOS equity curve + annualized WFE</li>
                   </ul>
                 </div>
+              </div>
+            </div>
+
+            <div class="wf-section" style="margin-top: 0; margin-bottom: 16px; padding: 20px; border: 2px solid #3498db; border-radius: 8px; background-color: #f8f9fa;">
+              <h3 style="color: #3498db; margin-bottom: 12px;">Database Target</h3>
+              <div class="form-group">
+                <label for="dbTarget" style="min-width: 100px;">Save to</label>
+                <select id="dbTarget" style="flex: 1;">
+                  <option value="new">Create new DB</option>
+                </select>
+                <button
+                  type="button"
+                  id="dbTargetRefreshBtn"
+                  class="db-target-refresh-btn"
+                  title="Refresh database list"
+                  aria-label="Refresh database list"
+                >
+                  &#x21bb;
+                </button>
+              </div>
+              <div class="form-group" id="dbLabelGroup" style="display: none;">
+                <label for="dbLabel" style="min-width: 100px;">Label</label>
+                <input type="text" id="dbLabel" placeholder="optional label (e.g. link-15m)" style="flex: 1;" />
+                <button
+                  type="button"
+                  id="dbCreateBtn"
+                  class="db-target-refresh-btn"
+                  title="Create and select database"
+                  aria-label="Create and select database"
+                >
+                  &#10003;
+                </button>
+              </div>
+            </div>
+
+            <div
+              class="wf-section"
+              id="queueSection"
+              style="margin-top: 0; margin-bottom: 16px; padding: 20px; border: 2px solid #3498db; border-radius: 8px; background-color: #f8f9fa;"
+            >
+              <h3 style="color: #3498db; margin-bottom: 12px;">Run Queue</h3>
+
+              <div id="queueEmptyState" class="queue-empty-state">
+                Configure settings and click "Add to Queue" to schedule runs.
+              </div>
+
+              <div id="queueItemsList" class="queue-items-list" style="display: none;"></div>
+
+              <div class="queue-actions" style="margin-top: 12px; display: flex; gap: 8px;">
+                <button type="button" id="addToQueueBtn" class="secondary">+ Add to Queue</button>
+                <button type="button" id="loadQueueBtn" class="secondary">Load Queue</button>
+                <button type="button" id="clearQueueBtn" class="secondary" style="display: none;">Clear</button>
               </div>
             </div>
 
@@ -835,6 +946,36 @@
     </div>
   </div>
 
+  <div id="csvBrowserModal" class="modal-overlay" aria-hidden="true">
+    <div class="modal-card csv-browser-modal-card">
+      <div class="modal-header">
+        <h3>Select CSV Files</h3>
+      </div>
+      <div class="modal-body">
+        <div class="modal-section">
+          <label for="csvBrowserPath">Current directory</label>
+          <input type="text" id="csvBrowserPath" readonly />
+          <div class="csv-browser-actions">
+            <button type="button" class="btn-secondary" id="csvBrowserUpBtn">Up</button>
+            <button type="button" class="btn-secondary" id="csvBrowserOpenBtn">Open Folder</button>
+            <button type="button" class="btn-secondary" id="csvBrowserRefreshBtn">Refresh</button>
+          </div>
+          <div class="modal-note">
+            Double-click folder to open. Select CSV files with Ctrl/Shift-click, then Add Selected.
+          </div>
+        </div>
+
+        <div class="modal-section">
+          <select id="csvBrowserList" class="csv-browser-list" multiple size="24"></select>
+        </div>
+        <div id="csvBrowserError" class="csv-browser-error" style="display: none;"></div>
+      </div>
+      <div class="modal-actions">
+        <button type="button" class="btn-secondary" id="csvBrowserCancelBtn">Cancel</button>
+        <button type="button" class="btn-primary" id="csvBrowserAddBtn">Add Selected</button>
+      </div>
+    </div>
+  </div>
   <!-- JavaScript modules -->
   <script src="/static/js/utils.js"></script>
   <script src="/static/js/api.js"></script>
@@ -844,8 +985,8 @@
   <script src="/static/js/presets.js"></script>
   <script src="/static/js/post-process-ui.js"></script>
   <script src="/static/js/oos-test-ui.js"></script>
+  <script src="/static/js/queue.js"></script>
+  <script src="/static/js/dataset-preview.js"></script>
   <script src="/static/js/main.js"></script>
 </body>
 </html>
-
-

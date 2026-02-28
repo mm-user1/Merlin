@@ -69,7 +69,13 @@ async function runOptimizationRequest(formData, signal = null) {
     throw new Error(message || 'Optimization request failed.');
   }
 
-  return response.json();
+  const data = await response.json();
+  if (data && data.status === 'cancelled') {
+    const error = new Error('Optimization cancelled.');
+    error.name = 'AbortError';
+    throw error;
+  }
+  return data;
 }
 
 async function runWalkForwardRequest(formData, signal = null) {
@@ -80,6 +86,11 @@ async function runWalkForwardRequest(formData, signal = null) {
   });
 
   const data = await response.json();
+  if (data && data.status === 'cancelled') {
+    const error = new Error('Walk-Forward request cancelled.');
+    error.name = 'AbortError';
+    throw error;
+  }
 
   if (!response.ok || data.status !== 'success') {
     const message = data && data.error ? data.error : 'Walk-Forward request failed.';
@@ -97,10 +108,68 @@ async function fetchOptimizationStatus() {
   return response.json();
 }
 
+async function fetchQueueStateRequest() {
+  const response = await fetch('/api/queue');
+  if (!response.ok) {
+    const payload = await response.json().catch(() => ({}));
+    throw new Error(payload.error || 'Failed to load queue state.');
+  }
+  return response.json();
+}
+
+async function saveQueueStateRequest(queueState) {
+  const response = await fetch('/api/queue', {
+    method: 'PUT',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(queueState || {})
+  });
+  if (!response.ok) {
+    const payload = await response.json().catch(() => ({}));
+    throw new Error(payload.error || 'Failed to save queue state.');
+  }
+  return response.json();
+}
+
+async function clearQueueStateRequest() {
+  const response = await fetch('/api/queue', {
+    method: 'DELETE'
+  });
+  if (!response.ok) {
+    const payload = await response.json().catch(() => ({}));
+    throw new Error(payload.error || 'Failed to clear queue state.');
+  }
+  return response.json();
+}
+
 async function fetchStudiesList() {
   const response = await fetch('/api/studies');
   if (!response.ok) {
     throw new Error(`Failed to fetch studies: ${response.status}`);
+  }
+  return response.json();
+}
+
+async function browseCsvDirectoryRequest(path = '') {
+  const params = new URLSearchParams();
+  if (path) {
+    params.set('path', path);
+  }
+  const url = params.toString() ? `/api/csv/browse?${params.toString()}` : '/api/csv/browse';
+  const response = await fetch(url);
+  if (!response.ok) {
+    let message = 'Failed to browse CSV directory.';
+    try {
+      const payload = await response.json();
+      if (payload && payload.error) {
+        message = payload.error;
+      }
+    } catch (error) {
+      const fallback = await response.text();
+      if (fallback) {
+        message = fallback;
+      }
+    }
+    throw new Error(message);
   }
   return response.json();
 }
@@ -176,8 +245,12 @@ async function deleteManualTestRequest(studyId, testId) {
   }
 }
 
-async function cancelOptimizationRequest() {
-  const response = await fetch('/api/optimization/cancel', { method: 'POST' });
+async function cancelOptimizationRequest(runId = '') {
+  const normalizedRunId = String(runId || '').trim();
+  const endpoint = normalizedRunId
+    ? ('/api/optimization/cancel?run_id=' + encodeURIComponent(normalizedRunId))
+    : '/api/optimization/cancel';
+  const response = await fetch(endpoint, { method: 'POST' });
   if (!response.ok) {
     throw new Error(`Cancel request failed: ${response.status}`);
   }
@@ -265,5 +338,140 @@ async function importPresetFromCsvRequest(file) {
     throw new Error(message || 'Failed to import settings from CSV.');
   }
 
+  return response.json();
+}
+
+async function fetchDatabasesList() {
+  const response = await fetch('/api/databases');
+  if (!response.ok) {
+    const message = await response.text();
+    throw new Error(message || 'Failed to fetch databases.');
+  }
+  return response.json();
+}
+
+async function switchDatabaseRequest(filename) {
+  const response = await fetch('/api/databases/active', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ filename })
+  });
+  if (!response.ok) {
+    const payload = await response.json().catch(() => ({}));
+    throw new Error(payload.error || 'Failed to switch database.');
+  }
+  return response.json();
+}
+
+async function createDatabaseRequest(label) {
+  const response = await fetch('/api/databases', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ label })
+  });
+  if (!response.ok) {
+    const payload = await response.json().catch(() => ({}));
+    throw new Error(payload.error || 'Failed to create database.');
+  }
+  return response.json();
+}
+
+async function fetchAnalyticsSetsRequest() {
+  const response = await fetch('/api/analytics/sets');
+  if (!response.ok) {
+    const payload = await response.json().catch(() => ({}));
+    throw new Error(payload.error || 'Failed to load study sets.');
+  }
+  return response.json();
+}
+
+async function fetchAnalyticsEquityRequest(studyIds, signal = null) {
+  const response = await fetch('/api/analytics/equity', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ study_ids: Array.isArray(studyIds) ? studyIds : [] }),
+    signal: signal || undefined
+  });
+
+  if (!response.ok) {
+    const payload = await response.json().catch(() => ({}));
+    throw new Error(payload.error || 'Failed to aggregate analytics equity.');
+  }
+  return response.json();
+}
+
+async function fetchAnalyticsEquityBatchRequest(groups, signal = null) {
+  const response = await fetch('/api/analytics/equity/batch', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ groups: Array.isArray(groups) ? groups : [] }),
+    signal: signal || undefined
+  });
+
+  if (!response.ok) {
+    const payload = await response.json().catch(() => ({}));
+    throw new Error(payload.error || 'Failed to aggregate analytics equity batch.');
+  }
+  return response.json();
+}
+
+async function fetchAnalyticsStudyWindowBoundariesRequest(studyId, signal = null) {
+  const response = await fetch(`/api/analytics/studies/${encodeURIComponent(studyId)}/window-boundaries`, {
+    signal: signal || undefined
+  });
+  if (!response.ok) {
+    const payload = await response.json().catch(() => ({}));
+    throw new Error(payload.error || 'Failed to load analytics window boundaries.');
+  }
+  return response.json();
+}
+
+async function createAnalyticsSetRequest(name, studyIds) {
+  const response = await fetch('/api/analytics/sets', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ name, study_ids: Array.isArray(studyIds) ? studyIds : [] })
+  });
+  if (!response.ok) {
+    const payload = await response.json().catch(() => ({}));
+    throw new Error(payload.error || 'Failed to create study set.');
+  }
+  return response.json();
+}
+
+async function updateAnalyticsSetRequest(setId, payload) {
+  const response = await fetch(`/api/analytics/sets/${encodeURIComponent(setId)}`, {
+    method: 'PUT',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(payload || {})
+  });
+  if (!response.ok) {
+    const body = await response.json().catch(() => ({}));
+    throw new Error(body.error || 'Failed to update study set.');
+  }
+  return response.json();
+}
+
+async function deleteAnalyticsSetRequest(setId) {
+  const response = await fetch(`/api/analytics/sets/${encodeURIComponent(setId)}`, {
+    method: 'DELETE'
+  });
+  if (!response.ok) {
+    const body = await response.json().catch(() => ({}));
+    throw new Error(body.error || 'Failed to delete study set.');
+  }
+  return response.json();
+}
+
+async function reorderAnalyticsSetsRequest(order) {
+  const response = await fetch('/api/analytics/sets/reorder', {
+    method: 'PUT',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ order: Array.isArray(order) ? order : [] })
+  });
+  if (!response.ok) {
+    const body = await response.json().catch(() => ({}));
+    throw new Error(body.error || 'Failed to reorder study sets.');
+  }
   return response.json();
 }
