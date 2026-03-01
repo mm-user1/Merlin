@@ -2,9 +2,9 @@
 from __future__ import annotations
 
 import bisect
+import itertools
 import logging
 import math
-import random
 import uuid
 import multiprocessing as mp
 import tempfile
@@ -266,139 +266,101 @@ def _format_objective_value(value: Any) -> str:
         return "NaN"
 
 
-_COVERAGE_SMALL_LEVEL_THRESHOLD = 12
-_COVERAGE_LHS_BASE_SEED = 42
-_COVERAGE_SHUFFLE_SEED = 1337
+_COVERAGE_FLOAT_TOL = 1e-12
+_COVERAGE_RECOMMENDED_MULTIPLIER = 2
 
 
-def _stable_token_hash(token: Any) -> int:
-    text = str(token)
-    return sum((idx + 1) * ord(ch) for idx, ch in enumerate(text))
-
-
-def _smallest_coprime(modulus: int, min_stride: int = 2) -> int:
-    if modulus <= 1:
-        return 1
-    start = max(1, int(min_stride))
-    for candidate in range(start, modulus + 1):
-        if math.gcd(candidate, modulus) == 1:
-            return candidate
-    return 1
-
-
-def _estimate_numeric_levels(spec: Dict[str, Any]) -> Optional[int]:
-    p_type = spec.get("type")
-    low = spec.get("low")
-    high = spec.get("high")
-    step = spec.get("step")
-    try:
-        low_f = float(low)
-        high_f = float(high)
-    except (TypeError, ValueError):
-        return None
-    if not math.isfinite(low_f) or not math.isfinite(high_f) or high_f < low_f:
-        return None
-
-    if p_type == "int":
-        try:
-            low_i = int(round(low_f))
-            high_i = int(round(high_f))
-        except (TypeError, ValueError):
-            return None
-        step_i = max(1, int(round(float(step)))) if step is not None else 1
-        if high_i < low_i:
-            return None
-        return int(((high_i - low_i) // step_i) + 1)
-
-    if p_type == "float":
-        if step in (None, 0, 0.0):
-            return None
-        try:
-            step_f = float(step)
-        except (TypeError, ValueError):
-            return None
-        if not math.isfinite(step_f) or step_f <= 0:
-            return None
-        span = high_f - low_f
-        if span < 0:
-            return None
-        return int(math.floor((span / step_f) + 1e-9) + 1)
-
-    return None
-
-
-def _analyze_coverage_requirements(
+def _extract_coverage_axes(
     search_space: Dict[str, Dict[str, Any]],
-    sampler_type: str,
-    population_size: int,
-    small_level_threshold: int = _COVERAGE_SMALL_LEVEL_THRESHOLD,
-) -> Dict[str, Any]:
-    discrete_axes: List[Tuple[str, int]] = []
-    categorical_axes: List[Tuple[str, int]] = []
-    numeric_continuous_count = 0
+) -> Tuple[List[Tuple[str, List[Any]]], Dict[str, Dict[str, Any]]]:
+    categorical_axes: List[Tuple[str, List[Any]]] = []
+    numeric_specs: Dict[str, Dict[str, Any]] = {}
 
     for name, spec in (search_space or {}).items():
         p_type = str(spec.get("type", "")).lower()
         if p_type == "categorical":
-            cardinality = len(list(spec.get("choices") or []))
-            if cardinality > 0:
-                discrete_axes.append((name, cardinality))
-                categorical_axes.append((name, cardinality))
+            choices = list(spec.get("choices") or [])
+            if choices:
+                categorical_axes.append((name, choices))
             continue
-
         if p_type in {"int", "float"}:
-            levels = _estimate_numeric_levels(spec)
-            if levels is not None and levels > 0 and levels <= int(small_level_threshold):
-                discrete_axes.append((name, levels))
-            else:
-                numeric_continuous_count += 1
+            numeric_specs[name] = spec
 
-    c_axis = max((cardinality for _, cardinality in discrete_axes), default=1)
-    n_min = max(c_axis, 1 + 2 * numeric_continuous_count)
-    n_rec_base = max(2 * n_min, c_axis + 4 * numeric_continuous_count, 12)
-
-    sampler_norm = str(sampler_type or "").lower()
-    if sampler_norm in {"nsga2", "nsga3"}:
-        n_rec = max(n_rec_base, max(2, int(population_size or 2)))
-    else:
-        n_rec = n_rec_base
-
-    main_axis_name: Optional[str] = None
-    main_axis_options = 1
-    if categorical_axes:
-        main_axis_name, main_axis_options = max(categorical_axes, key=lambda item: item[1])
-
-    return {
-        "n_min": int(n_min),
-        "n_rec": int(n_rec),
-        "c_axis": int(c_axis),
-        "n_num": int(numeric_continuous_count),
-        "main_axis_name": main_axis_name,
-        "main_axis_options": int(main_axis_options),
-    }
+    return categorical_axes, numeric_specs
 
 
-def _latin_hypercube_points(n_dims: int, n_samples: int, seed: int) -> List[List[float]]:
-    if n_samples <= 0:
-        return []
-    if n_dims <= 0:
-        return [[] for _ in range(n_samples)]
+def _infer_primary_numeric_param(
+    main_axis_name: Optional[str],
+    numeric_specs: Dict[str, Dict[str, Any]],
+) -> Optional[str]:
+    numeric_names = list(numeric_specs.keys())
+    if not numeric_names:
+        return None
+    if not main_axis_name:
+        return numeric_names[0]
 
-    rng = random.Random(int(seed))
-    matrix: List[List[float]] = [[0.0] * n_dims for _ in range(n_samples)]
+    axis_name = str(main_axis_name)
+    axis_lower = axis_name.lower()
+    candidates: List[str] = []
 
-    for dim_idx in range(n_dims):
-        permutation = list(range(n_samples))
-        rng.shuffle(permutation)
-        for sample_idx in range(n_samples):
-            low = permutation[sample_idx] / n_samples
-            high = (permutation[sample_idx] + 1) / n_samples
-            matrix[sample_idx][dim_idx] = rng.uniform(low, high)
+    # Common pairings like maType -> maLength and maType3 -> maLength3.
+    candidates.extend(
+        [
+            axis_name.replace("Type", "Length"),
+            axis_name.replace("type", "length"),
+            axis_name.replace("_type", "_length"),
+            axis_name.replace("_Type", "_Length"),
+            axis_name.replace("Type", "Period"),
+            axis_name.replace("type", "period"),
+            axis_name.replace("_type", "_period"),
+            axis_name.replace("_Type", "_Period"),
+        ]
+    )
 
-    return matrix
+    if axis_lower.endswith("type"):
+        root = axis_name[:-4]
+        candidates.extend([f"{root}Length", f"{root}length", f"{root}Period", f"{root}period"])
+    if axis_lower.endswith("_type"):
+        root = axis_name[:-5]
+        candidates.extend([f"{root}_length", f"{root}_Length", f"{root}_period", f"{root}_Period"])
+
+    seen = set()
+    for candidate in candidates:
+        if candidate and candidate not in seen:
+            seen.add(candidate)
+            if candidate in numeric_specs:
+                return candidate
+
+    digits = "".join(ch for ch in axis_name if ch.isdigit())
+    if digits:
+        for name in numeric_names:
+            if name.endswith(digits) and ("length" in name.lower() or "period" in name.lower()):
+                return name
+
+    for name in numeric_names:
+        if "length" in name.lower() or "period" in name.lower():
+            return name
+
+    return numeric_names[0]
 
 
-def _denormalize_numeric_value(norm_value: float, spec: Dict[str, Any]) -> Union[int, float]:
+def _fraction_to_level_index(fraction: float, levels: int) -> int:
+    if levels <= 1:
+        return 0
+    bounded = max(0.0, min(1.0, float(fraction)))
+    target = bounded * float(levels - 1)
+    lower = int(math.floor(target))
+    upper = int(math.ceil(target))
+    if upper == lower:
+        return lower
+    dist_lower = target - float(lower)
+    dist_upper = float(upper) - target
+    if abs(dist_lower - dist_upper) <= _COVERAGE_FLOAT_TOL:
+        return lower
+    return lower if dist_lower < dist_upper else upper
+
+
+def _quantize_numeric_fraction(norm_value: float, spec: Dict[str, Any]) -> Union[int, float]:
     bounded = max(0.0, min(1.0, float(norm_value)))
     p_type = str(spec.get("type", "")).lower()
 
@@ -413,7 +375,7 @@ def _denormalize_numeric_value(norm_value: float, spec: Dict[str, Any]) -> Union
         step_i = max(1, int(round(float(spec.get("step", 1) or 1))))
         levels = int(((high_i - low_i) // step_i) + 1)
         levels = max(1, levels)
-        idx = int(round(bounded * (levels - 1)))
+        idx = _fraction_to_level_index(bounded, levels)
         value = low_i + idx * step_i
         return int(max(low_i, min(high_i, value)))
 
@@ -423,7 +385,7 @@ def _denormalize_numeric_value(norm_value: float, spec: Dict[str, Any]) -> Union
         if math.isfinite(step_f) and step_f > 0:
             levels = int(math.floor(((high - low) / step_f) + 1e-9) + 1)
             levels = max(1, levels)
-            idx = int(round(bounded * (levels - 1)))
+            idx = _fraction_to_level_index(bounded, levels)
             quantized = low + idx * step_f
             quantized = max(low, min(high, quantized))
             return float(round(quantized, 12))
@@ -432,16 +394,75 @@ def _denormalize_numeric_value(norm_value: float, spec: Dict[str, Any]) -> Union
     return float(round(max(low, min(high, value)), 12))
 
 
-def _round_robin_choice(choices: List[Any], trial_index: int, token: str) -> Any:
-    if not choices:
-        return None
-    modulus = len(choices)
-    if modulus == 1:
-        return choices[0]
-    stride = _smallest_coprime(modulus, min_stride=2)
-    offset = _stable_token_hash(token) % modulus
-    idx = (offset + int(trial_index) * stride) % modulus
-    return choices[idx]
+def _build_anchor_fractions(full_blocks: int) -> List[float]:
+    block_count = max(0, int(full_blocks or 0))
+    if block_count <= 0:
+        return []
+    if block_count == 1:
+        return [0.5]
+    if block_count == 2:
+        return [1.0 / 3.0, 2.0 / 3.0]
+    denominator = float(block_count - 1)
+    return [idx / denominator for idx in range(block_count)]
+
+
+def _next_partial_anchor_fraction(full_blocks: int, used_fractions: List[float]) -> float:
+    if full_blocks <= 0:
+        return 0.5
+    candidates = _build_anchor_fractions(int(full_blocks) + 1)
+    unused = [
+        candidate
+        for candidate in candidates
+        if all(abs(candidate - used) > _COVERAGE_FLOAT_TOL for used in used_fractions)
+    ]
+    if not unused:
+        return 0.5
+    return min(unused, key=lambda value: (abs(value - 0.5), value))
+
+
+def _build_categorical_combinations(
+    categorical_axes: List[Tuple[str, List[Any]]]
+) -> List[Dict[str, Any]]:
+    if not categorical_axes:
+        return [{}]
+    axis_names = [name for name, _ in categorical_axes]
+    axis_choices = [choices for _, choices in categorical_axes]
+    combinations: List[Dict[str, Any]] = []
+    for values in itertools.product(*axis_choices):
+        combinations.append(dict(zip(axis_names, values)))
+    return combinations
+
+
+def _analyze_coverage_requirements(
+    search_space: Dict[str, Dict[str, Any]],
+) -> Dict[str, Any]:
+    categorical_axes, numeric_specs = _extract_coverage_axes(search_space)
+
+    coverage_block_size = 1
+    for _, choices in categorical_axes:
+        coverage_block_size *= max(1, len(choices))
+
+    main_axis_name: Optional[str] = None
+    main_axis_options = 1
+    if categorical_axes:
+        main_axis_name, main_axis_choices = max(categorical_axes, key=lambda item: len(item[1]))
+        main_axis_options = max(1, len(main_axis_choices))
+
+    primary_numeric_name = _infer_primary_numeric_param(main_axis_name, numeric_specs)
+    n_min = int(max(1, coverage_block_size))
+    n_rec = int(max(n_min, n_min * _COVERAGE_RECOMMENDED_MULTIPLIER))
+
+    return {
+        "n_min": n_min,
+        "n_rec": n_rec,
+        "coverage_block_size": n_min,
+        "coverage_combinations": n_min,
+        "categorical_axes_count": int(len(categorical_axes)),
+        "numeric_axes_count": int(len(numeric_specs)),
+        "main_axis_name": main_axis_name,
+        "main_axis_options": int(main_axis_options),
+        "primary_numeric_name": primary_numeric_name,
+    }
 
 
 def _generate_coverage_trials(
@@ -451,84 +472,49 @@ def _generate_coverage_trials(
     target_count = max(0, int(n_trials or 0))
     if target_count <= 0:
         return []
+    coverage_report = _analyze_coverage_requirements(search_space)
+    categorical_axes, numeric_specs = _extract_coverage_axes(search_space)
+    categorical_combinations = _build_categorical_combinations(categorical_axes)
+    combination_count = max(1, len(categorical_combinations))
 
-    categorical_specs: Dict[str, List[Any]] = {}
-    numeric_specs: Dict[str, Dict[str, Any]] = {}
+    full_blocks = target_count // combination_count
+    remainder = target_count % combination_count
+    primary_numeric_name = coverage_report.get("primary_numeric_name")
+    midpoint_values: Dict[str, Union[int, float]] = {
+        name: _quantize_numeric_fraction(0.5, spec) for name, spec in numeric_specs.items()
+    }
 
-    for name, spec in (search_space or {}).items():
-        p_type = str(spec.get("type", "")).lower()
-        if p_type == "categorical":
-            choices = list(spec.get("choices") or [])
-            if choices:
-                categorical_specs[name] = choices
-            continue
-        if p_type in {"int", "float"}:
-            numeric_specs[name] = spec
-
-    numeric_names = list(numeric_specs.keys())
     results: List[Dict[str, Any]] = []
+    anchor_fractions = _build_anchor_fractions(full_blocks)
 
-    if not categorical_specs:
-        lhs_points = _latin_hypercube_points(
-            n_dims=len(numeric_names),
-            n_samples=target_count,
-            seed=_COVERAGE_LHS_BASE_SEED + (len(numeric_names) * 17) + target_count,
-        )
-        for point in lhs_points:
-            params: Dict[str, Any] = {}
-            for dim_idx, name in enumerate(numeric_names):
-                params[name] = _denormalize_numeric_value(point[dim_idx], numeric_specs[name])
-            results.append(params)
-        return results
-
-    main_axis_name, main_axis_choices = max(
-        categorical_specs.items(),
-        key=lambda item: len(item[1]),
-    )
-    main_axis_count = len(main_axis_choices)
-    per_option = target_count // main_axis_count
-    remainder = target_count % main_axis_count
-    other_categorical_names = [name for name in categorical_specs.keys() if name != main_axis_name]
-
-    global_trial_index = 0
-    for option_idx, option in enumerate(main_axis_choices):
-        count = per_option + (1 if option_idx < remainder else 0)
-        if count <= 0:
-            continue
-
-        lhs_points = _latin_hypercube_points(
-            n_dims=len(numeric_names),
-            n_samples=count,
-            seed=_COVERAGE_LHS_BASE_SEED
-            + (option_idx * 1009)
-            + (len(numeric_names) * 17)
-            + (target_count * 31),
-        )
-
-        for local_idx in range(count):
-            params: Dict[str, Any] = {main_axis_name: option}
-
-            for cat_name in other_categorical_names:
-                params[cat_name] = _round_robin_choice(
-                    categorical_specs[cat_name],
-                    trial_index=global_trial_index + local_idx,
-                    token=cat_name,
-                )
-
-            if numeric_names:
-                point = lhs_points[local_idx]
-                for dim_idx, name in enumerate(numeric_names):
-                    params[name] = _denormalize_numeric_value(point[dim_idx], numeric_specs[name])
-
+    for fraction in anchor_fractions:
+        primary_override = None
+        if primary_numeric_name and primary_numeric_name in numeric_specs:
+            primary_override = _quantize_numeric_fraction(
+                fraction, numeric_specs[primary_numeric_name]
+            )
+        for combo in categorical_combinations:
+            params: Dict[str, Any] = dict(combo)
+            params.update(midpoint_values)
+            if primary_numeric_name and primary_override is not None:
+                params[primary_numeric_name] = primary_override
             results.append(params)
 
-        global_trial_index += count
-
-    if len(results) > 1:
-        shuffle_rng = random.Random(
-            _COVERAGE_SHUFFLE_SEED + target_count + (len(search_space) * 13)
-        )
-        shuffle_rng.shuffle(results)
+    if remainder > 0:
+        partial_fraction = _next_partial_anchor_fraction(full_blocks, anchor_fractions)
+        primary_override = None
+        if primary_numeric_name and primary_numeric_name in numeric_specs:
+            primary_override = _quantize_numeric_fraction(
+                partial_fraction, numeric_specs[primary_numeric_name]
+            )
+        start_offset = (full_blocks * 37 + remainder * 11) % combination_count
+        for idx in range(remainder):
+            combo = categorical_combinations[(start_offset + idx) % combination_count]
+            params = dict(combo)
+            params.update(midpoint_values)
+            if primary_numeric_name and primary_override is not None:
+                params[primary_numeric_name] = primary_override
+            results.append(params)
 
     return results[:target_count]
 
@@ -1467,8 +1453,6 @@ class OptunaOptimizer:
     ) -> int:
         self._coverage_report = _analyze_coverage_requirements(
             search_space=search_space,
-            sampler_type=getattr(self.sampler_config, "sampler_type", "tpe"),
-            population_size=int(getattr(self.sampler_config, "population_size", 50) or 50),
         )
 
         if not bool(getattr(self.optuna_config, "coverage_mode", False)):
@@ -2112,7 +2096,7 @@ class OptunaOptimizer:
             coverage_mode
             and coverage_min is not None
             and coverage_rec is not None
-            and initial_trials < int(coverage_rec)
+            and initial_trials < int(coverage_min)
         ):
             coverage_warning = (
                 f"Need more initial trials (min: {int(coverage_min)}, recommended: {int(coverage_rec)})"
@@ -2136,8 +2120,10 @@ class OptunaOptimizer:
             "initial_search_trials": initial_trials,
             "coverage_min_trials": coverage_min,
             "coverage_recommended_trials": coverage_rec,
+            "coverage_block_size": self._coverage_report.get("coverage_block_size") if self._coverage_report else None,
             "coverage_main_axis": self._coverage_report.get("main_axis_name") if self._coverage_report else None,
             "coverage_main_axis_options": self._coverage_report.get("main_axis_options") if self._coverage_report else None,
+            "coverage_primary_numeric": self._coverage_report.get("primary_numeric_name") if self._coverage_report else None,
             "coverage_warning": coverage_warning,
         }
         setattr(self.base_config, "optuna_summary", summary)
