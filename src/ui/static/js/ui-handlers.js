@@ -1069,6 +1069,7 @@ function buildOptunaConfig(state) {
   const optunaSampler = document.getElementById('optunaSampler');
   const optunaPruner = document.getElementById('optunaPruner');
   const optunaWarmupTrials = document.getElementById('optunaWarmupTrials');
+  const optunaCoverageMode = document.getElementById('optunaCoverageMode');
   const optunaSaveStudy = document.getElementById('optunaSaveStudy');
   const nsgaPopulation = document.getElementById('nsgaPopulationSize');
   const nsgaCrossover = document.getElementById('nsgaCrossoverProb');
@@ -1123,6 +1124,7 @@ function buildOptunaConfig(state) {
     sampler: optunaSampler ? optunaSampler.value : 'tpe',
     optuna_pruner: optunaPruner ? optunaPruner.value : 'median',
     n_startup_trials: normalizedWarmup,
+    coverage_mode: Boolean(optunaCoverageMode && optunaCoverageMode.checked),
     optuna_save_study: Boolean(optunaSaveStudy && optunaSaveStudy.checked),
     objectives: selectedObjectives,
     primary_objective: objectiveConfig.primary_objective,
@@ -1862,6 +1864,10 @@ function bindOptimizerInputs() {
     checkbox.addEventListener('change', handleOptimizerCheckboxChange);
     handleOptimizerCheckboxChange.call(checkbox);
   });
+
+  if (window.OptunaUI && typeof window.OptunaUI.updateCoverageInfo === 'function') {
+    window.OptunaUI.updateCoverageInfo();
+  }
 }
 
 function handleOptimizerCheckboxChange() {
@@ -1968,6 +1974,9 @@ function bindOptunaUiControls() {
     sampler.addEventListener('change', window.OptunaUI.toggleNsgaSettings);
   }
   window.OptunaUI.initSanitizeControls();
+  if (typeof window.OptunaUI.initCoverageInfo === 'function') {
+    window.OptunaUI.initCoverageInfo();
+  }
   window.OptunaUI.updateObjectiveSelection();
   window.OptunaUI.toggleNsgaSettings();
 }

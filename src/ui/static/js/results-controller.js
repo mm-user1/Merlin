@@ -996,6 +996,15 @@ async function applyStudyPayload(data) {
       || study.sampler_type
       || null,
     pruner: optunaConfig.pruner ?? null,
+    warmupTrials: optunaConfig.warmup_trials
+      ?? config.n_startup_trials
+      ?? (optunaConfig.sampler_config ? optunaConfig.sampler_config.n_startup_trials : null)
+      ?? null,
+    coverageMode: Boolean(
+      optunaConfig.coverage_mode
+      ?? config.coverage_mode
+      ?? false
+    ),
     workers: config.worker_processes ?? null,
     sanitizeEnabled,
     sanitizeTradesThreshold: sanitizeThreshold,

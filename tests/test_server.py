@@ -369,6 +369,21 @@ def test_optuna_sanitize_defaults():
     assert config.sanitize_trades_threshold == 0
 
 
+def test_optuna_coverage_mode_parsed():
+    from ui import server as server_module
+
+    payload = _build_minimal_optuna_payload()
+    payload["coverage_mode"] = True
+    config = server_module._build_optimization_config(
+        "dummy.csv",
+        payload,
+        worker_processes=1,
+        strategy_id="s01_trailing_ma",
+        warmup_bars=1000,
+    )
+    assert config.coverage_mode is True
+
+
 def _ensure_local_test_tmp_dir() -> Path:
     path = Path(__file__).parent / ".tmp_server_cancel"
     path.mkdir(parents=True, exist_ok=True)

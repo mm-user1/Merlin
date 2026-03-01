@@ -1670,6 +1670,7 @@ def _build_optimization_config(
         n_startup_trials = int(payload.get("n_startup_trials", 20))
     except (TypeError, ValueError):
         n_startup_trials = 20
+    coverage_mode = _parse_bool(payload.get("coverage_mode", False), False)
 
     optuna_enable_pruning = _parse_bool(payload.get("optuna_enable_pruning", True), True)
     optuna_pruner = str(payload.get("optuna_pruner", "median")).strip().lower()
@@ -1737,6 +1738,7 @@ def _build_optimization_config(
         "mutation_prob": mutation_prob,
         "swapping_prob": swapping_prob,
         "n_startup_trials": n_startup_trials,
+        "coverage_mode": coverage_mode,
         "optuna_budget_mode": optuna_budget_mode,
         "optuna_n_trials": optuna_n_trials,
         "optuna_time_limit": optuna_time_limit,
@@ -1776,6 +1778,7 @@ def _build_optimization_config(
         mutation_prob=mutation_prob if mutation_prob is not None else None,
         swapping_prob=swapping_prob if swapping_prob is not None else 0.5,
         n_startup_trials=n_startup_trials,
+        coverage_mode=coverage_mode,
     )
 
     if optimization_mode == "optuna":

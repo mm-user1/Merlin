@@ -1188,6 +1188,16 @@ function updateSidebarSettings() {
   setText('optuna-budget', budgetLabel);
   setText('optuna-sampler', (ResultsState.optuna.sampler || '').toUpperCase() || '-');
   setText('optuna-pruner', ResultsState.optuna.pruner ? ResultsState.optuna.pruner : '-');
+  const warmupTrials = ResultsState.optuna.warmupTrials;
+  const coverageMode = Boolean(ResultsState.optuna.coverageMode);
+  if (warmupTrials !== null && warmupTrials !== undefined) {
+    const initialValue = Number.isFinite(Number(warmupTrials))
+      ? String(Math.max(0, Math.round(Number(warmupTrials))))
+      : String(warmupTrials);
+    setText('optuna-initial', coverageMode ? `${initialValue} (coverage)` : initialValue);
+  } else {
+    setText('optuna-initial', '-');
+  }
   const sanitizeEnabled = ResultsState.optuna.sanitizeEnabled;
   const sanitizeThresholdRaw = ResultsState.optuna.sanitizeTradesThreshold;
   const sanitizeThreshold = Number.isFinite(Number(sanitizeThresholdRaw))

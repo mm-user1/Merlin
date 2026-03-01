@@ -2173,6 +2173,7 @@ class WalkForwardEngine:
             mutation_prob=self.base_config_template.get("mutation_prob"),
             swapping_prob=self.base_config_template.get("swapping_prob", 0.5),
             n_startup_trials=self.base_config_template.get("n_startup_trials", 20),
+            coverage_mode=bool(self.base_config_template.get("coverage_mode", False)),
         )
 
         objectives = list(self.optuna_settings.get("objectives") or [])
@@ -2204,6 +2205,7 @@ class WalkForwardEngine:
             enable_pruning=enable_pruning,
             pruner=self.optuna_settings["pruner"],
             warmup_trials=int(self.optuna_settings.get("warmup_trials") or 20),
+            coverage_mode=bool(self.optuna_settings.get("coverage_mode", False)),
             save_study=self.optuna_settings["save_study"],
             study_name=None,
         )

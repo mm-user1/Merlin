@@ -510,8 +510,19 @@
                         </div>
 
                         <div class="form-group">
-                          <label for="optunaWarmupTrials">Initial random trials:</label>
+                          <label for="optunaWarmupTrials">Initial trials:</label>
                           <input type="number" id="optunaWarmupTrials" min="0" max="50000" value="20" style="width: 80px;" />
+                        </div>
+                        <div class="form-group">
+                          <div class="checkbox-group">
+                            <input type="checkbox" id="optunaCoverageMode" />
+                            <label for="optunaCoverageMode">Coverage mode (stratified LHS)</label>
+                          </div>
+                          <small
+                            id="coverageInfo"
+                            class="form-hint"
+                            style="color: #888; font-size: 11px; display: none;"
+                          ></small>
                         </div>
 
                         <div id="nsgaSettings" class="nsga-settings" style="display: none;">

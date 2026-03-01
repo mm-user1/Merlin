@@ -4,6 +4,7 @@ from __future__ import annotations
 import bisect
 import logging
 import math
+import random
 import uuid
 import multiprocessing as mp
 import tempfile
@@ -70,6 +71,7 @@ class OptimizationConfig:
     mutation_prob: Optional[float] = None
     swapping_prob: float = 0.5
     n_startup_trials: int = 20
+    coverage_mode: bool = False
 
 
 @dataclass
@@ -262,6 +264,273 @@ def _format_objective_value(value: Any) -> str:
         return str(float(value))
     except (TypeError, ValueError):
         return "NaN"
+
+
+_COVERAGE_SMALL_LEVEL_THRESHOLD = 12
+_COVERAGE_LHS_BASE_SEED = 42
+_COVERAGE_SHUFFLE_SEED = 1337
+
+
+def _stable_token_hash(token: Any) -> int:
+    text = str(token)
+    return sum((idx + 1) * ord(ch) for idx, ch in enumerate(text))
+
+
+def _smallest_coprime(modulus: int, min_stride: int = 2) -> int:
+    if modulus <= 1:
+        return 1
+    start = max(1, int(min_stride))
+    for candidate in range(start, modulus + 1):
+        if math.gcd(candidate, modulus) == 1:
+            return candidate
+    return 1
+
+
+def _estimate_numeric_levels(spec: Dict[str, Any]) -> Optional[int]:
+    p_type = spec.get("type")
+    low = spec.get("low")
+    high = spec.get("high")
+    step = spec.get("step")
+    try:
+        low_f = float(low)
+        high_f = float(high)
+    except (TypeError, ValueError):
+        return None
+    if not math.isfinite(low_f) or not math.isfinite(high_f) or high_f < low_f:
+        return None
+
+    if p_type == "int":
+        try:
+            low_i = int(round(low_f))
+            high_i = int(round(high_f))
+        except (TypeError, ValueError):
+            return None
+        step_i = max(1, int(round(float(step)))) if step is not None else 1
+        if high_i < low_i:
+            return None
+        return int(((high_i - low_i) // step_i) + 1)
+
+    if p_type == "float":
+        if step in (None, 0, 0.0):
+            return None
+        try:
+            step_f = float(step)
+        except (TypeError, ValueError):
+            return None
+        if not math.isfinite(step_f) or step_f <= 0:
+            return None
+        span = high_f - low_f
+        if span < 0:
+            return None
+        return int(math.floor((span / step_f) + 1e-9) + 1)
+
+    return None
+
+
+def _analyze_coverage_requirements(
+    search_space: Dict[str, Dict[str, Any]],
+    sampler_type: str,
+    population_size: int,
+    small_level_threshold: int = _COVERAGE_SMALL_LEVEL_THRESHOLD,
+) -> Dict[str, Any]:
+    discrete_axes: List[Tuple[str, int]] = []
+    categorical_axes: List[Tuple[str, int]] = []
+    numeric_continuous_count = 0
+
+    for name, spec in (search_space or {}).items():
+        p_type = str(spec.get("type", "")).lower()
+        if p_type == "categorical":
+            cardinality = len(list(spec.get("choices") or []))
+            if cardinality > 0:
+                discrete_axes.append((name, cardinality))
+                categorical_axes.append((name, cardinality))
+            continue
+
+        if p_type in {"int", "float"}:
+            levels = _estimate_numeric_levels(spec)
+            if levels is not None and levels > 0 and levels <= int(small_level_threshold):
+                discrete_axes.append((name, levels))
+            else:
+                numeric_continuous_count += 1
+
+    c_axis = max((cardinality for _, cardinality in discrete_axes), default=1)
+    n_min = max(c_axis, 1 + 2 * numeric_continuous_count)
+    n_rec_base = max(2 * n_min, c_axis + 4 * numeric_continuous_count, 12)
+
+    sampler_norm = str(sampler_type or "").lower()
+    if sampler_norm in {"nsga2", "nsga3"}:
+        n_rec = max(n_rec_base, max(2, int(population_size or 2)))
+    else:
+        n_rec = n_rec_base
+
+    main_axis_name: Optional[str] = None
+    main_axis_options = 1
+    if categorical_axes:
+        main_axis_name, main_axis_options = max(categorical_axes, key=lambda item: item[1])
+
+    return {
+        "n_min": int(n_min),
+        "n_rec": int(n_rec),
+        "c_axis": int(c_axis),
+        "n_num": int(numeric_continuous_count),
+        "main_axis_name": main_axis_name,
+        "main_axis_options": int(main_axis_options),
+    }
+
+
+def _latin_hypercube_points(n_dims: int, n_samples: int, seed: int) -> List[List[float]]:
+    if n_samples <= 0:
+        return []
+    if n_dims <= 0:
+        return [[] for _ in range(n_samples)]
+
+    rng = random.Random(int(seed))
+    matrix: List[List[float]] = [[0.0] * n_dims for _ in range(n_samples)]
+
+    for dim_idx in range(n_dims):
+        permutation = list(range(n_samples))
+        rng.shuffle(permutation)
+        for sample_idx in range(n_samples):
+            low = permutation[sample_idx] / n_samples
+            high = (permutation[sample_idx] + 1) / n_samples
+            matrix[sample_idx][dim_idx] = rng.uniform(low, high)
+
+    return matrix
+
+
+def _denormalize_numeric_value(norm_value: float, spec: Dict[str, Any]) -> Union[int, float]:
+    bounded = max(0.0, min(1.0, float(norm_value)))
+    p_type = str(spec.get("type", "")).lower()
+
+    low = float(spec.get("low"))
+    high = float(spec.get("high"))
+    if high < low:
+        low, high = high, low
+
+    if p_type == "int":
+        low_i = int(round(low))
+        high_i = int(round(high))
+        step_i = max(1, int(round(float(spec.get("step", 1) or 1))))
+        levels = int(((high_i - low_i) // step_i) + 1)
+        levels = max(1, levels)
+        idx = int(round(bounded * (levels - 1)))
+        value = low_i + idx * step_i
+        return int(max(low_i, min(high_i, value)))
+
+    step = spec.get("step")
+    if step not in (None, 0, 0.0):
+        step_f = float(step)
+        if math.isfinite(step_f) and step_f > 0:
+            levels = int(math.floor(((high - low) / step_f) + 1e-9) + 1)
+            levels = max(1, levels)
+            idx = int(round(bounded * (levels - 1)))
+            quantized = low + idx * step_f
+            quantized = max(low, min(high, quantized))
+            return float(round(quantized, 12))
+
+    value = low + bounded * (high - low)
+    return float(round(max(low, min(high, value)), 12))
+
+
+def _round_robin_choice(choices: List[Any], trial_index: int, token: str) -> Any:
+    if not choices:
+        return None
+    modulus = len(choices)
+    if modulus == 1:
+        return choices[0]
+    stride = _smallest_coprime(modulus, min_stride=2)
+    offset = _stable_token_hash(token) % modulus
+    idx = (offset + int(trial_index) * stride) % modulus
+    return choices[idx]
+
+
+def _generate_coverage_trials(
+    search_space: Dict[str, Dict[str, Any]],
+    n_trials: int,
+) -> List[Dict[str, Any]]:
+    target_count = max(0, int(n_trials or 0))
+    if target_count <= 0:
+        return []
+
+    categorical_specs: Dict[str, List[Any]] = {}
+    numeric_specs: Dict[str, Dict[str, Any]] = {}
+
+    for name, spec in (search_space or {}).items():
+        p_type = str(spec.get("type", "")).lower()
+        if p_type == "categorical":
+            choices = list(spec.get("choices") or [])
+            if choices:
+                categorical_specs[name] = choices
+            continue
+        if p_type in {"int", "float"}:
+            numeric_specs[name] = spec
+
+    numeric_names = list(numeric_specs.keys())
+    results: List[Dict[str, Any]] = []
+
+    if not categorical_specs:
+        lhs_points = _latin_hypercube_points(
+            n_dims=len(numeric_names),
+            n_samples=target_count,
+            seed=_COVERAGE_LHS_BASE_SEED + (len(numeric_names) * 17) + target_count,
+        )
+        for point in lhs_points:
+            params: Dict[str, Any] = {}
+            for dim_idx, name in enumerate(numeric_names):
+                params[name] = _denormalize_numeric_value(point[dim_idx], numeric_specs[name])
+            results.append(params)
+        return results
+
+    main_axis_name, main_axis_choices = max(
+        categorical_specs.items(),
+        key=lambda item: len(item[1]),
+    )
+    main_axis_count = len(main_axis_choices)
+    per_option = target_count // main_axis_count
+    remainder = target_count % main_axis_count
+    other_categorical_names = [name for name in categorical_specs.keys() if name != main_axis_name]
+
+    global_trial_index = 0
+    for option_idx, option in enumerate(main_axis_choices):
+        count = per_option + (1 if option_idx < remainder else 0)
+        if count <= 0:
+            continue
+
+        lhs_points = _latin_hypercube_points(
+            n_dims=len(numeric_names),
+            n_samples=count,
+            seed=_COVERAGE_LHS_BASE_SEED
+            + (option_idx * 1009)
+            + (len(numeric_names) * 17)
+            + (target_count * 31),
+        )
+
+        for local_idx in range(count):
+            params: Dict[str, Any] = {main_axis_name: option}
+
+            for cat_name in other_categorical_names:
+                params[cat_name] = _round_robin_choice(
+                    categorical_specs[cat_name],
+                    trial_index=global_trial_index + local_idx,
+                    token=cat_name,
+                )
+
+            if numeric_names:
+                point = lhs_points[local_idx]
+                for dim_idx, name in enumerate(numeric_names):
+                    params[name] = _denormalize_numeric_value(point[dim_idx], numeric_specs[name])
+
+            results.append(params)
+
+        global_trial_index += count
+
+    if len(results) > 1:
+        shuffle_rng = random.Random(
+            _COVERAGE_SHUFFLE_SEED + target_count + (len(search_space) * 13)
+        )
+        shuffle_rng.shuffle(results)
+
+    return results[:target_count]
 
 
 def evaluate_constraints(
@@ -1021,6 +1290,7 @@ class OptunaConfig:
     enable_pruning: bool = True
     pruner: str = "median"  # "median", "percentile", "patient", "none"
     warmup_trials: int = 20
+    coverage_mode: bool = False
     save_study: bool = False
     study_name: Optional[str] = None
 
@@ -1052,6 +1322,11 @@ class OptunaOptimizer:
             self.sampler_config = SamplerConfig(**raw_sampler_config)
         else:
             self.sampler_config = raw_sampler_config or SamplerConfig()
+        if bool(getattr(self.optuna_config, "coverage_mode", False)) and str(
+            getattr(self.sampler_config, "sampler_type", "")
+        ).lower() == "tpe":
+            # Coverage trials replace random startup when coverage mode is enabled.
+            self.sampler_config.n_startup_trials = 0
         self.df: Optional[pd.DataFrame] = None
         self.trade_start_idx: int = 0
         self.strategy_class: Optional[Any] = None
@@ -1064,6 +1339,7 @@ class OptunaOptimizer:
         self.pruner: Optional[optuna.pruners.BasePruner] = None
         self.param_type_map: Dict[str, str] = {}
         self._multiprocess_mode: bool = False
+        self._coverage_report: Optional[Dict[str, Any]] = None
 
     # ------------------------------------------------------------------
     # Search space handling
@@ -1183,6 +1459,34 @@ class OptunaOptimizer:
         return MedianPruner(
             n_startup_trials=max(0, int(self.optuna_config.warmup_trials))
         )
+
+    def _enqueue_coverage_trials(
+        self,
+        search_space: Dict[str, Dict[str, Any]],
+        context_label: str = "",
+    ) -> int:
+        self._coverage_report = _analyze_coverage_requirements(
+            search_space=search_space,
+            sampler_type=getattr(self.sampler_config, "sampler_type", "tpe"),
+            population_size=int(getattr(self.sampler_config, "population_size", 50) or 50),
+        )
+
+        if not bool(getattr(self.optuna_config, "coverage_mode", False)):
+            return 0
+        if self.study is None:
+            return 0
+
+        n_initial = max(0, int(getattr(self.optuna_config, "warmup_trials", 0) or 0))
+        if n_initial <= 0:
+            return 0
+
+        coverage_trials = _generate_coverage_trials(search_space, n_initial)
+        for params in coverage_trials:
+            self.study.enqueue_trial(params)
+
+        suffix = f" {context_label}".strip()
+        logger.info("Enqueued %d coverage trials%s", len(coverage_trials), f" {suffix}" if suffix else "")
+        return len(coverage_trials)
 
     # ------------------------------------------------------------------
     # Data preparation (shared by single and multi process)
@@ -1587,6 +1891,7 @@ class OptunaOptimizer:
             pruner=self.pruner,
             load_if_exists=self.optuna_config.save_study,
         )
+        self._enqueue_coverage_trials(search_space, context_label="single-process")
 
         timeout = None
         n_trials = None
@@ -1639,8 +1944,8 @@ class OptunaOptimizer:
         self.best_value = float("-inf")
         self.trials_without_improvement = 0
 
-        # Build search space to validate config early
-        self._build_search_space()
+        # Build search space early to validate config and prepare deterministic coverage.
+        search_space = self._build_search_space()
 
         csv_path, csv_cleanup = _materialize_csv_to_temp(self.base_config.csv_file)
         base_config_dict = {
@@ -1673,6 +1978,7 @@ class OptunaOptimizer:
             pruner=self.pruner,
             load_if_exists=False,
         )
+        self._enqueue_coverage_trials(search_space, context_label="multiprocess")
 
         timeout: Optional[int] = None
         n_trials: Optional[int] = None
@@ -1797,6 +2103,21 @@ class OptunaOptimizer:
 
         pareto_front_size = sum(1 for r in self.trial_results if r.is_pareto_optimal) if self.mo_config.is_multi_objective() else None
 
+        initial_trials = max(0, int(getattr(self.optuna_config, "warmup_trials", 0) or 0))
+        coverage_mode = bool(getattr(self.optuna_config, "coverage_mode", False))
+        coverage_min = self._coverage_report.get("n_min") if self._coverage_report else None
+        coverage_rec = self._coverage_report.get("n_rec") if self._coverage_report else None
+        coverage_warning: Optional[str] = None
+        if (
+            coverage_mode
+            and coverage_min is not None
+            and coverage_rec is not None
+            and initial_trials < int(coverage_rec)
+        ):
+            coverage_warning = (
+                f"Need more initial trials (min: {int(coverage_min)}, recommended: {int(coverage_rec)})"
+            )
+
         summary = {
             "method": "Optuna",
             "objectives": list(self.mo_config.objectives),
@@ -1811,6 +2132,13 @@ class OptunaOptimizer:
             "pareto_front_size": pareto_front_size,
             "optimization_time_seconds": optimisation_time,
             "multiprocess_mode": self._multiprocess_mode,
+            "initial_search_mode": "coverage" if coverage_mode else "random",
+            "initial_search_trials": initial_trials,
+            "coverage_min_trials": coverage_min,
+            "coverage_recommended_trials": coverage_rec,
+            "coverage_main_axis": self._coverage_report.get("main_axis_name") if self._coverage_report else None,
+            "coverage_main_axis_options": self._coverage_report.get("main_axis_options") if self._coverage_report else None,
+            "coverage_warning": coverage_warning,
         }
         setattr(self.base_config, "optuna_summary", summary)
 
@@ -1876,6 +2204,7 @@ def run_optimization(config: OptimizationConfig) -> Tuple[List[OptimizationResul
         enable_pruning=bool(getattr(config, "optuna_enable_pruning", True)),
         pruner=getattr(config, "optuna_pruner", "median"),
         warmup_trials=int(n_startup_trials or 20),
+        coverage_mode=bool(getattr(config, "coverage_mode", False)),
         save_study=bool(getattr(config, "optuna_save_study", False)),
         study_name=getattr(config, "optuna_study_name", None),
     )

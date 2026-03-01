@@ -258,6 +258,73 @@ def test_store_top_n_trials_limit():
     assert stored[0]["trial_number"] == 0
 
 
+def test_run_optuna_on_window_forwards_coverage_mode(monkeypatch):
+    index = pd.date_range("2025-01-01", periods=40, freq="D", tz="UTC")
+    base_row = {"Open": 1.0, "High": 1.1, "Low": 0.9, "Close": 1.0, "Volume": 100}
+    df = pd.DataFrame([base_row for _ in range(len(index))], index=index)
+
+    wf_config = WFConfig(strategy_id="s01_trailing_ma", is_period_days=10, oos_period_days=5)
+    base_template = {
+        "enabled_params": {},
+        "param_ranges": {},
+        "param_types": {},
+        "fixed_params": {"dateFilter": False},
+        "risk_per_trade_pct": 2.0,
+        "contract_size": 0.01,
+        "commission_rate": 0.0005,
+        "worker_processes": 1,
+        "filter_min_profit": False,
+        "min_profit_threshold": 0.0,
+        "score_config": {},
+        "objectives": ["net_profit_pct"],
+        "primary_objective": None,
+        "constraints": [],
+        "sampler_type": "tpe",
+        "population_size": 50,
+        "crossover_prob": 0.9,
+        "mutation_prob": None,
+        "swapping_prob": 0.5,
+        "n_startup_trials": 33,
+        "coverage_mode": True,
+    }
+    optuna_settings = {
+        "objectives": ["net_profit_pct"],
+        "primary_objective": None,
+        "constraints": [],
+        "budget_mode": "trials",
+        "n_trials": 20,
+        "time_limit": 3600,
+        "convergence_patience": 50,
+        "enable_pruning": True,
+        "sampler": "tpe",
+        "population_size": 50,
+        "crossover_prob": 0.9,
+        "mutation_prob": None,
+        "swapping_prob": 0.5,
+        "pruner": "median",
+        "warmup_trials": 33,
+        "coverage_mode": True,
+        "save_study": False,
+    }
+    engine = WalkForwardEngine(wf_config, base_template, optuna_settings)
+
+    captured = {}
+
+    def fake_run_optuna_optimization(base_config, optuna_cfg):
+        captured["base_config"] = base_config
+        captured["optuna_cfg"] = optuna_cfg
+        return [], None
+
+    monkeypatch.setattr("core.walkforward_engine.run_optuna_optimization", fake_run_optuna_optimization)
+
+    engine._run_optuna_on_window(df, index[0], index[10])
+
+    assert captured["base_config"].coverage_mode is True
+    assert captured["base_config"].n_startup_trials == 33
+    assert captured["optuna_cfg"].coverage_mode is True
+    assert captured["optuna_cfg"].warmup_trials == 33
+
+
 def test_best_params_source_tracked(monkeypatch):
     index = pd.date_range("2025-01-01", periods=40, freq="D", tz="UTC")
     base_row = {"Open": 1.0, "High": 1.1, "Low": 0.9, "Close": 1.0, "Volume": 100}

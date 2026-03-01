@@ -729,6 +729,9 @@ function applyQueueConfigFallback(item) {
   if (Object.prototype.hasOwnProperty.call(config, 'n_startup_trials')) {
     setInputValue('optunaWarmupTrials', config.n_startup_trials);
   }
+  if (Object.prototype.hasOwnProperty.call(config, 'coverage_mode')) {
+    setCheckboxValue('optunaCoverageMode', Boolean(config.coverage_mode));
+  }
   if (Object.prototype.hasOwnProperty.call(config, 'optuna_save_study')) {
     setCheckboxValue('optunaSaveStudy', Boolean(config.optuna_save_study));
   }
@@ -841,6 +844,9 @@ function refreshQueueFormUiAfterApply() {
   }
   if (window.OptunaUI && typeof window.OptunaUI.toggleNsgaSettings === 'function') {
     window.OptunaUI.toggleNsgaSettings();
+  }
+  if (window.OptunaUI && typeof window.OptunaUI.updateCoverageInfo === 'function') {
+    window.OptunaUI.updateCoverageInfo();
   }
   if (typeof syncMinProfitFilterUI === 'function') {
     syncMinProfitFilterUI();
